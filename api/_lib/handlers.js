@@ -186,7 +186,7 @@ async function deletePhoto(store, user, photoId) {
 }
 
 
-// Borra un evento completo: sus fotos del bucket (libera espacio),
+/* Sube una foto aparte como portada del evento (no es una foto del evento: no aparece en la galería ni en la búsqueda por dorsal). Si ya había portada, la reemplaza y borra el archivo anterior. */ async function uploadCover(store, user, body) { requirePhotographer(user); const ev = await store.getEvent(body.eventId); if (!ev) throw err(404, 'Evento no encontrado.'); if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.'); const dataBase64 = String(body.dataBase64 || ''); if (!dataBase64) throw err(400, 'No llegó ninguna foto.'); const fileBuffer = Buffer.from(dataBase64, 'base64'); if (fileBuffer.length === 0 || fileBuffer.length > 10 * 1024 * 1024) throw err(400, 'La foto está vacía o pesa más de 10 MB.'); const mimeType = String(body.mimeType || 'image/jpeg'); if (!mimeType.startsWith('image/')) throw err(400, 'El archivo no es una imagen.'); await store.setEventCover(ev.id, { fileBuffer, mimeType }); return { status: 200, data: { ok: true } }; } /* Devuelve los bytes de la portada de un evento (visible para todos). */ async function coverFile(store, user, eventId) { const cover = await store.getEventCover(eventId); if (!cover) throw err(404, 'Este evento no tiene portada.'); return { status: 200, file: { bytes: cover.bytes, mimeType: cover.mimeType, filename: `onlyclick-portada-${eventId}.jpg`, inline: true } }; } // Borra un evento completo: sus fotos del bucket (libera espacio),
 // sus filas de fotos y descargas (cascada en la base) y el evento.
 // Solo el fotógrafo dueño del evento. No se puede deshacer.
 async function deleteEvent(store, user, body) {
@@ -296,7 +296,7 @@ async function dispatch(route, req) {
     case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
-    case 'delete-event': return deleteEvent(store, user, b);
+    case 'delete-event': return deleteEvent(store, user, b);     case 'upload-cover': return uploadCover(store, user, b);     case 'cover-file': return coverFile(store, user, req.query.eventId);
     case 'read-bib': return readBib(store, user, b);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
     default: throw err(404, 'Ruta no encontrada: ' + route);
