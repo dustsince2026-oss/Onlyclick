@@ -8,6 +8,7 @@ let me = null;
 let mode = 'login'; // login | register
 let currentEvent = null;
 let currentTipClabe = '';
+  let currentTipName = '';
 let currentPhotos = [];
 let lightboxPhoto = null;
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
@@ -48,14 +49,14 @@ async function refreshAuth() {
 }
 
 // ---- Mensaje de cooperación voluntaria tras una descarga gratis ----
-function showTipModal(clabe) {
+function showTipModal(clabe, name) {
     document.getElementById('tipModal')?.remove();
     const m = document.createElement('div');
     m.id = 'tipModal';
     m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
     m.innerHTML = `<div style="background:#1a1a2e;color:#fff;border-radius:12px;padding:20px;max-width:340px;text-align:center">
         <p>¡Gracias por descargar tu foto! Es gratis. Si te gustó el servicio y quieres cooperar para que sigamos en los eventos, te dejo mi CLABE:</p>
-            <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p>
+            <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p> ${name ? `<p>A nombre de: <strong>${esc(name)}</strong></p>` : ''}
                 <div class="row" style="justify-content:center"><button id="tipCopy">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
                     <p id="tipCopyMsg" class="muted"></p></div>`;
     document.body.appendChild(m);
@@ -84,7 +85,7 @@ async function savePhoto(photo, freeMode) {
     a.download = `onlyclick-foto-${photo.id}.jpg`;
     document.body.appendChild(a); a.click(); a.remove();
     btns.forEach(b => { b.textContent = '✓ Guardar iniciada — busca la foto en Descargas'; });
-    if (freeMode && currentTipClabe) showTipModal(currentTipClabe);
+    if (freeMode && currentTipClabe) showTipModal(currentTipClabe, currentTipName);
     setTimeout(() => loadEventDetail(currentEvent), 1500);
   } catch (e) {
     alert('No se pudo guardar: ' + e.message);
@@ -156,6 +157,7 @@ async function loadEventDetail(eventId, push) {
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
   currentTipClabe = r.tipClabe || '';
+    currentTipName = r.tipName || '';
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago'}</p>
@@ -173,6 +175,7 @@ async function loadEventDetail(eventId, push) {
 
 async function loadMyPhotos() {
   currentTipClabe = '';
+  currentTipName = '';
   const r = await api('/api/my-photos');
   $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, true)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos, true);
