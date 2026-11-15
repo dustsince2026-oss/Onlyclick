@@ -63,7 +63,8 @@ async function getEvent(store, user, eventId) {
   const photos = await store.listPhotos(eventId);
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
-  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined })) } };
+  const photographer = await store.findUserById(ev.photographerId);
+  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '' } };
 }
 
 async function uploadPhoto(store, user, body) {
@@ -151,7 +152,16 @@ async function setFreeMode(store, user, body) {
   if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
   const updated = await store.updateEvent(ev.id, { freeMode: body.freeMode !== false });
   return { status: 200, data: { event: updated } };
+
 }
+async function setTip(store, user, body) {
+  requirePhotographer(user);
+  const clabe = String(body.clabe || '').replace(/[\s-]/g, '');
+  if (clabe && !/^\d{18}$/.test(clabe)) throw err(400, 'La CLABE debe tener 18 dígitos.');
+  const updated = await store.setTipClabe(user.id, clabe);
+  return { status: 200, data: { tipClabe: updated ? (updated.tipClabe || '') : clabe } };
+}
+
 
 async function updatePhoto(store, user, body) {
   requirePhotographer(user);
@@ -270,6 +280,7 @@ async function dispatch(route, req) {
     case 'my-photos': return listPurchases(store, user);
     case 'sales': return listSales(store, user);
     case 'set-free-mode': return setFreeMode(store, user, b);
+    case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
     case 'read-bib': return readBib(store, user, b);
