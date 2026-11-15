@@ -15,7 +15,8 @@ const PUBLIC = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
 const ROUTES = {
-  'auth-register': 'register', 'auth-login': 'login', 'auth-status': 'auth-status',
+  'auth-register': 'register', 'auth-login': 'login', 'auth-status': 'auth-status', 
+    'password-forgot': 'password-forgot', 'password-reset': 'password-reset',
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
   'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
   'my-photos': 'my-photos', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
