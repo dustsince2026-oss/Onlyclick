@@ -53,7 +53,20 @@
     </select>
     <p class="muted" id="photoTakenNote"></p>
     <button id="authSubmit">Entrar</button>
-    <button class="secondary" id="authToggle">¿No tienes cuenta? Crear cuenta</button>
+    <button class="secondary" id="authToggle">¿No tienes cuenta? Crear cuenta</button> 
+       <button class="secondary" id="authForgot">¿Olvidaste tu contraseña?</button> 
+       <div id="forgotBox" style="display:none"> 
+              <p class="muted">Te mandamos un enlace a tu correo para poner una nueva contraseña.</p> 
+              <input id="forgotEmail" type="email" placeholder="Tu correo"> 
+              <button id="forgotSend">Enviar enlace</button> 
+              <p class="muted" id="forgotStatus"></p> 
+           </div> 
+       <div id="resetBox" style="display:none"> 
+              <p class="muted">Escribe tu nueva contraseña.</p> 
+              <input id="resetPass" type="password" placeholder="Nueva contraseña (mín. 6 caracteres)"> 
+              <button id="resetSend">Guardar nueva contraseña</button> 
+              <p class="muted" id="resetStatus"></p> 
+           </div>
   </div>
 
   <div id="app" class="hidden">
