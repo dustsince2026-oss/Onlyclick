@@ -36,7 +36,8 @@ const fileStore = {
   async photographerExists() { return loadDb().users.some(u => u.role === 'photographer'); },
   async createUser(u) { const db = loadDb(); const row = { id: nextId(db, 'user'), createdAt: new Date().toISOString(), ...u }; db.users.push(row); saveDb(db); return row; },
   async findUserByEmail(email) { return loadDb().users.find(u => u.email.toLowerCase() === String(email).toLowerCase()) || null; },
-  async findUserById(id) { return loadDb().users.find(u => u.id === Number(id)) || null; },
+  async findUserById(id) { return loadDb().users.find(u => u.id === Number(id)) || null; }, 
+    async updateUserPassword(id, passwordHash) { const db = loadDb(); const u = db.users.find(x => x.id === Number(id)); if (!u) return null; u.passwordHash = passwordHash; saveDb(db); return u; },
   async setTipClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.tipClabe = clabe; saveDb(db); return u; },
   async listEvents() { return loadDb().events.slice().sort((a, b) => b.id - a.id).map(e => ({ ...e, photoCount: loadDb().photos.filter(p => p.eventId === e.id).length })); },
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
@@ -99,7 +100,8 @@ const supabaseStore = {
   async photographerExists() { const { count } = await supabase().from('users').select('id', { count: 'exact', head: true }).eq('role', 'photographer'); return (count || 0) > 0; },
   async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async findUserByEmail(email) { const { data } = await supabase().from('users').select().ilike('email', email).maybeSingle(); return mapUser(data); },
-  async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); },
+  async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); }, 
+    async updateUserPassword(id, passwordHash) { const { data, error } = await supabase().from('users').update({ password_hash: passwordHash }).eq('id', id).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async setTipClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ tip_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async listEvents() {
     const { data } = await supabase().from('events').select().order('id', { ascending: false });
