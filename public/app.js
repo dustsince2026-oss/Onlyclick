@@ -168,11 +168,12 @@ async function loadPhotographer() {
     <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
+    <label style="display:block;margin:6px 0"><input type="checkbox" id="upReadAi" checked> Leer dorsales con IA al elegir las fotos (lento con muchas fotos; quítalo para subir rápido y leerlos en lote después)</label>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">La app lee el dorsal de cada foto sola con IA: revisa el número y corrígelo si hace falta antes de subir.</p>
+    <p class="muted">Con pocas fotos, la app lee el dorsal sola con IA. Con muchas fotos, quita la casilla de arriba para subir rápido y luego usa "Leer dorsales en lote" en Revisar dorsales.</p>
     <h3>Mis eventos</h3>
     ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
@@ -287,6 +288,7 @@ async function loadPhotographer() {
     upRows = files.map(f => ({ file: f, bibs: '', status: '' }));
     renderUpList();
     if (!files.length) return;
+    if (!document.getElementById('upReadAi').checked) { $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.'; return; }
     $('#upStatus').textContent = 'Leyendo dorsales… 0/' + files.length;
     for (let i = 0; i < upRows.length; i++) {
       const row = upRows[i];
@@ -304,20 +306,35 @@ async function loadPhotographer() {
     }
     $('#upStatus').textContent = 'Listo. Revisa los números y corrige los que hagan falta, luego pulsa Subir fotos.';
   };
+  // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
+  // sin saturar la conexión ni la llave de IA.
+  async function runPool(items, n, fn) {
+    let i = 0;
+    const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
+      while (i < items.length) { const item = items[i++]; await fn(item); }
+    });
+    await Promise.all(workers);
+  }
   $('#upBtn').onclick = async () => {
     const files = upRows.length ? upRows : [...$('#upFiles').files].map(f => ({ file: f, bibs: '' }));
     if (!files.length) return alert('Elige al menos una foto.');
     const eventId = Number($('#upEvent').value);
     if (!eventId) return alert('Primero crea un evento.');
-    let n = 0;
-    for (const row of files) {
-      const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(row.file); });
-      const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
-      await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: row.file.type || 'image/jpeg', dataBase64: b64, bibs, price: Number($('#upPrice').value || 0) }) });
-      n++;
-      $('#upStatus').textContent = 'Subiendo… ' + n + '/' + files.length;
-    }
-    alert(n + ' foto(s) subida(s).'); loadPhotographer();
+    let n = 0, fails = 0;
+    await runPool(files, 3, async (row) => {
+      try {
+        const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(row.file); });
+        // Se comprime a 1600px antes de subir: pesa mucho menos, sube más
+        // rápido y ocupa menos espacio en Supabase.
+        const small = await downscale(dataUrl, 1600);
+        const b64 = small.split(',')[1];
+        const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
+        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, bibs, price: Number($('#upPrice').value || 0) }) });
+        n++;
+      } catch (_) { fails++; }
+      $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
+    });
+    alert(n + ' foto(s) subida(s).' + (fails ? ' ' + fails + ' fallaron, inténtalas de nuevo.' : '')); loadPhotographer();
   };
   document.querySelectorAll('[data-free]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.free));
@@ -330,7 +347,7 @@ async function loadPhotographer() {
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
     try {
       const r = await api('/api/event-get?eventId=' + ev.id);
-      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4>' + r.photos.map(p => `
+      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
           <img src="/api/photo?id=${p.id}&inline=1" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" inputmode="numeric" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
@@ -338,6 +355,34 @@ async function loadPhotographer() {
           <button data-savebib="${p.id}">Guardar</button>
           <span id="revState-${p.id}" class="muted"></span>
         </div>`).join('');
+      // Lote: lee con IA solo las fotos sin dorsal, de 3 en 3, y guarda cada
+      // una en cuanto queda. Si se cierra la página, lo ya guardado queda y
+      // al darle otra vez continúa con las que faltan.
+      const batchBtn = document.getElementById('batchRead');
+      if (batchBtn) batchBtn.onclick = async () => {
+        const targets = (r.photos || []).filter(p => !(p.bibs || []).length);
+        if (!targets.length) { document.getElementById('batchStatus').textContent = 'Todas las fotos ya tienen dorsal.'; return; }
+        batchBtn.disabled = true;
+        let done = 0, ok = 0, none = 0, err = 0;
+        const bStatus = () => { const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Leyendo… ' + done + '/' + targets.length + ' · ✓ ' + ok + ' · sin dorsal ' + none + ' · errores ' + err; };
+        bStatus();
+        await runPool(targets, 3, async (p) => {
+          const st = document.getElementById('revState-' + p.id);
+          try {
+            const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: p.id }) });
+            const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
+            if (r2.ok && list.length) {
+              await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: p.id, bibs: list }) });
+              const inp = document.getElementById('revBib-' + p.id); if (inp) inp.value = list.join(', ');
+              if (st) st.textContent = '✓ IA'; ok++;
+            } else if (r2.ok) { if (st) st.textContent = 'Sin dorsal claro'; none++; }
+            else { if (st) st.textContent = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : ''); err++; }
+          } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; err++; }
+          done++; bStatus();
+        });
+        batchBtn.disabled = false;
+        const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Terminado: ' + ok + ' con dorsal, ' + none + ' sin dorsal claro, ' + err + ' con error. Si quedaron con error, dale otra vez al botón.';
+      };
       box.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
         const id = Number(rb.dataset.reread);
         const st = document.getElementById('revState-' + id); if (st) st.textContent = 'Leyendo…';
