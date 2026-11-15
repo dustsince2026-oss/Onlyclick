@@ -42,7 +42,7 @@ const fileStore = {
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
-  async deleteEvent(id) { const db = loadDb(); db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); },
+  async deleteEvent(id) { const db = loadDb(); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
   async getPhoto(id) { return loadDb().photos.find(p => p.id === Number(id)) || null; },
   async createPhoto(p) {
@@ -114,7 +114,14 @@ const supabaseStore = {
     if (patch.name !== undefined) p.name = patch.name;
     const { data } = await supabase().from('events').update(p).eq('id', id).select().single(); return mapEvent(data);
   },
-  async deleteEvent(id) { await supabase().from('photos').delete().eq('event_id', id); await supabase().from('events').delete().eq('id', id); },
+  async deleteEvent(id) {
+    const photos = await this.listPhotos(id);
+    const paths = photos.map(p => p.storagePath).filter(Boolean);
+    for (let i = 0; i < paths.length; i += 100) { await supabase().storage.from('photos').remove(paths.slice(i, i + 100)); }
+    await supabase().from('photos').delete().eq('event_id', id);
+    await supabase().from('events').delete().eq('id', id);
+    return { photos: photos.length };
+  },
   async listPhotos(eventId) { const { data } = await supabase().from('photos').select().eq('event_id', eventId).order('id'); return (data || []).map(mapPhoto); },
   async getPhoto(id) { const { data } = await supabase().from('photos').select().eq('id', id).maybeSingle(); return mapPhoto(data); },
   async createPhoto(p) {
