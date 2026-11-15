@@ -144,7 +144,7 @@ async function loadEvents() {
   const r = await api('/api/events');
   $('#eventList').innerHTML = r.events.length ? r.events.map(e => `
     <div class="card" style="background:#12142a">
-      <strong>${esc(e.name)}</strong> · ${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}<br>
+      ${e.coverPath ? `<img src="/api/cover?eventId=${e.id}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:8px">` : ''} <strong>${esc(e.name)}</strong> · ${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}<br>
       <span class="muted">${e.photoCount} foto(s) · ${e.freeMode ? 'Descarga gratis' : 'De pago'}</span><br>
       <button data-ev="${e.id}">Ver fotos</button>
     </div>`).join('') : '<p>No hay eventos todavía.</p>';
@@ -160,7 +160,7 @@ async function loadEventDetail(eventId, push) {
     currentTipName = r.tipName || '';
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
-    <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago'}</p>
+    ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''} <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago'}</p>
     <div class="row"><input id="evBib" inputmode="numeric" placeholder="Buscar dorsal en este evento"><button id="evBibBtn">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, r.event.freeMode)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos, r.event.freeMode);
@@ -202,7 +202,7 @@ async function loadPhotographer() {
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
+    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p> <h3>Portada del evento</h3> <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p> <div class="row"><select id="covEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div> <div id="covPreview"></div> <button id="covBtn">Subir portada</button> <p id="covStatus" class="muted"></p>
     <h3>Mis eventos</h3>
     ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
@@ -216,7 +216,7 @@ async function loadPhotographer() {
   $('#tipSave').onclick = async () => {
         try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
   };
-  // --- Lectura automática de dorsales ---
+    function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }  $('#covEvent').onchange = renderCovPreview;  renderCovPreview();  $('#covBtn').onclick = async () => { const file = $('#covFile').files[0]; if (!file) { alert('Elige una foto para la portada.'); return; } $('#covStatus').textContent = 'Subiendo portada…'; try { const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(file); }); const small = await downscale(dataUrl, 1600); await api('/api/event-cover', { method: 'POST', body: JSON.stringify({ eventId: Number($('#covEvent').value), dataBase64: small.split(',')[1], mimeType: 'image/jpeg' }) }); $('#covStatus').textContent = 'Portada guardada.'; loadPhotographer(); loadEvents(); } catch (e) { $('#covStatus').textContent = e.message; } }; // --- Lectura automática de dorsales ---
   // 1) Visión por IA (Gemini, gratis) en el servidor: lee el número como lo
   //    vería una persona. 2) Si no hay llave de IA o falla, OCR local mejorado
   //    en el teléfono. El número siempre queda editable antes de subir.
