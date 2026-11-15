@@ -163,30 +163,35 @@ async function loadPhotographer() {
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">La app lee el dorsal de cada foto sola: revisa el número y corrígelo si hace falta antes de subir.</p>
+    <p class="muted">La app lee el dorsal de cada foto sola con IA: revisa el número y corrígelo si hace falta antes de subir.</p>
     <h3>Mis eventos</h3>
-    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    <div id="revList"></div>
+    <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     <h3>Descargas y ventas</h3>
     <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos simulados: $${sales.revenue} MXN</p>
     ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
-  // --- Lectura automática de dorsales (OCR en el teléfono, gratis, sin cuentas) ---
+  // --- Lectura automática de dorsales ---
+  // 1) Visión por IA (Gemini, gratis) en el servidor: lee el número como lo
+  //    vería una persona. 2) Si no hay llave de IA o falla, OCR local mejorado
+  //    en el teléfono. El número siempre queda editable antes de subir.
   let upRows = [];
   let ocrWorker = null;
   async function getOcrWorker() {
     if (ocrWorker) return ocrWorker;
     if (typeof Tesseract === 'undefined') throw new Error('No se pudo cargar el lector de dorsales. Revisa tu conexión e inténtalo de nuevo.');
     ocrWorker = await Tesseract.createWorker('eng');
-    await ocrWorker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '11' });
+    await ocrWorker.setParameters({ tessedit_char_whitelist: '0123456789' });
     return ocrWorker;
   }
-  function downscale(dataUrl) {
+  function downscale(dataUrl, maxW) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const maxW = 1200; const scale = Math.min(1, maxW / img.width);
+        const scale = Math.min(1, (maxW || 1200) / img.width);
         const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         resolve(c.toDataURL('image/jpeg', 0.85));
@@ -195,9 +200,65 @@ async function loadPhotographer() {
       img.src = dataUrl;
     });
   }
-  function extractBibs(text) {
-    const nums = (text.match(/\d{1,4}/g) || []).map(s => s.replace(/^0+(?=\d)/, ''));
-    return [...new Set(nums)].filter(n => n.length > 0 && n !== '0');
+  // Prepara la foto para el OCR: gris, más contraste y blanco/negro.
+  function preprocess(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 2000; const scale = Math.min(1, maxW / img.width);
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+        const d = ctx.getImageData(0, 0, w, h); const px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+          const v = (g - 128) * 1.8 + 128 > 150 ? 255 : 0;
+          px[i] = px[i + 1] = px[i + 2] = v;
+        }
+        ctx.putImageData(d, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+  // Elige el número más confiable: prefiere 2-4 dígitos; un solo dígito solo
+  // si la confianza es muy alta (así un "90" no se convierte en "1").
+  function pickBib(words) {
+    const cands = [];
+    for (const w of (words || [])) {
+      const t = String(w.text || '').replace(/\D/g, '');
+      const c = Number(w.confidence || 0);
+      if (t.length >= 2 && t.length <= 4 && c >= 40) cands.push({ n: t, c });
+      else if (t.length === 1 && c >= 85) cands.push({ n: t, c });
+    }
+    if (!cands.length) return '';
+    const multi = cands.filter(x => x.n.length >= 2);
+    const pool = multi.length ? multi : cands;
+    pool.sort((a, b) => (b.c - a.c) || (b.n.length - a.n.length));
+    return pool[0].n;
+  }
+  async function readBibWithOcr(worker, dataUrl) {
+    const prepped = await preprocess(dataUrl);
+    for (const psm of ['6', '11']) {
+      await worker.setParameters({ tessedit_pageseg_mode: psm });
+      const { data } = await worker.recognize(prepped);
+      const got = pickBib(data.words);
+      if (got) return got;
+    }
+    return '';
+  }
+  async function readBibAuto(dataUrl) {
+    try {
+      const small = await downscale(dataUrl, 1600);
+      const r = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ dataBase64: small.split(',')[1], mimeType: 'image/jpeg' }) });
+      if (r && r.ok) return { bib: r.bib || '', source: r.bib ? 'ia' : 'ia-none' };
+    } catch (_) { /* sin IA: cae al OCR local */ }
+    try {
+      const worker = await getOcrWorker();
+      const got = await readBibWithOcr(worker, dataUrl);
+      return { bib: got, source: got ? 'ocr' : 'none' };
+    } catch (_) { return { bib: '', source: 'none' }; }
   }
   function renderUpList() {
     $('#upList').innerHTML = upRows.map((row, i) => `
@@ -214,21 +275,17 @@ async function loadPhotographer() {
     renderUpList();
     if (!files.length) return;
     $('#upStatus').textContent = 'Leyendo dorsales… 0/' + files.length;
-    let worker;
-    try { worker = await getOcrWorker(); } catch (e) { $('#upStatus').textContent = e.message + ' Escribe los dorsales a mano en cada foto.'; return; }
     for (let i = 0; i < upRows.length; i++) {
       const row = upRows[i];
       const stateEl = document.getElementById('upState-' + i);
       if (stateEl) stateEl.textContent = 'Leyendo…';
       try {
         const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(row.file); });
-        const small = await downscale(dataUrl);
-        const { data } = await worker.recognize(small);
-        const found = extractBibs(data.text || '');
-        row.bibs = found.join(', ');
+        const found = await readBibAuto(dataUrl);
+        row.bibs = found.bib;
         const inputEl = document.getElementById('upBib-' + i);
         if (inputEl) inputEl.value = row.bibs;
-        if (stateEl) stateEl.textContent = found.length ? '✓ leído' : 'Sin número — escríbelo';
+        if (stateEl) stateEl.textContent = found.source === 'ia' ? '✓ IA' : found.source === 'ocr' ? '✓ OCR' : found.source === 'ia-none' ? 'La IA no vio dorsal' : 'Sin número — escríbelo';
       } catch (_) { if (stateEl) stateEl.textContent = 'Sin número — escríbelo'; }
       $('#upStatus').textContent = 'Leyendo dorsales… ' + (i + 1) + '/' + files.length;
     }
@@ -253,6 +310,38 @@ async function loadPhotographer() {
     const ev = events.find(e => e.id === Number(b.dataset.free));
     await api('/api/set-free-mode', { method: 'POST', body: JSON.stringify({ eventId: ev.id, freeMode: !ev.freeMode }) });
     loadPhotographer(); loadEvents();
+  });
+  document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
+    const ev = events.find(e => e.id === Number(b.dataset.rev));
+    const box = $('#revList');
+    box.innerHTML = '<p class="muted">Cargando fotos…</p>';
+    try {
+      const r = await api('/api/event-get?eventId=' + ev.id);
+      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4>' + r.photos.map(p => `
+        <div class="row" style="align-items:center">
+          <img src="/api/photo?id=${p.id}&inline=1" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
+          <input id="revBib-${p.id}" inputmode="numeric" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
+          <button data-reread="${p.id}">Releer con IA</button>
+          <button data-savebib="${p.id}">Guardar</button>
+          <span id="revState-${p.id}" class="muted"></span>
+        </div>`).join('');
+      box.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
+        const id = Number(rb.dataset.reread);
+        const st = document.getElementById('revState-' + id); if (st) st.textContent = 'Leyendo…';
+        try {
+          const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: id }) });
+          if (r2.ok && r2.bib) { document.getElementById('revBib-' + id).value = r2.bib; if (st) st.textContent = '✓ IA'; }
+          else if (r2.ok) { if (st) st.textContent = 'La IA no vio dorsal claro'; }
+          else { if (st) st.textContent = 'Sin llave de IA todavía'; }
+        } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; }
+      });
+      box.querySelectorAll('[data-savebib]').forEach(sb => sb.onclick = async () => {
+        const id = Number(sb.dataset.savebib);
+        const bibs = document.getElementById('revBib-' + id).value.split(',').map(s => s.trim()).filter(Boolean);
+        await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: id, bibs }) });
+        const st = document.getElementById('revState-' + id); if (st) st.textContent = '✓ guardado';
+      });
+    } catch (e) { box.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
   });
 }
 
