@@ -19,7 +19,7 @@ const ROUTES = {
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
   'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
   'my-photos': 'my-photos', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
-  'photo-update': 'update-photo', 'photo-delete': 'delete-photo',
+  'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
 };
 
 function readBody(req) {
