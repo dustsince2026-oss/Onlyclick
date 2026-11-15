@@ -64,7 +64,7 @@ async function getEvent(store, user, eventId) {
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
   const photographer = await store.findUserById(ev.photographerId);
-  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '' } };
+  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '', tipName: photographer ? (photographer.name || '') : '' } };
 }
 
 async function uploadPhoto(store, user, body) {
