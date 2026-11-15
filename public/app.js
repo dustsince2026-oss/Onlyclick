@@ -5,7 +5,8 @@
 // gestor de descargas real. NO es un blob URL ni navigator.share.
 let token = localStorage.getItem('onlyclick_token') || '';
 let me = null;
-let mode = 'login'; // login | register
+let mode = 'login'; // login | register 
+let resetToken = ''; // ?reset=... del enlace que llega por correo
 let currentEvent = null;
 let currentTipClabe = '';
   let currentTipName = '';
@@ -521,8 +522,28 @@ $('#authSubmit').onclick = async () => {
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 };
 
-// Estado inicial en el historial para que la primera flecha de atrás no
-// saque de la app.
+$('#authForgot').onclick = () => { const box = $('#forgotBox'); box.style.display = box.style.display === 'none' ? '' : 'none'; }; 
+$('#forgotSend').onclick = async () => { 
+    const email = $('#forgotEmail').value.trim(); 
+    if (!email.includes('@')) { $('#forgotStatus').textContent = 'Escribe un correo válido.'; return; } 
+    $('#forgotStatus').textContent = 'Enviando…'; 
+    try { await api('/api/password-forgot', { method: 'POST', body: JSON.stringify({ email }) }); $('#forgotStatus').textContent = 'Si el correo está registrado, te llegó un enlace para restablecer tu contraseña.'; } 
+      catch (e) { $('#forgotStatus').textContent = e.message; } }; 
+$('#resetSend').onclick = async () => { 
+    const pass = $('#resetPass').value; 
+    
+        if (pass.length < 6) { $('#resetStatus').textContent = 'La contraseña debe tener al menos 6 caracteres.'; return; } try { await api('/api/password-reset', { method: 'POST', body: JSON.stringify({ token: resetToken, password: pass }) }); $('#resetStatus').textContent = 'Contraseña actualizada. Ya puedes entrar con la nueva.'; $('#resetBox').style.display = 'none'; history.replaceState({}, '', location.pathname); } catch (e) { $('#resetStatus').textContent = e.message; } }; // Estado inicial en el historial para que la primera flecha de atrás no // saque de la app.
 try { history.replaceState({ view: 'search' }, ''); } catch (_) {}
 
 refreshAuth();
+
+// Si la URL trae ?reset=... (enlace del correo), mostrar el formulario
+// de nueva contraseña aunque haya sesión iniciada.
+resetToken = new URLSearchParams(location.search).get('reset') || '';
+if (resetToken) {
+  $('#auth').classList.remove('hidden');
+  $('#app').classList.add('hidden');
+  $('#resetBox').style.display = '';
+  $('#forgotBox').style.display = 'none';
+  $('#authTitle').textContent = 'Nueva contraseña';
+}
