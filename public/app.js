@@ -97,7 +97,7 @@ async function savePhoto(photo, freeMode) {
 function photoCard(p, freeMode) {
   const bibs = (p.bibs || []).map(b => `<span class="badge">Dorsal ${esc(b)}</span>`).join('');
   return `<div class="photo">
-    <img src="/api/photo?id=${p.id}&inline=1" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">
+    <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${p.price || 0} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
@@ -230,14 +230,14 @@ async function loadPhotographer() {
     await ocrWorker.setParameters({ tessedit_char_whitelist: '0123456789' });
     return ocrWorker;
   }
-  function downscale(dataUrl, maxW) {
+  function downscale(dataUrl, maxW, quality) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         const scale = Math.min(1, (maxW || 1200) / img.width);
         const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        resolve(c.toDataURL('image/jpeg', 0.85));
+        resolve(c.toDataURL('image/jpeg', quality || 0.85));
       };
       img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
@@ -347,8 +347,13 @@ async function loadPhotographer() {
         // rápido y ocupa menos espacio en Supabase.
         const small = await downscale(dataUrl, 1600);
         const b64 = small.split(',')[1];
+        let thumbB64 = '';
+        try {
+          const thumb = await downscale(dataUrl, 400, 0.8);
+          if (thumb && thumb.startsWith('data:image/jpeg') && thumb.length < small.length) thumbB64 = thumb.split(',')[1];
+        } catch (_) {}
         const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
-        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, bibs, price: Number($('#upPrice').value || 0) }) });
+        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: Number($('#upPrice').value || 0) }) });
         n++;
       } catch (_) { fails++; }
       $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
@@ -373,7 +378,7 @@ document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
       const r = await api('/api/event-get?eventId=' + ev.id);
       box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
-          <img src="/api/photo?id=${p.id}&inline=1" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
+          <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" inputmode="numeric" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
           <button data-reread="${p.id}">Releer con IA</button>
           <button data-savebib="${p.id}">Guardar</button>
