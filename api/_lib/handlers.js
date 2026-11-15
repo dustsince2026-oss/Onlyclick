@@ -5,7 +5,8 @@
 // se leen automáticamente al subir (visión por IA con Gemini cuando hay llave,
 // si no OCR local en el teléfono) y se pueden corregir o releer después.
 const { getStore } = require('./store');
-const { hashPassword, verifyPassword, signToken, verifyToken, publicUser } = require('./auth');
+const { hashPassword, verifyPassword, signToken, verifyToken, signResetToken, verifyResetToken, publicUser } = require('./auth'); 
+const { sendResetEmail } = require('./mailer');
 
 function err(status, message) { const e = new Error(message); e.status = status; return e; }
 function normBib(b) { return String(b == null ? '' : b).trim(); }
@@ -41,6 +42,28 @@ async function authStatus(store, token) {
   return { status: 200, data: { photographerTaken: await store.photographerExists(), user: publicUser(await currentUser(store, token)) } };
 }
 
+// Pide restablecer la contraseña: manda un enlace al correo (vale 1 hora). 
+// Siempre responde igual, exista o no el correo, para no revelar cuentas. 
+async function requestPasswordReset(store, body) { 
+  const email = String(body.email || '').trim().toLowerCase(); 
+  const user = email.includes('@') ? await store.findUserByEmail(email) : null; 
+  if (user) { 
+        const token = signResetToken(user.id); 
+        const base = (process.env.PUBLIC_URL || 'https://onlyclick-zeta.vercel.app').replace(/\/$/, ''); 
+        await sendResetEmail(user.email, user.name, `${base}/?reset=${token}`); 
+    } 
+  return { status: 200, data: { ok: true } }; 
+} 
+async function resetPassword(store, body) { 
+    const userId = verifyResetToken(String(body.token || '')); 
+    if (!userId) throw err(400, 'El enlace no es válido o ya venció. Pide uno nuevo.'); 
+    const password = String(body.password || ''); 
+    if (password.length < 6) throw err(400, 'La contraseña debe tener al menos 6 caracteres.'); 
+    const user = await store.findUserById(userId); 
+    if (!user) throw err(404, 'Cuenta no encontrada.'); 
+    await store.updateUserPassword(user.id, hashPassword(password)); 
+    return { status: 200, data: { ok: true } }; 
+} 
 async function listEvents(store) {
   return { status: 200, data: { events: await store.listEvents() } };
 }
@@ -281,7 +304,9 @@ async function dispatch(route, req) {
   const b = req.body || {};
   switch (route) {
     case 'register': return register(store, b);
-    case 'login': return login(store, b);
+    case 'login': return login(store, b); 
+        case 'password-forgot': return requestPasswordReset(store, b); 
+        case 'password-reset': return resetPassword(store, b);
     case 'auth-status': return authStatus(store, req.token);
     case 'list-events': return listEvents(store);
     case 'create-event': return createEvent(store, user, b);
