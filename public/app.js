@@ -7,6 +7,7 @@ let token = localStorage.getItem('onlyclick_token') || '';
 let me = null;
 let mode = 'login'; // login | register
 let currentEvent = null;
+let currentTipClabe = '';
 let currentPhotos = [];
 let lightboxPhoto = null;
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
@@ -46,6 +47,25 @@ async function refreshAuth() {
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
+// ---- Mensaje de cooperación voluntaria tras una descarga gratis ----
+function showTipModal(clabe) {
+    document.getElementById('tipModal')?.remove();
+    const m = document.createElement('div');
+    m.id = 'tipModal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
+    m.innerHTML = `<div style="background:#1a1a2e;color:#fff;border-radius:12px;padding:20px;max-width:340px;text-align:center">
+        <p>¡Gracias por descargar tu foto! Es gratis. Si te gustó el servicio y quieres cooperar para que sigamos en los eventos, te dejo mi CLABE:</p>
+            <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p>
+                <div class="row" style="justify-content:center"><button id="tipCopy">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
+                    <p id="tipCopyMsg" class="muted"></p></div>`;
+    document.body.appendChild(m);
+    m.querySelector('#tipClose').onclick = () => m.remove();
+    m.onclick = (e) => { if (e.target === m) m.remove(); };
+    m.querySelector('#tipCopy').onclick = async () => {
+          try { await navigator.clipboard.writeText(clabe); m.querySelector('#tipCopyMsg').textContent = 'CLABE copiada.'; }
+          catch (_) { m.querySelector('#tipCopyMsg').textContent = 'No se pudo copiar, cópiala a mano.'; }
+    };
+}
 // ---- Descarga real: un solo botón "Guardar" ----
 // 1) Registra la descarga gratis (o compra) en el servidor.
 // 2) Dispara un <a href="/api/photo?id=..."> de mismo origen con download.
@@ -64,6 +84,7 @@ async function savePhoto(photo, freeMode) {
     a.download = `onlyclick-foto-${photo.id}.jpg`;
     document.body.appendChild(a); a.click(); a.remove();
     btns.forEach(b => { b.textContent = '✓ Guardar iniciada — busca la foto en Descargas'; });
+    if (freeMode && currentTipClabe) showTipModal(currentTipClabe);
     setTimeout(() => loadEventDetail(currentEvent), 1500);
   } catch (e) {
     alert('No se pudo guardar: ' + e.message);
@@ -134,6 +155,7 @@ async function loadEventDetail(eventId, push) {
   if (push) pushNav({ view: 'events', event: eventId });
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
+  currentTipClabe = r.tipClabe || '';
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago'}</p>
@@ -150,6 +172,7 @@ async function loadEventDetail(eventId, push) {
 }
 
 async function loadMyPhotos() {
+  currentTipClabe = '';
   const r = await api('/api/my-photos');
   $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, true)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos, true);
@@ -165,7 +188,11 @@ async function loadPhotographer() {
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
     <button id="evCreate">Crear evento</button>
-    <h3>Subir fotos</h3>
+        <h3>Cooperación voluntaria</h3>
+            <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
+                <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave">Guardar CLABE</button></div>
+                    <p id="tipStatus" class="muted"></p>
+                    <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
@@ -182,6 +209,9 @@ async function loadPhotographer() {
     ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+  };
+  $('#tipSave').onclick = async () => {
+        try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
   };
   // --- Lectura automática de dorsales ---
   // 1) Visión por IA (Gemini, gratis) en el servidor: lee el número como lo
