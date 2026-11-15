@@ -185,6 +185,19 @@ async function deletePhoto(store, user, photoId) {
   return { status: 200, data: { ok: true } };
 }
 
+
+// Borra un evento completo: sus fotos del bucket (libera espacio),
+// sus filas de fotos y descargas (cascada en la base) y el evento.
+// Solo el fotógrafo dueño del evento. No se puede deshacer.
+async function deleteEvent(store, user, body) {
+  requirePhotographer(user);
+  const ev = await store.getEvent(body.eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  const result = await store.deleteEvent(ev.id);
+  return { status: 200, data: { ok: true, photos: result ? (result.photos || 0) : 0 } };
+}
+
 // Lee el dorsal de una foto con visión por IA (Gemini, capa gratuita).
 // Recibe { photoId } (foto ya subida) o { dataBase64, mimeType } (al subir).
 // Sin GEMINI_API_KEY devuelve { ok:false, reason:'no-key' } para que el
@@ -283,6 +296,7 @@ async function dispatch(route, req) {
     case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
+    case 'delete-event': return deleteEvent(store, user, b);
     case 'read-bib': return readBib(store, user, b);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
     default: throw err(404, 'Ruta no encontrada: ' + route);
