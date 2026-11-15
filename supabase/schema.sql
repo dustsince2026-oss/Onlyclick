@@ -11,6 +11,7 @@ create table if not exists users (
   email text not null unique,
   password_hash text not null,
   role text not null check (role in ('photographer', 'athlete')),
+    tip_clabe text not null default '',
   created_at timestamptz not null default now()
 );
 
