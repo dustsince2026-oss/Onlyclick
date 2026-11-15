@@ -43,6 +43,7 @@ const server = http.createServer(async (req, res) => {
         'Content-Type': result.file.mimeType,
         'Content-Disposition': result.file.inline ? 'inline' : `attachment; filename="${result.file.filename}"`,
         'Content-Length': result.file.bytes.length,
+        'Cache-Control': 'public, max-age=86400, immutable',
       });
       return res.end(result.file.bytes);
     }
