@@ -67,8 +67,14 @@ const fileStore = {
 let supabaseClient = null;
 function supabase() {
   if (supabaseClient) return supabaseClient;
-  const url = (process.env.SUPABASE_URL || '').trim();
-  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  // Limpieza fuerte: la llave/URL pegadas pueden traer un salto de línea
+  // o un carácter invisible EN MEDIO del valor (no solo al final), y eso
+  // hace que fetch falle con "invalid header value". Solo quedan los
+  // caracteres ASCII imprimibles, que es todo lo que una llave o URL válida
+  // puede contener.
+  const clean = (v) => String(v || '').replace(/[^\x21-\x7E]/g, '');
+  const url = clean(process.env.SUPABASE_URL);
+  const key = clean(process.env.SUPABASE_SERVICE_ROLE_KEY);
   if (!url || !key) throw new Error('Falta SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY. Sin ellas, en Vercel los datos no se comparten ni persisten.');
   let createClient;
   try { ({ createClient } = require('@supabase/supabase-js')); } catch (_) {
