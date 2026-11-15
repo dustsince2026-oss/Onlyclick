@@ -72,8 +72,12 @@ function supabase() {
   // hace que fetch falle con "invalid header value". Solo quedan los
   // caracteres ASCII imprimibles, que es todo lo que una llave o URL válida
   // puede contener.
+  // Además la URL debe ser SOLO el proyecto (https://<ref>.supabase.co):
+  // si trae /rest/v1 o /auth/v1 al final, el cliente lo duplica y PostgREST
+  // responde "Invalid path specified in request URL" (PGRST125).
   const clean = (v) => String(v || '').replace(/[^\x21-\x7E]/g, '');
-  const url = clean(process.env.SUPABASE_URL);
+  const cleanUrl = (v) => clean(v).replace(/\/(rest|auth)\/v1\/?$/i, '').replace(/\/+$/, '');
+  const url = cleanUrl(process.env.SUPABASE_URL);
   const key = clean(process.env.SUPABASE_SERVICE_ROLE_KEY);
   if (!url || !key) throw new Error('Falta SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY. Sin ellas, en Vercel los datos no se comparten ni persisten.');
   let createClient;
