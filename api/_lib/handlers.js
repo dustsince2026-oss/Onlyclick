@@ -87,7 +87,7 @@ async function getEvent(store, user, eventId) {
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
   const photographer = await store.findUserById(ev.photographerId);
-  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '', tipName: photographer ? (photographer.name || '') : '' } };
+  return { status: 200, data: { event: ev, photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '', tipName: photographer ? (photographer.name || '') : '' } };
 }
 
 async function uploadPhoto(store, user, body) {
@@ -102,8 +102,14 @@ async function uploadPhoto(store, user, body) {
   const mimeType = String(body.mimeType || 'image/jpeg');
   if (!mimeType.startsWith('image/')) throw err(400, 'El archivo no es una imagen.');
   const bibs = Array.isArray(body.bibs) ? body.bibs.map(normBib).filter(Boolean) : (body.bibs ? [normBib(body.bibs)] : []);
-  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), fileBuffer });
-  return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined } } };
+  let thumbBuffer = null;
+  const thumbBase64 = String(body.thumbBase64 || '');
+  if (thumbBase64) {
+    const buf = Buffer.from(thumbBase64, 'base64');
+    if (buf.length > 0 && buf.length <= 1024 * 1024) thumbBuffer = buf;
+  }
+  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), fileBuffer, thumbBuffer });
+  return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined, thumbPath: undefined } } };
 }
 
 async function searchBib(store, query) {
@@ -114,7 +120,7 @@ async function searchBib(store, query) {
   const out = [];
   for (const ev of events) {
     for (const p of await store.listPhotos(ev.id)) {
-      if ((p.bibs || []).map(normBib).includes(bib)) out.push({ ...p, eventName: ev.name, freeMode: ev.freeMode, filePath: undefined, storagePath: undefined });
+      if ((p.bibs || []).map(normBib).includes(bib)) out.push({ ...p, eventName: ev.name, freeMode: ev.freeMode, filePath: undefined, storagePath: undefined, thumbPath: undefined });
     }
   }
   return { status: 200, data: { bib, photos: out } };
@@ -149,7 +155,7 @@ async function listPurchases(store, user) {
   for (const d of downloads) {
     const p = await store.getPhoto(d.photoId); if (!p) continue;
     const ev = await store.getEvent(d.eventId);
-    photos.push({ ...p, eventName: ev ? ev.name : '', amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined });
+    photos.push({ ...p, eventName: ev ? ev.name : '', amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
   }
   return { status: 200, data: { photos } };
 }
@@ -294,8 +300,15 @@ async function photoFile(store, user, photoId, req) {
     if (!user) throw err(401, 'Inicia sesión para descargar esta foto.');
     if (user.role !== 'photographer' && !(await store.hasDownload(user.id, photo.id))) throw err(403, 'Esta foto es de pago. Cómprala primero.');
   }
-  const bytes = await store.readPhotoBytes(photo);
-  return { status: 200, file: { bytes, mimeType: photo.mimeType, filename: `onlyclick-foto-${photo.id}.${(photo.filename || 'foto.jpg').split('.').pop() || 'jpg'}`, inline: req && req.query && req.query.inline === '1' } };
+  // Miniatura para la galería (?thumb=1): si la foto tiene miniatura se sirve esa; si no tiene, se cae a la foto completa sin error.
+  let bytes = null;
+  let mimeType = photo.mimeType;
+  if (req && req.query && req.query.thumb === '1') {
+    bytes = await store.readThumbBytes(photo);
+    if (bytes) mimeType = 'image/jpeg';
+  }
+  if (!bytes) bytes = await store.readPhotoBytes(photo);
+  return { status: 200, file: { bytes, mimeType: mimeType, filename: `onlyclick-foto-${photo.id}.${(photo.filename || 'foto.jpg').split('.').pop() || 'jpg'}`, inline: req && req.query && req.query.inline === '1' } };
 }
 
 async function dispatch(route, req) {
