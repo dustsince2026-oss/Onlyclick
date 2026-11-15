@@ -195,7 +195,7 @@ async function readBib(store, user, body) {
     mime = String(body.mimeType || 'image/jpeg');
   } else throw err(400, 'Falta la foto.');
   if (!buf || !buf.length || buf.length > 10 * 1024 * 1024) throw err(400, 'La foto está vacía o pesa más de 10 MB.');
-  const prompt = 'En esta foto de una carrera, lee el número de dorsal que lleva el corredor en el pecho. Responde solo con este JSON: {"bib": "90"} con el número tal como se ve, sin espacios. Si no se ve ningún dorsal claro, responde {"bib": null}. Si se ven varios dorsales, responde el más grande y claro.';
+  const prompt = 'En esta foto de una carrera, lee TODOS los números de dorsal que llevan los corredores en el pecho (puede haber varios corredores). Ignora por completo los números de los anuncios, pancartas, logos y fondo: solo cuentan los dorsales que lleva la gente puesta. Responde solo con este JSON: {"bibs": ["90", "301"]} con los números tal como se ven, sin espacios. Si no se ve ningún dorsal claro, responde {"bibs": []}.';
   const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -204,9 +204,13 @@ async function readBib(store, user, body) {
   if (!res.ok) return { status: 200, data: { ok: false, reason: 'ia-error' } };
   const json = await res.json();
   const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
-  let bib = null;
-  try { const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()); if (parsed && parsed.bib != null) bib = String(parsed.bib).replace(/\D/g, ''); } catch (_) { const m = text.match(/\d{1,4}/); if (m) bib = m[0]; }
-  return { status: 200, data: { ok: true, bib: bib || null, source: 'ia' } };
+  let bibs = [];
+  try {
+    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+    const raw = parsed && (Array.isArray(parsed.bibs) ? parsed.bibs : (parsed.bib != null ? [parsed.bib] : []));
+    bibs = [...new Set((raw || []).map(v => String(v).replace(/\D/g, '')).filter(v => v.length >= 1 && v.length <= 4))];
+  } catch (_) { const m = text.match(/\d{1,4}/); if (m) bibs = [m[0]]; }
+  return { status: 200, data: { ok: true, bibs, bib: bibs[0] || null, source: 'ia' } };
 }
 
 // Devuelve los bytes de la foto para la descarga real.
