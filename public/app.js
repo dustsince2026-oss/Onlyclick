@@ -289,6 +289,7 @@ async function loadPhotographer() {
     if (!files.length) return;
     $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.';
     return;
+  };
     
   // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
   // sin saturar la conexión ni la llave de IA.
