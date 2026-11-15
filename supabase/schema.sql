@@ -22,7 +22,7 @@ create table if not exists events (
   sport text not null default 'Carrera',
   event_date text not null default '',
   location text not null default '',
-  free_mode boolean not null default true,
+  free_mode boolean not null default true,   cover_path text not null default '',
   created_at timestamptz not null default now()
 );
 
