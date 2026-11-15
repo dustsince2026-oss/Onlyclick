@@ -92,6 +92,7 @@ function supabase() {
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, createdAt: r.created_at } : null; }
+function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), createdAt: r.created_at } : null; }
 
 const supabaseStore = {
   kind: 'supabase',
@@ -130,8 +131,8 @@ const supabaseStore = {
   },
   async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); await supabase().from('photos').delete().eq('id', id); },
   async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
-  async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return data || []; },
-  async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return data || []; },
+  async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
+  async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
   async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId); return (count || 0) > 0; },
   async readPhotoBytes(photo) {
     const { data, error } = await supabase().storage.from('photos').download(photo.storagePath);
