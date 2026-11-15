@@ -34,6 +34,7 @@ create table if not exists photos (
   bibs text[] not null default '{}',
   price numeric not null default 0,
   storage_path text not null,
+  thumb_path text not null default '',
   created_at timestamptz not null default now()
 );
 
