@@ -37,6 +37,7 @@ const fileStore = {
   async createUser(u) { const db = loadDb(); const row = { id: nextId(db, 'user'), createdAt: new Date().toISOString(), ...u }; db.users.push(row); saveDb(db); return row; },
   async findUserByEmail(email) { return loadDb().users.find(u => u.email.toLowerCase() === String(email).toLowerCase()) || null; },
   async findUserById(id) { return loadDb().users.find(u => u.id === Number(id)) || null; },
+  async setTipClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.tipClabe = clabe; saveDb(db); return u; },
   async listEvents() { return loadDb().events.slice().sort((a, b) => b.id - a.id).map(e => ({ ...e, photoCount: loadDb().photos.filter(p => p.eventId === e.id).length })); },
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
@@ -88,7 +89,7 @@ function supabase() {
   return supabaseClient;
 }
 
-function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, createdAt: r.created_at } : null; }
+function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, createdAt: r.created_at } : null; }
 
@@ -98,6 +99,7 @@ const supabaseStore = {
   async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async findUserByEmail(email) { const { data } = await supabase().from('users').select().ilike('email', email).maybeSingle(); return mapUser(data); },
   async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); },
+  async setTipClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ tip_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async listEvents() {
     const { data } = await supabase().from('events').select().order('id', { ascending: false });
     const out = [];
