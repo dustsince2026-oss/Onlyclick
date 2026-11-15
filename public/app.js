@@ -9,6 +9,11 @@ let mode = 'login'; // login | register
 let currentEvent = null;
 let currentPhotos = [];
 let lightboxPhoto = null;
+// Navegación con la flecha de atrás del teléfono (historial del navegador)
+let currentView = 'search';
+let suppressPush = false;
+let lightboxPushed = false;
+let lastBackAtHome = 0;
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -91,6 +96,9 @@ function bindPhotos(photos, freeMode) {
     $('#lbSave').textContent = freeMode ? 'Guardar gratis' : 'Guardar';
     $('#lbSave').dataset.save = p.id;
     $('#lightbox').style.display = 'flex';
+    lightboxPushed = true;
+    lastBackAtHome = 0;
+    pushNav({ view: currentView, lightbox: p.id });
   });
 }
 
@@ -118,11 +126,12 @@ async function loadEvents() {
       <span class="muted">${e.photoCount} foto(s) · ${e.freeMode ? 'Descarga gratis' : 'De pago'}</span><br>
       <button data-ev="${e.id}">Ver fotos</button>
     </div>`).join('') : '<p>No hay eventos todavía.</p>';
-  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => loadEventDetail(Number(b.dataset.ev)));
+  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => loadEventDetail(Number(b.dataset.ev), true));
 }
 
-async function loadEventDetail(eventId) {
+async function loadEventDetail(eventId, push) {
   currentEvent = eventId;
+  if (push) pushNav({ view: 'events', event: eventId });
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
   $('#eventDetail').innerHTML = `
@@ -347,15 +356,85 @@ async function loadPhotographer() {
 
 function showView(v) {
   ['search', 'events', 'myphotos', 'photographer'].forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
+  if (v !== currentView) { currentView = v; lastBackAtHome = 0; pushNav({ view: v }); }
   if (v === 'events') loadEvents();
   if (v === 'myphotos') loadMyPhotos();
   if (v === 'photographer') loadPhotographer();
 }
 
+// ---- Botón atrás del teléfono ----
+// Cada vista y cada foto ampliada deja un paso en el historial del
+// navegador, así la flecha de atrás regresa dentro de la app (cierra la
+// foto, vuelve a la lista de eventos, cambia de vista) en vez de sacarte
+// de la página. Desde el inicio, la primera vez avisa y la segunda
+// seguida sí sale.
+function pushNav(state) {
+  if (suppressPush) return;
+  try { history.pushState(state, ''); } catch (_) {}
+}
+function hideLightbox() {
+  $('#lightbox').style.display = 'none';
+  lightboxPhoto = null;
+  lightboxPushed = false;
+}
+function closeLightbox() {
+  if (lightboxPushed) { history.back(); return; }
+  hideLightbox();
+}
+function atHome() {
+  return currentView === 'search' && !lightboxPhoto && !(($('#eventDetail').innerHTML || '').trim());
+}
+function showExitToast() {
+  const t = document.createElement('div');
+  t.textContent = 'Pulsa atrás otra vez para salir de OnlyClick';
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2c3157;color:#fff;padding:10px 16px;border-radius:8px;z-index:99;font-size:15px';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+}
+function guardHomeExit() {
+  lastBackAtHome = Date.now();
+  try { history.pushState({ view: 'search', homeGuard: true }, ''); } catch (_) {}
+  showExitToast();
+}
+function applyNavState(st) {
+  // Muestra la vista del estado sin empujar otro paso al historial.
+  suppressPush = true;
+  try {
+    if (lightboxPhoto) hideLightbox();
+    if (st && st.event) { showView('events'); loadEventDetail(st.event); }
+    else if (st && st.view) {
+      if (st.view === 'events') $('#eventDetail').innerHTML = '';
+      showView(st.view);
+    } else { showView('search'); }
+  } finally { suppressPush = false; }
+}
+window.addEventListener('popstate', (e) => {
+  const st = e.state;
+  if (!st) {
+    if (atHome()) {
+      if (Date.now() - lastBackAtHome < 2500) return; // segunda vez: salir
+      guardHomeExit();
+      return;
+    }
+    applyNavState({ view: 'search' });
+    return;
+  }
+  if (st.homeGuard) {
+    if (atHome()) {
+      if (Date.now() - lastBackAtHome < 2500) { try { history.go(-2); } catch (_) {} return; }
+      guardHomeExit();
+      return;
+    }
+    applyNavState(st);
+    return;
+  }
+  applyNavState(st);
+});
+
 document.querySelectorAll('nav button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
 $('#bibSearch').onclick = searchBib;
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
-$('#lbClose').onclick = () => { $('#lightbox').style.display = 'none'; };
+$('#lbClose').onclick = () => closeLightbox();
 $('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, true); };
 $('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; };
 $('#authSubmit').onclick = async () => {
@@ -367,5 +446,9 @@ $('#authSubmit').onclick = async () => {
     saveToken(r.token); await refreshAuth(); showView('search');
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 };
+
+// Estado inicial en el historial para que la primera flecha de atrás no
+// saque de la app.
+try { history.replaceState({ view: 'search' }, ''); } catch (_) {}
 
 refreshAuth();
