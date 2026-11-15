@@ -19,7 +19,7 @@ const ROUTES = {
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
   'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
   'my-photos': 'my-photos', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
-  'set-tip': 'set-tip', 'event-delete': 'delete-event', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
+  'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
 };
 
 function readBody(req) {
@@ -46,7 +46,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(result.file.bytes);
     }
 
-    if (url.pathname.startsWith('/api/')) {
+    if (url.pathname === '/api/cover') { const result = await dispatch('cover-file', { body: {}, query, token: tokenFromReq({ ...req, query, headers: req.headers }) }); res.writeHead(200, { 'Content-Type': result.file.mimeType, 'Content-Disposition': 'inline', 'Content-Length': result.file.bytes.length, }); return res.end(result.file.bytes); } if (url.pathname.startsWith('/api/')) {
       const name = url.pathname.slice(5).replace(/\/$/, '');
       const route = ROUTES[name];
       if (!route) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'Ruta no encontrada.' })); }
