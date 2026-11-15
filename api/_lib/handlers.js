@@ -1,8 +1,9 @@
 'use strict';
 // Lógica de la app, independiente del transporte (Vercel o servidor local).
 // Cada función recibe { store, body, query, tokenUser } y devuelve { status, data }.
-// La búsqueda por dorsal usa SOLO los dorsales guardados en cada foto
-// (etiquetado manual al subir). No se promete lectura automática por IA.
+// La búsqueda por dorsal usa los dorsales guardados en cada foto. Esos dorsales
+// se leen automáticamente al subir (visión por IA con Gemini cuando hay llave,
+// si no OCR local en el teléfono) y se pueden corregir o releer después.
 const { getStore } = require('./store');
 const { hashPassword, verifyPassword, signToken, verifyToken, publicUser } = require('./auth');
 
@@ -174,6 +175,40 @@ async function deletePhoto(store, user, photoId) {
   return { status: 200, data: { ok: true } };
 }
 
+// Lee el dorsal de una foto con visión por IA (Gemini, capa gratuita).
+// Recibe { photoId } (foto ya subida) o { dataBase64, mimeType } (al subir).
+// Sin GEMINI_API_KEY devuelve { ok:false, reason:'no-key' } para que el
+// cliente use el OCR local. Siempre responde 200 salvo errores de permiso.
+async function readBib(store, user, body) {
+  requirePhotographer(user);
+  const key = (process.env.GEMINI_API_KEY || '').trim();
+  if (!key) return { status: 200, data: { ok: false, reason: 'no-key' } };
+  let buf, mime = 'image/jpeg';
+  if (body.photoId) {
+    const p = await store.getPhoto(body.photoId);
+    if (!p) throw err(404, 'Foto no encontrada.');
+    const ev = await store.getEvent(p.eventId);
+    if (!ev || ev.photographerId !== user.id) throw err(403, 'Esa foto no es tuya.');
+    buf = await store.readPhotoBytes(p); mime = p.mimeType || mime;
+  } else if (body.dataBase64) {
+    buf = Buffer.from(String(body.dataBase64), 'base64');
+    mime = String(body.mimeType || 'image/jpeg');
+  } else throw err(400, 'Falta la foto.');
+  if (!buf || !buf.length || buf.length > 10 * 1024 * 1024) throw err(400, 'La foto está vacía o pesa más de 10 MB.');
+  const prompt = 'En esta foto de una carrera, lee el número de dorsal que lleva el corredor en el pecho. Responde solo con este JSON: {"bib": "90"} con el número tal como se ve, sin espacios. Si no se ve ningún dorsal claro, responde {"bib": null}. Si se ven varios dorsales, responde el más grande y claro.';
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: buf.toString('base64') } }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }),
+  });
+  if (!res.ok) return { status: 200, data: { ok: false, reason: 'ia-error' } };
+  const json = await res.json();
+  const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
+  let bib = null;
+  try { const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()); if (parsed && parsed.bib != null) bib = String(parsed.bib).replace(/\D/g, ''); } catch (_) { const m = text.match(/\d{1,4}/); if (m) bib = m[0]; }
+  return { status: 200, data: { ok: true, bib: bib || null, source: 'ia' } };
+}
+
 // Devuelve los bytes de la foto para la descarga real.
 // Ruta de mismo origen: /api/photo?id=123 — en Chrome Android esto dispara
 // el gestor de descargas con Content-Disposition: attachment.
@@ -216,6 +251,7 @@ async function dispatch(route, req) {
     case 'set-free-mode': return setFreeMode(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
+    case 'read-bib': return readBib(store, user, b);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
     default: throw err(404, 'Ruta no encontrada: ' + route);
   }
