@@ -204,7 +204,7 @@ async function loadPhotographer() {
     <button id="upBtn">Subir fotos</button>
     <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
     <h3>Mis eventos</h3>
-    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     <h3>Descargas y ventas</h3>
@@ -359,7 +359,12 @@ async function loadPhotographer() {
     await api('/api/set-free-mode', { method: 'POST', body: JSON.stringify({ eventId: ev.id, freeMode: !ev.freeMode }) });
     loadPhotographer(); loadEvents();
   });
-  document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+  const ev = events.find(e => e.id === Number(b.dataset.del));
+  if (!confirm(`¿Borrar el evento "${ev.name}" con sus ${ev.photoCount || 0} foto(s)? Se libera el espacio, pero no se puede deshacer.`)) return;
+  try { const r = await api('/api/event-delete', { method: 'POST', body: JSON.stringify({ eventId: ev.id }) }); alert('Evento borrado. Se eliminaron ' + (r.photos || 0) + ' foto(s).'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+});
+document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.rev));
     const box = $('#revList');
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
