@@ -261,7 +261,11 @@ async function loadPhotographer() {
     try {
       const small = await downscale(dataUrl, 1600);
       const r = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ dataBase64: small.split(',')[1], mimeType: 'image/jpeg' }) });
-      if (r && r.ok) return { bib: r.bib || '', source: r.bib ? 'ia' : 'ia-none' };
+      if (r && r.ok) {
+        const list = Array.isArray(r.bibs) ? r.bibs : (r.bib ? [r.bib] : []);
+        const joined = list.join(', ');
+        return { bib: joined, source: joined ? 'ia' : 'ia-none' };
+      }
     } catch (_) { /* sin IA: cae al OCR local */ }
     try {
       const worker = await getOcrWorker();
@@ -339,7 +343,8 @@ async function loadPhotographer() {
         const st = document.getElementById('revState-' + id); if (st) st.textContent = 'Leyendo…';
         try {
           const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: id }) });
-          if (r2.ok && r2.bib) { document.getElementById('revBib-' + id).value = r2.bib; if (st) st.textContent = '✓ IA'; }
+          const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
+          if (r2.ok && list.length) { document.getElementById('revBib-' + id).value = list.join(', '); if (st) st.textContent = '✓ IA'; }
           else if (r2.ok) { if (st) st.textContent = 'La IA no vio dorsal claro'; }
           else { if (st) st.textContent = 'Sin llave de IA todavía'; }
         } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; }
