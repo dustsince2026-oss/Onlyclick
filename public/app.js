@@ -159,10 +159,11 @@ async function loadPhotographer() {
     <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
-    <input id="upBibs" placeholder="Dorsales de estas fotos, separados por coma (ej. 223, 426)">
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
+    <div id="upList"></div>
+    <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">Escribe el dorsal a mano al subir: la búsqueda usa ese número guardado.</p>
+    <p class="muted">La app lee el dorsal de cada foto sola: revisa el número y corrígelo si hace falta antes de subir.</p>
     <h3>Mis eventos</h3>
     ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <h3>Descargas y ventas</h3>
@@ -171,14 +172,82 @@ async function loadPhotographer() {
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
-  $('#upBtn').onclick = async () => {
-    const files = $('#upFiles').files; if (!files.length) return alert('Elige al menos una foto.');
-    const bibs = $('#upBibs').value.split(',').map(s => s.trim()).filter(Boolean);
-    for (const f of files) {
-      const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(f); });
-      await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId: Number($('#upEvent').value), filename: f.name, mimeType: f.type || 'image/jpeg', dataBase64: b64, bibs, price: Number($('#upPrice').value || 0) }) });
+  // --- Lectura automática de dorsales (OCR en el teléfono, gratis, sin cuentas) ---
+  let upRows = [];
+  let ocrWorker = null;
+  async function getOcrWorker() {
+    if (ocrWorker) return ocrWorker;
+    if (typeof Tesseract === 'undefined') throw new Error('No se pudo cargar el lector de dorsales. Revisa tu conexión e inténtalo de nuevo.');
+    ocrWorker = await Tesseract.createWorker('eng');
+    await ocrWorker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '11' });
+    return ocrWorker;
+  }
+  function downscale(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1200; const scale = Math.min(1, maxW / img.width);
+        const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+  function extractBibs(text) {
+    const nums = (text.match(/\d{1,4}/g) || []).map(s => s.replace(/^0+(?=\d)/, ''));
+    return [...new Set(nums)].filter(n => n.length > 0 && n !== '0');
+  }
+  function renderUpList() {
+    $('#upList').innerHTML = upRows.map((row, i) => `
+      <div class="row" style="align-items:center">
+        <span class="muted" style="flex:1;min-width:120px">${esc(row.file.name)}</span>
+        <input id="upBib-${i}" inputmode="numeric" placeholder="Dorsal" value="${esc(row.bibs)}" style="max-width:130px">
+        <span id="upState-${i}" class="muted"></span>
+      </div>`).join('');
+    document.querySelectorAll('#upList input[id^="upBib-"]').forEach(inp => inp.oninput = () => { upRows[Number(inp.id.split('-')[1])].bibs = inp.value; });
+  }
+  $('#upFiles').onchange = async () => {
+    const files = [...$('#upFiles').files];
+    upRows = files.map(f => ({ file: f, bibs: '', status: '' }));
+    renderUpList();
+    if (!files.length) return;
+    $('#upStatus').textContent = 'Leyendo dorsales… 0/' + files.length;
+    let worker;
+    try { worker = await getOcrWorker(); } catch (e) { $('#upStatus').textContent = e.message + ' Escribe los dorsales a mano en cada foto.'; return; }
+    for (let i = 0; i < upRows.length; i++) {
+      const row = upRows[i];
+      const stateEl = document.getElementById('upState-' + i);
+      if (stateEl) stateEl.textContent = 'Leyendo…';
+      try {
+        const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(row.file); });
+        const small = await downscale(dataUrl);
+        const { data } = await worker.recognize(small);
+        const found = extractBibs(data.text || '');
+        row.bibs = found.join(', ');
+        const inputEl = document.getElementById('upBib-' + i);
+        if (inputEl) inputEl.value = row.bibs;
+        if (stateEl) stateEl.textContent = found.length ? '✓ leído' : 'Sin número — escríbelo';
+      } catch (_) { if (stateEl) stateEl.textContent = 'Sin número — escríbelo'; }
+      $('#upStatus').textContent = 'Leyendo dorsales… ' + (i + 1) + '/' + files.length;
     }
-    alert(files.length + ' foto(s) subida(s).'); loadPhotographer();
+    $('#upStatus').textContent = 'Listo. Revisa los números y corrige los que hagan falta, luego pulsa Subir fotos.';
+  };
+  $('#upBtn').onclick = async () => {
+    const files = upRows.length ? upRows : [...$('#upFiles').files].map(f => ({ file: f, bibs: '' }));
+    if (!files.length) return alert('Elige al menos una foto.');
+    const eventId = Number($('#upEvent').value);
+    if (!eventId) return alert('Primero crea un evento.');
+    let n = 0;
+    for (const row of files) {
+      const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(row.file); });
+      const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
+      await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: row.file.type || 'image/jpeg', dataBase64: b64, bibs, price: Number($('#upPrice').value || 0) }) });
+      n++;
+      $('#upStatus').textContent = 'Subiendo… ' + n + '/' + files.length;
+    }
+    alert(n + ' foto(s) subida(s).'); loadPhotographer();
   };
   document.querySelectorAll('[data-free]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.free));
