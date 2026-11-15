@@ -181,7 +181,9 @@ async function deletePhoto(store, user, photoId) {
 // cliente use el OCR local. Siempre responde 200 salvo errores de permiso.
 async function readBib(store, user, body) {
   requirePhotographer(user);
-  const key = (process.env.GEMINI_API_KEY || '').trim();
+  // La llave se pega desde el teléfono y puede traer caracteres invisibles
+  // (lo mismo que pasó con la llave de Supabase): se limpia igual.
+  const key = (process.env.GEMINI_API_KEY || '').replace(/[^\x20-\x7E]/g, '').trim();
   if (!key) return { status: 200, data: { ok: false, reason: 'no-key' } };
   let buf, mime = 'image/jpeg';
   if (body.photoId) {
@@ -201,7 +203,11 @@ async function readBib(store, user, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: buf.toString('base64') } }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }),
   });
-  if (!res.ok) return { status: 200, data: { ok: false, reason: 'ia-error' } };
+  if (!res.ok) {
+    let detail = '';
+    try { const ej = await res.json(); detail = String((ej.error && ej.error.message) || '').slice(0, 120); } catch (_) {}
+    return { status: 200, data: { ok: false, reason: 'ia-error', status: res.status, detail } };
+  }
   const json = await res.json();
   const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
   let bibs = [];

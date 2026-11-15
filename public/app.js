@@ -346,7 +346,8 @@ async function loadPhotographer() {
           const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
           if (r2.ok && list.length) { document.getElementById('revBib-' + id).value = list.join(', '); if (st) st.textContent = '✓ IA'; }
           else if (r2.ok) { if (st) st.textContent = 'La IA no vio dorsal claro'; }
-          else { if (st) st.textContent = 'Sin llave de IA todavía'; }
+          else if (r2.reason === 'no-key') { if (st) st.textContent = 'Sin llave de IA todavía'; }
+          else if (st) st.textContent = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : '') + (r2.detail ? ': ' + r2.detail : '');
         } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; }
       });
       box.querySelectorAll('[data-savebib]').forEach(sb => sb.onclick = async () => {
