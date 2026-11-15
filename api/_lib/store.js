@@ -43,7 +43,7 @@ const fileStore = {
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
-  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
+  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
   async getPhoto(id) { return loadDb().photos.find(p => p.id === Number(id)) || null; },
   async createPhoto(p) {
@@ -53,16 +53,25 @@ const fileStore = {
     const safe = String(p.filename || 'foto.jpg').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = path.join(UPLOAD_DIR, `${id}-${safe}`);
     fs.writeFileSync(filePath, p.fileBuffer);
-    const row = { id, eventId: p.eventId, filename: p.filename, mimeType: p.mimeType, bibs: p.bibs || [], price: p.price || 0, filePath, createdAt: new Date().toISOString() };
+    let thumbPath = '';
+    if (p.thumbBuffer && p.thumbBuffer.length) {
+      thumbPath = path.join(UPLOAD_DIR, `${id}-thumb.jpg`);
+      fs.writeFileSync(thumbPath, p.thumbBuffer);
+    }
+    const row = { id, eventId: p.eventId, filename: p.filename, mimeType: p.mimeType, bibs: p.bibs || [], price: p.price || 0, filePath, thumbPath, createdAt: new Date().toISOString() };
     db.photos.push(row); saveDb(db); return row;
   },
   async updatePhoto(id, patch) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; Object.assign(p, patch); saveDb(db); return p; },
-  async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
+  async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
   async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
   async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId)); },
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
   async hasDownload(userId, photoId) { return loadDb().downloads.some(d => d.userId === Number(userId) && d.photoId === Number(photoId)); },
   async readPhotoBytes(photo) { return fs.readFileSync(photo.filePath); },
+  async readThumbBytes(photo) {
+    if (!photo || !photo.thumbPath) return null;
+    try { return fs.readFileSync(photo.thumbPath); } catch (_) { return null; }
+  },
 };
 
 // ---------------- Adaptador Supabase ----------------
@@ -92,7 +101,7 @@ function supabase() {
 
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
-function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, createdAt: r.created_at } : null; }
+function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, thumbPath: r.thumb_path || '', createdAt: r.created_at } : null; }
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), createdAt: r.created_at } : null; }
 
 const supabaseStore = {
@@ -132,13 +141,24 @@ const supabaseStore = {
     const { error: upErr } = await supabase().storage.from('photos').upload(storagePath, p.fileBuffer, { contentType: p.mimeType, upsert: true });
     if (upErr) throw new Error('No se pudo subir la foto al bucket: ' + upErr.message);
     const { data, error } = await supabase().from('photos').insert({ event_id: p.eventId, filename: p.filename, mime_type: p.mimeType, bibs: p.bibs || [], price: p.price || 0, storage_path: storagePath }).select().single();
-    if (error) throw new Error(error.message); return mapPhoto(data);
+    if (error) throw new Error(error.message);
+    // Miniatura opcional para que la galería cargue rápido: se sube a thumbs/ DESPUÉS de crear la fila.
+    if (p.thumbBuffer && p.thumbBuffer.length) {
+      const thumbPath = 'thumbs/' + data.id + '-' + crypto.randomBytes(6).toString('hex') + '.jpg';
+      const { error: thErr } = await supabase().storage.from('photos').upload(thumbPath, p.thumbBuffer, { contentType: 'image/jpeg', upsert: true });
+      if (!thErr) {
+        const { error: updErr } = await supabase().from('photos').update({ thumb_path: thumbPath }).eq('id', data.id);
+        if (!updErr) return mapPhoto({ ...data, thumb_path: thumbPath });
+        try { await supabase().storage.from('photos').remove([thumbPath]); } catch (_) {}
+      }
+    }
+    return mapPhoto(data);
   },
   async updatePhoto(id, patch) {
     const p = {}; if (patch.bibs !== undefined) p.bibs = patch.bibs; if (patch.price !== undefined) p.price = patch.price;
     const { data } = await supabase().from('photos').update(p).eq('id', id).select().single(); return mapPhoto(data);
   },
-  async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); await supabase().from('photos').delete().eq('id', id); },
+  async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} } await supabase().from('photos').delete().eq('id', id); },
   async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
   async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
   async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
@@ -148,6 +168,12 @@ const supabaseStore = {
     if (error) throw new Error('No se pudo leer la foto: ' + error.message);
     return Buffer.from(await data.arrayBuffer());
   },
+    async readThumbBytes(photo) {
+      if (!photo || !photo.thumbPath) return null;
+      const { data, error } = await supabase().storage.from('photos').download(photo.thumbPath);
+      if (error || !data) return null;
+      return Buffer.from(await data.arrayBuffer());
+    },
 };
 
 function getStore() {
