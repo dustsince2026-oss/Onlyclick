@@ -168,12 +168,11 @@ async function loadPhotographer() {
     <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
-    <label style="display:block;margin:6px 0"><input type="checkbox" id="upReadAi" checked> Leer dorsales con IA al elegir las fotos (lento con muchas fotos; quítalo para subir rápido y leerlos en lote después)</label>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">Con pocas fotos, la app lee el dorsal sola con IA. Con muchas fotos, quita la casilla de arriba para subir rápido y luego usa "Leer dorsales en lote" en Revisar dorsales.</p>
+    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
     <h3>Mis eventos</h3>
     ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
@@ -288,24 +287,9 @@ async function loadPhotographer() {
     upRows = files.map(f => ({ file: f, bibs: '', status: '' }));
     renderUpList();
     if (!files.length) return;
-    if (!document.getElementById('upReadAi').checked) { $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.'; return; }
-    $('#upStatus').textContent = 'Leyendo dorsales… 0/' + files.length;
-    for (let i = 0; i < upRows.length; i++) {
-      const row = upRows[i];
-      const stateEl = document.getElementById('upState-' + i);
-      if (stateEl) stateEl.textContent = 'Leyendo…';
-      try {
-        const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(row.file); });
-        const found = await readBibAuto(dataUrl);
-        row.bibs = found.bib;
-        const inputEl = document.getElementById('upBib-' + i);
-        if (inputEl) inputEl.value = row.bibs;
-        if (stateEl) stateEl.textContent = found.source === 'ia' ? '✓ IA' : found.source === 'ocr' ? '✓ OCR' : found.source === 'ia-none' ? 'La IA no vio dorsal' : 'Sin número — escríbelo';
-      } catch (_) { if (stateEl) stateEl.textContent = 'Sin número — escríbelo'; }
-      $('#upStatus').textContent = 'Leyendo dorsales… ' + (i + 1) + '/' + files.length;
-    }
-    $('#upStatus').textContent = 'Listo. Revisa los números y corrige los que hagan falta, luego pulsa Subir fotos.';
-  };
+    $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.';
+    return;
+    
   // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
   // sin saturar la conexión ni la llave de IA.
   async function runPool(items, n, fn) {
