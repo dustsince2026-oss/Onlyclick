@@ -42,7 +42,7 @@ const fileStore = {
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
-  async deleteEvent(id) { const db = loadDb(); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
+  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
   async getPhoto(id) { return loadDb().photos.find(p => p.id === Number(id)) || null; },
   async createPhoto(p) {
@@ -90,7 +90,7 @@ function supabase() {
 }
 
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', createdAt: r.created_at } : null; }
-function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, createdAt: r.created_at, photoCount } : null; }
+function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, createdAt: r.created_at } : null; }
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), createdAt: r.created_at } : null; }
 
@@ -111,12 +111,12 @@ const supabaseStore = {
   async createEvent(e) { const { data, error } = await supabase().from('events').insert({ photographer_id: e.photographerId, name: e.name, sport: e.sport, event_date: e.eventDate, location: e.location, free_mode: e.freeMode !== false }).select().single(); if (error) throw new Error(error.message); return mapEvent(data, 0); },
   async updateEvent(id, patch) {
     const p = {}; if (patch.freeMode !== undefined) p.free_mode = patch.freeMode;
-    if (patch.name !== undefined) p.name = patch.name;
-    const { data } = await supabase().from('events').update(p).eq('id', id).select().single(); return mapEvent(data);
+    if (patch.name !== undefined) p.name = patch.name;     if (patch.coverPath !== undefined) p.cover_path = patch.coverPath;
+    const { data } = await supabase().from('events').update(p).eq('id', id).select().single(); return mapEvent(data);   },   async setEventCover(id, f) {     const ev = await this.getEvent(id);     const ext = f.mimeType === 'image/png' ? 'png' : 'jpg';     const coverPath = `covers/${id}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`;     const { error: upErr } = await supabase().storage.from('photos').upload(coverPath, f.fileBuffer, { contentType: f.mimeType, upsert: true });     if (upErr) throw new Error('No se pudo subir la portada: ' + upErr.message);     if (ev && ev.coverPath) { try { await supabase().storage.from('photos').remove([ev.coverPath]); } catch (_) {} }     await supabase().from('events').update({ cover_path: coverPath }).eq('id', id);     return coverPath;   },   async getEventCover(id) {     const ev = await this.getEvent(id);     if (!ev || !ev.coverPath) return null;     const { data, error } = await supabase().storage.from('photos').download(ev.coverPath);     if (error) return null;     return { bytes: Buffer.from(await data.arrayBuffer()), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' };
   },
   async deleteEvent(id) {
-    const photos = await this.listPhotos(id);
-    const paths = photos.map(p => p.storagePath).filter(Boolean);
+    const ev = await this.getEvent(id);     const photos = await this.listPhotos(id);
+    const paths = photos.map(p => p.storagePath).filter(Boolean);     if (ev && ev.coverPath) paths.push(ev.coverPath);
     for (let i = 0; i < paths.length; i += 100) { await supabase().storage.from('photos').remove(paths.slice(i, i + 100)); }
     await supabase().from('photos').delete().eq('event_id', id);
     await supabase().from('events').delete().eq('id', id);
