@@ -199,26 +199,35 @@ async function readBib(store, user, body) {
   if (!buf || !buf.length || buf.length > 10 * 1024 * 1024) throw err(400, 'La foto está vacía o pesa más de 10 MB.');
   const prompt = 'En esta foto de una carrera, lee TODOS los números de dorsal que llevan los corredores en el pecho (puede haber varios corredores). Ignora por completo los números de los anuncios, pancartas, logos y fondo: solo cuentan los dorsales que lleva la gente puesta. Responde solo con este JSON: {"bibs": ["90", "301"]} con los números tal como se ven, sin espacios. Si no se ve ningún dorsal claro, responde {"bibs": []}.';
   // gemini-2.0-flash fue apagado por Google el 1 jun 2026; el reemplazo
-  // oficial es gemini-3.8-flash (gratis en el plan free).
-  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=' + encodeURIComponent(key), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: buf.toString('base64') } }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }),
-  });
-  if (!res.ok) {
+  // oficial es gemini-3.8-flash (gratis en el plan free). Pero el 3.8 es el
+  // modelo nuevo y más saturado: a veces responde 503 por alta demanda.
+  // Se prueban en orden y se usa el primero que responda.
+  const MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+  let lastErr = null;
+  for (const model of MODELS) {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: buf.toString('base64') } }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
+      let bibs = [];
+      try {
+        const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+        const raw = parsed && (Array.isArray(parsed.bibs) ? parsed.bibs : (parsed.bib != null ? [parsed.bib] : []));
+        bibs = [...new Set((raw || []).map(v => String(v).replace(/\D/g, '')).filter(v => v.length >= 1 && v.length <= 4))];
+      } catch (_) { const m = text.match(/\d{1,4}/); if (m) bibs = [m[0]]; }
+      return { status: 200, data: { ok: true, bibs, bib: bibs[0] || null, source: 'ia' } };
+    }
     let detail = '';
     try { const ej = await res.json(); detail = String((ej.error && ej.error.message) || '').slice(0, 120); } catch (_) {}
-    return { status: 200, data: { ok: false, reason: 'ia-error', status: res.status, detail } };
+    lastErr = { status: res.status, detail };
+    // Solo se reintenta con otro modelo si es saturación (503) o límite (429).
+    if (res.status !== 503 && res.status !== 429) break;
   }
-  const json = await res.json();
-  const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
-  let bibs = [];
-  try {
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    const raw = parsed && (Array.isArray(parsed.bibs) ? parsed.bibs : (parsed.bib != null ? [parsed.bib] : []));
-    bibs = [...new Set((raw || []).map(v => String(v).replace(/\D/g, '')).filter(v => v.length >= 1 && v.length <= 4))];
-  } catch (_) { const m = text.match(/\d{1,4}/); if (m) bibs = [m[0]]; }
-  return { status: 200, data: { ok: true, bibs, bib: bibs[0] || null, source: 'ia' } };
+  return { status: 200, data: { ok: false, reason: 'ia-error', status: lastErr.status, detail: lastErr.detail } };
 }
 
 // Devuelve los bytes de la foto para la descarga real.
