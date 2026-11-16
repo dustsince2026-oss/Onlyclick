@@ -279,7 +279,7 @@ async function refreshAuth() {
   try {
     const s = await api('/api/auth-status');
     me = s.user;
-    $('#photoTakenNote').textContent = 'Si te registras como fotógrafo, Orlan debe aprobar tu cuenta antes de que puedas crear eventos.';
+    $('#photoTakenNote').textContent = 'Si te registras como fotógrafo, ONLYCLICK debe aprobar tu cuenta antes de que puedas crear eventos.';
     const sessionEl = $('#session');
     if (me && !forceResetView) {
       $('#auth').classList.add('hidden');
@@ -398,7 +398,11 @@ async function savePhoto(photo, freeMode, priceMxn) {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
     btns.forEach(b => { b.textContent = isInAppBrowser() ? 'Revisa Descargas — si no está, usa "Abrir la foto"' : '✓ Guardar iniciada — busca la foto en Descargas'; });
-    if (freeMode && currentTipClabe) showTipModal(currentTipClabe, currentTipName);
+    // La propina va al fotógrafo DE ESTA FOTO (en un evento compartido
+    // cada quien recibe la suya); si la foto no trae, cae al evento.
+    const tipC = photo.tipClabe || currentTipClabe;
+    const tipN = photo.tipName || currentTipName;
+    if (freeMode && tipC) showTipModal(tipC, tipN);
     removeFromCart(photo.id); // si estaba en el carrito, ya es tuya
     setTimeout(() => loadEventDetail(currentEvent), 1500);
   } catch (e) {
@@ -636,6 +640,7 @@ function photoCard(p) {
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
+      ${p.photographerName ? `<span class="muted">Foto de ${esc(p.photographerName)}</span>` : ''}
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
     </div></div>`;
@@ -660,7 +665,7 @@ function bindPhotos(photos) {
     lightboxFreeMode = freeMode;
     lightboxPriceMxn = price;
     $('#lbImg').src = `/api/photo?id=${p.id}&inline=1`;
-    $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}`;
+    $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
     $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
     $('#lbSave').dataset.save = p.id;
     // En el navegador de Facebook/Instagram: botón para abrir la foto
@@ -715,6 +720,7 @@ function eventCard(e) {
     <div class="event-body">
       <strong>${esc(e.name)}</strong>
       ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
+      ${e.isShared ? `<span class="badge">Evento compartido · ${e.participantsCount || 2} fotógrafos</span>` : ''}
       <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
       <span class="event-meta">${e.photoCount || 0} fotos · ${priceTxt}</span>
       <span class="event-cta">Ver fotos →</span>
@@ -773,21 +779,34 @@ async function loadEventDetail(eventId, push) {
   currentPhotos = r.photos;
   currentTipClabe = r.tipClabe || '';
   currentTipName = r.tipName || '';
-  r.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
+  // El precio por foto ya viene del servidor (cada fotógrafo el suyo):
+  // aquí solo se marca si el evento es gratis.
+  r.photos.forEach(p => { p.freeMode = r.event.freeMode; });
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
+    ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
+    ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id ? (r.isParticipant
+      ? `<p class="ok">Ya participas en este evento · Tu precio: $${r.myPrice || r.event.priceMxn} MXN por foto</p>`
+      : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="1" max="5000" value="20" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div><p id="joinStatus" class="muted"></p></div>`) : ''}
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   trackView('event', null, eventId);
+  const joinBtn = $('#joinBtn');
+  if (joinBtn) joinBtn.onclick = async () => {
+    try {
+      await api('/api/join-event', { method: 'POST', body: JSON.stringify({ eventId, priceMxn: Number($('#joinPrice').value || 20) }) });
+      loadEventDetail(eventId);
+    } catch (e) { const st = $('#joinStatus'); if (st) st.textContent = e.message; }
+  };
   $('#evBibBtn').onclick = async () => {
     const bib = $('#evBib').value.trim(); if (!bib) return;
     const s = await api('/api/search?bib=' + encodeURIComponent(bib) + '&eventId=' + eventId);
     currentPhotos = s.photos;
-    s.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
+    s.photos.forEach(p => { p.freeMode = r.event.freeMode; });
     $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos con ese dorsal en este evento.</p>';
     bindPhotos(s.photos);
     trackView('search', null, eventId, bib);
@@ -828,6 +847,9 @@ async function loadPhotographer() {
   const events = (await api('/api/events')).events;
   // Cada fotógrafo ve solo SUS eventos en el panel; el dueño ve todos.
   const myEvents = me.isOwner ? events : events.filter(e => e.photographerId === me.id);
+  // Eventos compartidos en los que participo (no los creé): también puedo
+  // subir mis fotos ahí, a mi precio.
+  const joinedEvents = me.isOwner ? [] : events.filter(e => e.photographerId !== me.id && e.joined);
   const approved = me.isOwner || me.approved !== false;
   const sales = await api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }));
   const stats = await api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }));
@@ -841,9 +863,9 @@ async function loadPhotographer() {
   // ceros hasta que venda).
   if (!approved) {
     box.innerHTML = `
-    <p class="error">Tu cuenta de fotógrafo está pendiente de aprobación por Orlan. En cuanto te apruebe podrás crear eventos y subir fotos.</p>
+    <p class="error">Tu cuenta de fotógrafo está pendiente de aprobación por ONLYCLICK. En cuanto te aprueben podrás crear eventos y subir fotos.</p>
     <h3>CLABE para recibir tus pagos</h3>
-    <p class="muted">Cuando vendas fotos, Orlan te manda tu parte a esta CLABE cada 72 horas. Son 18 dígitos.</p>
+    <p class="muted">Cuando vendas fotos, ONLYCLICK te manda tu parte a esta CLABE cada 72 horas. Son 18 dígitos.</p>
     <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
     <p id="payStatus" class="muted"></p>
     <h3>Mis ganancias</h3>
@@ -885,7 +907,7 @@ async function loadPhotographer() {
   if (!panelTabs.some(t => t[0] === panelTab)) panelTab = 'ventas';
   // "Mis ganancias" es el mismo bloque para todos: el dueño lo ve dentro
   // de la pestaña Fotógrafos y los demás fotógrafos en su propia pestaña.
-  const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión Orlan (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">Orlan te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y Orlan se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
+  const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión ONLYCLICK (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
   box.innerHTML = `
     ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
     <!-- Accesos rápidos: lo más usado del panel, a la vista desde que se abre -->
@@ -902,16 +924,20 @@ async function loadPhotographer() {
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
     <button id="evCreate" class="primary">Crear evento</button>
+    <h3>Nombre que se muestra en tus fotos</h3>
+    <p class="muted">Así sale en cada foto: "Foto de …". Puede ser tu primer nombre, un apodo o el nombre de tu marca o página. Si lo dejas vacío, sale tu primer nombre.</p>
+    <div class="row"><input id="displayName" placeholder="Ej. Only Dust" value="${esc(me.displayName || '')}" maxlength="40" style="flex:1"><button id="displaySave" class="primary">Guardar nombre</button></div>
+    <p id="displayStatus" class="muted"></p>
     <h3>Cooperación voluntaria</h3>
     <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
     <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave" class="primary">Guardar CLABE</button></div>
     <p id="tipStatus" class="muted"></p>
     <h3>CLABE para recibir tus pagos</h3>
-    <p class="muted">Cuando vendas fotos, Orlan te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
+    <p class="muted">Cuando vendas fotos, ONLYCLICK te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
     <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
     <p id="payStatus" class="muted"></p>
     <h3 id="secSubirFotos">Subir fotos</h3>
-    <select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
+    <select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}${joinedEvents.map(e => `<option value="${e.id}">${esc(e.name)} · participas</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
@@ -927,6 +953,7 @@ async function loadPhotographer() {
     <h3 id="secMisEventos">Mis eventos</h3>
     <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
     <div data-pg-controls="events"></div>
+    ${joinedEvents.length ? `<h3>Eventos en los que participo</h3><p class="muted">Eventos de otros fotógrafos donde subes tus fotos a tu precio. El creador del evento maneja si es gratis o de pago.</p><div data-pg="joined">${joinedEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></p>`).join('')}</div><div data-pg-controls="joined"></div>` : ''}
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     </section>
@@ -977,6 +1004,9 @@ async function loadPhotographer() {
     </section>`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+  };
+  $('#displaySave').onclick = async () => {
+    try { const r = await api('/api/set-display-name', { method: 'POST', body: JSON.stringify({ displayName: $('#displayName').value }) }); me.displayName = r.displayName || ''; const shown = me.displayName || (me.name || '').split(' ')[0]; $('#displayStatus').textContent = 'Nombre guardado: tus fotos dirán "Foto de ' + shown + '".'; } catch (e) { $('#displayStatus').textContent = e.message; }
   };
   $('#tipSave').onclick = async () => {
     try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
@@ -1210,6 +1240,16 @@ async function loadPhotographer() {
     const id = Number(b.dataset.saveprice);
     const inp = document.querySelector(`[data-price="${id}"]`);
     try { await api('/api/set-event-price', { method: 'POST', body: JSON.stringify({ eventId: id, priceMxn: Number(inp.value) }) }); alert('Precio guardado: $' + inp.value + ' MXN por foto.'); loadPhotographer(); } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-savemyprice]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.savemyprice);
+    const inp = document.querySelector(`[data-myprice="${id}"]`);
+    try { await api('/api/set-my-event-price', { method: 'POST', body: JSON.stringify({ eventId: id, priceMxn: Number(inp.value) }) }); alert('Tu precio en este evento: $' + inp.value + ' MXN por foto.'); loadPhotographer(); } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-leave]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.leave);
+    if (!confirm('¿Salir de este evento? Ya no podrás subir fotos ahí.')) return;
+    try { await api('/api/leave-event', { method: 'POST', body: JSON.stringify({ eventId: id }) }); alert('Saliste del evento.'); loadPhotographer(); } catch (e) { alert(e.message); }
   });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.del));

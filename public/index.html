@@ -248,7 +248,7 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'No se pudo enviar la solicitud.');
         document.getElementById('photoForm').reset();
-        sent.textContent = 'Solicitud enviada. Orlan la revisará y te mandará el link para crear tu cuenta.';
+        sent.textContent = 'Solicitud enviada. ONLYCLICK la revisará y te mandará el link para crear tu cuenta.';
         sent.style.display = '';
       } catch (ex) {
         err.textContent = ex.message;
@@ -289,11 +289,11 @@
       <input id="authPass" type="password" autocomplete="current-password" placeholder="Contraseña (mín. 6 caracteres)">
       <select id="authRole" style="display:none">
         <option value="athlete">Soy deportista / corredor</option>
-        <option value="photographer">Soy fotógrafo (Orlan debe aprobar tu cuenta)</option>
+        <option value="photographer">Soy fotógrafo (ONLYCLICK debe aprobar tu cuenta)</option>
       </select>
       <div id="photogNotice" style="display:none;border:1px solid #d4af37;border-radius:10px;padding:12px;margin:10px 0;text-align:left">
         <p style="margin:0 0 8px"><strong>¿Quieres ser fotógrafo en OnlyClick?</strong></p>
-        <p class="muted" style="margin:0 0 10px">Primero llena el formulario desde el botón <strong>&ldquo;Soy fotógrafo, quiero unirme a OnlyClick&rdquo;</strong> en el inicio. Ahí Orlan revisa tu información y te manda el link para crear tu cuenta ya aprobada.</p>
+        <p class="muted" style="margin:0 0 10px">Primero llena el formulario desde el botón <strong>&ldquo;Soy fotógrafo, quiero unirme a OnlyClick&rdquo;</strong> en el inicio. Ahí ONLYCLICK revisa tu información y te manda el link para crear tu cuenta ya aprobada.</p>
         <button type="button" class="primary" onclick="goToPhotographerForm()">Ir al formulario</button>
       </div>
       <p class="muted" id="photoTakenNote"></p>
