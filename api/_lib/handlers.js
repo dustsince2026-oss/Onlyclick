@@ -161,7 +161,8 @@ async function listEvents(store, user) {
   // el detalle: "Fotos de <nombre>"). La búsqueda y el inicio son
   // globales: se ven los eventos de todos los fotógrafos.
   const names = new Map();
-  for (const ph of await store.listPhotographers()) names.set(ph.id, displayNameFor(ph));
+  const ownerIds = new Set();
+  for (const ph of await store.listPhotographers()) { names.set(ph.id, displayNameFor(ph)); if (ph.isOwner) ownerIds.add(ph.id); }
   const out = [];
   for (const e of events) {
     const parts = await store.listParticipants(e.id).catch(() => []);
@@ -174,6 +175,9 @@ async function listEvents(store, user) {
       // participante y el evento no es compartido.
       participantsCount: Math.max(parts.length, 1),
       isShared: parts.length > 1,
+      // Evento oficial: lo creó el dueño (OnlyClick). Los eventos de otros
+      // fotógrafos no llevan la insignia.
+      isOfficial: ownerIds.has(e.photographerId),
       joined: isCreator || !!myPart,
       myPrice: myPart ? Number(myPart.priceMxn) : (isCreator ? eventPrice(e) : undefined),
     });
@@ -232,6 +236,7 @@ async function getEvent(store, user, eventId) {
       return { photographerId: Number(pt.photographerId), displayName: displayNameFor(u), photoCount: photos.filter(p => photoOwnerId(p, ev) === Number(pt.photographerId)).length, priceMxn: Number(pt.priceMxn) };
     }),
     isShared: parts.length > 1,
+    isOfficial: photographer ? !!photographer.isOwner : false,
     isParticipant: isCreator || !!myPart,
     myPrice: myPart ? Number(myPart.priceMxn) : (isCreator ? eventPrice(ev) : null),
   } };
