@@ -38,4 +38,18 @@ async function sendSaleEmail({ to, subject, text, html }) {
   });
 }
 
-module.exports = { sendResetEmail, sendSaleEmail };
+// Envío genérico (avisos: solicitudes, ventas, etc.). Las funciones con
+// nombre propio (sendResetEmail, sendSaleEmail) lo usan por dentro.
+async function sendEmail({ to, subject, text, html }) {
+  const transporter = getTransporter();
+  const from = (process.env.GMAIL_USER || '').trim();
+  await transporter.sendMail({
+    from: `"OnlyClick" <${from}>`,
+    to,
+    subject,
+    text,
+    html: html || String(text || '').replace(/\n/g, '<br>'),
+  });
+}
+
+module.exports = { sendResetEmail, sendSaleEmail, sendEmail };

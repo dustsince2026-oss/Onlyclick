@@ -7,7 +7,7 @@
 const crypto = require('crypto');
 const { getStore } = require('./store');
 const { hashPassword, verifyPassword, signToken, verifyToken, signResetToken, verifyResetToken, publicUser } = require('./auth');
-const { sendResetEmail, sendSaleEmail } = require('./mailer');
+const { sendResetEmail, sendSaleEmail, sendEmail } = require('./mailer');
 // Clip se usa por objeto de módulo (clip.getCheckout) y no desestructurado,
 // para que los tests puedan cambiar el simulado a mitad de la corrida.
 const clip = require('./clip');
@@ -1242,6 +1242,40 @@ async function submitApplication(store, body) {
     clabe: String(body.clabe || '').trim(),
     message: String(body.message || '').trim(),
   });
+  // Aviso al dueño por correo: hay una solicitud nueva por revisar en su
+  // panel (Fotógrafos > Solicitudes). Si el correo falla o tarda, la
+  // solicitud igual queda guardada: el aviso nunca la rompe.
+  try {
+    const owner = (await store.listPhotographers()).find(u => u.isOwner) || null;
+    const ownerEmail = owner ? owner.email : (process.env.GMAIL_USER || '').trim();
+    if (ownerEmail) {
+      const camera = String(body.camera || '').trim();
+      const specialty = String(body.specialty || '').trim();
+      const availability = String(body.availability || '').trim();
+      const clabe = String(body.clabe || '').trim();
+      const message = String(body.message || '').trim();
+      const detail = [
+        `Nombre: ${name}`,
+        `Ciudad: ${city}`,
+        `WhatsApp: ${phone}`,
+        `Eventos: ${events}`,
+        camera ? `Cámara: ${camera}` : '',
+        `Trabajo: ${sampleLink}`,
+        specialty ? `Especialidad: ${specialty}` : '',
+        availability ? `Disponibilidad: ${availability}` : '',
+        clabe ? `CLABE: ${clabe}` : '',
+        message ? `Mensaje: ${message}` : '',
+      ].filter(Boolean).join('\n');
+      await Promise.race([
+        sendEmail({
+          to: ownerEmail,
+          subject: `Nueva solicitud de fotógrafo: ${name} (${city})`,
+          text: `Hola,\n\n${name} quiere unirse como fotógrafo a OnlyClick:\n\n${detail}\n\nRevísala en tu panel: https://onlyclick-zeta.vercel.app/ (Cuenta → Panel fotógrafo → Fotógrafos → Solicitudes).`,
+        }),
+        new Promise(r => setTimeout(r, 4000)),
+      ]);
+    }
+  } catch (_) { /* el aviso nunca rompe la solicitud */ }
   return { status: 201, data: { ok: true, id: app.id } };
 }
 
