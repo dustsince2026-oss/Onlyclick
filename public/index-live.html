@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0b0b0e">
+<title>OnlyClick — Encuentra tus fotos por dorsal</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #0b0b0e; color: #f5f5f2; padding-bottom: 140px; }
+  @media (min-width: 720px) { body { padding-bottom: 0; } }
+  a { color: #d4af37; }
+  /* ---------- Header: logo a la izquierda, solo el avatar a la derecha ---------- */
+  header { background: rgba(11,11,14,.97); border-bottom: 1px solid #26262c; padding: 10px 16px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 40; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; background: none; border: none; padding: 0; margin: 0; width: auto; cursor: pointer; }
+  .brand-logo { width: 40px; height: 40px; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid rgba(212,175,55,.55); flex: none; display: block; }
+  .brand-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .brand-name { font-size: 19px; font-weight: 800; letter-spacing: 1px; white-space: nowrap; }
+  .brand-name b { color: #d4af37; font-weight: 800; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; position: relative; }
+  #topNav { display: none; gap: 2px; }
+  @media (min-width: 720px) { #topNav { display: flex; } }
+  #topNav button { background: none; border: none; color: #a7a7ad; font-size: 15px; font-weight: 600; padding: 8px 12px; width: auto; margin: 0; }
+  #topNav button.active { color: #d4af37; }
+  .avatar { width: 40px; height: 40px; border-radius: 50%; background: #d4af37; color: #141414; font-weight: 800; font-size: 15px; border: none; padding: 0; margin: 0; width: 40px; flex: none; cursor: pointer; }
+  .user-menu { position: absolute; top: calc(100% + 8px); right: 0; background: #17171c; border: 1px solid #2a2a30; border-radius: 12px; min-width: 230px; padding: 10px; z-index: 60; box-shadow: 0 12px 32px rgba(0,0,0,.55); }
+  .user-menu .um-name { font-weight: 800; font-size: 16px; padding: 4px 8px 0; }
+  .user-menu .um-sub { color: #a7a7ad; font-size: 13px; padding: 2px 8px 8px; }
+  .user-menu button { display: block; width: 100%; text-align: left; margin: 4px 0; }
+  /* ---------- Layout general ---------- */
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h2 { font-size: 22px; font-weight: 800; margin: 4px 0 12px; }
+  h3 { font-size: 18px; font-weight: 800; margin: 0 0 12px; }
+  .card { background: #17171c; border: 1px solid #26262c; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  input, select, textarea { font-size: 16px; padding: 12px; border-radius: 10px; border: 1px solid #2a2a30; background: #141419; color: #fff; width: 100%; margin: 6px 0; }
+  button { font-size: 16px; padding: 11px 14px; border-radius: 10px; border: 1px solid #3a3a41; background: #26262c; color: #fff; font-weight: 700; cursor: pointer; }
+  button.primary { background: linear-gradient(180deg, #e3c15a, #c9a227); color: #141414; border: none; }
+  button.secondary, button.ghost { background: #26262c; border: 1px solid #3a3a41; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 140px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+  .photo { background: #141419; border: 1px solid #26262c; border-radius: 10px; overflow: hidden; }
+  .photo img { width: 100%; height: 180px; object-fit: cover; display: block; cursor: pointer; background: #000; }
+  .photo .meta { padding: 8px; font-size: 14px; }
+  .badge { display: inline-block; background: #2c2c33; border-radius: 6px; padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 13px; }
+  .badge.free { background: #1d7a4d; }
+  .badge.owned { background: #7a5a1d; }
+  .muted { color: #a7a7ad; font-size: 14px; }
+  .pf-commission { background: #141419; border: 1px solid rgba(212,175,55,.55); border-radius: 10px; padding: 12px; text-align: left; font-size: 15px; }
+  .error { color: #ff8a7a; }
+  .ok { color: #7ddba3; }
+  /* ---------- Hero: foto del evento + buscador protagonista ---------- */
+  .hero { border-radius: 16px; overflow: hidden; background-color: #141419; background-size: cover; background-position: center; margin-bottom: 16px; border: 1px solid #26262c; }
+  .hero-content { padding: 28px 18px 22px; background: linear-gradient(rgba(11,11,14,.45), rgba(11,11,14,.82)); }
+  .hero-content h2 { font-size: 28px; line-height: 1.15; margin: 0 0 8px; }
+  .hero-sub { color: #d8d8d2; font-size: 16px; margin: 0 0 18px; }
+  .hero-search { display: flex; gap: 8px; }
+  .hero-search input { flex: 1; margin: 0; padding: 14px; font-size: 17px; min-width: 0; }
+  .hero-search button { margin: 0; padding: 14px 20px; white-space: nowrap; width: auto; }
+  .hero-note { color: #a7a7ad; font-size: 13px; margin: 10px 0 0; }
+  #searchResults { margin-top: 16px; }
+  /* ---------- Cómo funciona ---------- */
+  .steps { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 640px) { .steps { grid-template-columns: repeat(3, 1fr); } }
+  .step { background: #141419; border: 1px solid #26262c; border-radius: 12px; padding: 14px; }
+  .step-num { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #d4af37; color: #141414; font-weight: 800; font-size: 16px; margin-bottom: 8px; }
+  .step strong { display: block; margin-bottom: 4px; }
+  .step p { margin: 0; color: #a7a7ad; font-size: 14px; }
+  /* ---------- Tarjetas de evento ---------- */
+  .events-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .event-card { background: #17171c; border: 1px solid #26262c; border-radius: 14px; overflow: hidden; cursor: pointer; }
+  .event-cover { width: 100%; height: 150px; object-fit: cover; display: block; background: #000; }
+  .event-cover-empty { height: 150px; background: linear-gradient(135deg, #1c1c22, #0b0b0e); }
+  .event-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .event-body strong { font-size: 17px; }
+  .event-meta { font-size: 14px; color: #f5f5f2; }
+  .event-cta { color: #d4af37; font-weight: 700; font-size: 14px; margin-top: 4px; }
+  /* ---------- Navegación inferior fija (móvil) ---------- */
+  #bottomNav { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(11,11,14,.97); border-top: 1px solid #26262c; display: flex; z-index: 40; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
+  #bottomNav button { flex: 1; background: none; border: none; color: #a7a7ad; font-size: 13px; font-weight: 600; padding: 8px 4px; margin: 0; border-radius: 8px; }
+  #bottomNav button.active { color: #d4af37; }
+  @media (min-width: 720px) { #bottomNav { display: none; } }
+  /* ---------- Lightbox ---------- */
+  #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+  #lightbox img { max-width: 100%; max-height: 70vh; object-fit: contain; }
+  #lightbox .actions { width: 100%; max-width: 480px; }
+  /* ---------- Carrito ---------- */
+  #cartFab { position: fixed; right: 14px; bottom: 84px; z-index: 45; background: linear-gradient(180deg, #e3c15a, #c9a227); color: #141414; border: none; font-weight: 800; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  @media (min-width: 720px) { #cartFab { bottom: 20px; } }
+  .cart-badge { background: #141414; color: #d4af37; border-radius: 999px; padding: 1px 8px; font-size: 13px; margin-left: 4px; }
+  .cart-row { display: flex; gap: 10px; align-items: center; background: #141419; border: 1px solid #26262c; border-radius: 10px; padding: 8px; margin-bottom: 8px; }
+  .cart-row img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex: none; }
+  .cart-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .cart-price { text-align: right; white-space: nowrap; }
+  .cart-package { border-color: rgba(212,175,55,.55); }
+  .cart-upsell { color: #d4af37; font-weight: 700; font-size: 15px; }
+  .cart-btn { width: 100%; margin-top: 6px; }
+  #lightbox .actions button { width: 100%; margin: 6px 0 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <button class="brand" id="brandHome" aria-label="OnlyClick — Inicio">
+    <span class="brand-logo"><img src="/icon-192.png" alt="OnlyClick"></span>
+    <span class="brand-name">ONLY <b>CLICK</b></span>
+  </button>
+  <div class="header-right">
+    <nav id="topNav">
+      <button data-view="home">Inicio</button>
+      <button data-view="events">Eventos</button>
+      <button data-view="myphotos">Mis fotos</button>
+      <button data-view="account">Cuenta</button>
+    </nav>
+    <div id="session"></div>
+    <div id="userMenu" class="user-menu hidden"></div>
+  </div>
+</header>
+<main>
+  <!-- INICIO: hero con buscador + cómo funciona + eventos recientes -->
+  <section id="view-home">
+    <div class="hero" id="hero">
+      <div class="hero-content">
+        <h2 id="heroTitle">Encuentra tus fotos</h2>
+        <p id="heroSub" class="hero-sub"></p>
+        <div class="hero-search">
+          <input id="bibInput" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal" autocapitalize="off" autocorrect="off" placeholder="Escribe tu dorsal, ej. 223">
+          <button id="bibSearch" class="primary">Buscar</button>
+        </div>
+        <p class="hero-note">¿No recuerdas tu dorsal? Prueba con tu selfie (próximamente)</p>
+        <div id="searchResults"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Cómo funciona</h3>
+      <div class="steps">
+        <div class="step"><span class="step-num">1</span><strong>Busca tu dorsal</strong><p>Escribe el número que llevas en la foto.</p></div>
+        <div class="step"><span class="step-num">2</span><strong>Encuentra tus fotos</strong><p>Te mostramos solo las fotos donde sales tú.</p></div>
+        <div class="step"><span class="step-num">3</span><strong>Descarga o compra</strong><p>Gratis en eventos gratis, o paga seguro con Clip.</p></div>
+      </div>
+    </div>
+
+    <h3>Eventos recientes</h3>
+    <div id="homeEvents" class="events-grid"></div>
+    <!-- PAQUETE: mostrar cuando Orlan defina el precio — p. ej. "Todas tus fotos $Y MXN" junto al precio por foto de cada evento. No mostrar precio inventado. -->
+
+    <div class="card" style="text-align:center">
+      <h3>¿Estás organizando un evento deportivo?</h3>
+      <p>Ofrece a tus competidores fotografía profesional con búsqueda de fotos por dorsal con inteligencia artificial: encuentran sus fotos en segundos, fácil y gratis. Tú encárgate de tu evento, nosotros de las fotos.</p>
+      <form id="orgForm" style="text-align:left" onsubmit="return sendOrganizerForm(event)">
+        <input id="orgName" placeholder="Tu nombre" autocomplete="name" required>
+        <input id="orgEvent" placeholder="Nombre del evento" required>
+        <input id="orgDate" type="date" required>
+        <input id="orgCity" placeholder="Ciudad / lugar">
+        <input id="orgCount" type="number" inputmode="numeric" min="1" placeholder="¿Cuántos competidores aprox.?">
+        <textarea id="orgMsg" placeholder="Mensaje (opcional)" rows="2"></textarea>
+        <button class="primary" type="submit" style="width:100%">Enviar por WhatsApp</button>
+      </form>
+      <p id="orgSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
+    </div>
+    <script>
+    // Formulario para organizadores: arma el mensaje y lo abre en WhatsApp
+    // de Orlan, ya escrito. El organizador solo le da Enviar en WhatsApp.
+    function sendOrganizerForm(e) {
+      e.preventDefault();
+      const v = id => (document.getElementById(id).value || '').trim();
+      const name = v('orgName'), ev = v('orgEvent'), date = v('orgDate'), city = v('orgCity'), count = v('orgCount'), msg = v('orgMsg');
+      if (!name || !ev || !date) return false;
+      let text = 'Hola, soy ' + name + '. Organizo el evento ' + ev + ' el ' + date;
+      if (city) text += ' en ' + city;
+      if (count) text += '. Somos aprox. ' + count + ' competidores';
+      text += '. Me interesa el servicio de fotografía con búsqueda por dorsal con IA.';
+      if (msg) text += ' ' + msg;
+      window.open('https://wa.me/526444531015?text=' + encodeURIComponent(text), '_blank');
+      document.getElementById('orgSent').style.display = '';
+      return false;
+    }
+    </script>
+
+    <div class="card" style="text-align:center">
+      <h3>¿Eres fotógrafo? Únete a OnlyClick</h3>
+      <p>Vende tus fotos de eventos deportivos en todo México: los corredores las encuentran por su dorsal con inteligencia artificial y las compran en línea. Tú solo sube tus fotos, nosotros nos encargamos de la plataforma y los pagos.</p>
+      <p class="pf-commission">Tus fotos se venden en OnlyClick y se te paga tu parte cada 72 horas a tu CLABE. De cada foto: Clip cobra 4.18%, OnlyClick se queda el 10% de lo que queda, y tú te quedas el 90%. Ejemplo: foto de $20 → Clip $0.84 → OnlyClick $1.92 → tú $17.24.</p>
+      <form id="photoForm" style="text-align:left" onsubmit="return sendPhotographerForm(event)">
+        <input id="pfName" placeholder="Nombre completo *" autocomplete="name" required>
+        <input id="pfCity" placeholder="Ciudad y estado donde cubres eventos *" required>
+        <input id="pfPhone" type="tel" placeholder="WhatsApp / teléfono *" autocomplete="tel" required>
+        <input id="pfEvents" placeholder="¿Cuántos eventos deportivos has cubierto? (número y años de experiencia) *" required>
+        <input id="pfCamera" placeholder="¿Qué cámara usas? (marca y modelo)">
+        <input id="pfLink" type="url" placeholder="Link a tu trabajo: 3-5 fotos de un evento que hayas cubierto (Facebook, Instagram, Google Drive o tu página) *" required>
+        <p class="muted" style="margin:0 0 6px">Si no tienes link, manda tus 3-5 mejores fotos por WhatsApp al mismo número después de enviar el formulario.</p>
+        <input id="pfSpecialty" placeholder="¿En qué tipo de eventos te especializas? (5K/10K, medio maratón, triatlón, ciclismo, trail...)">
+        <input id="pfDorsal" placeholder="¿Tienes experiencia entregando fotos por dorsal o plataforma digital? (sí/no, ¿cuál?)">
+        <input id="pfAvail" placeholder="¿Qué días/eventos puedes cubrir? (disponibilidad)">
+        <select id="pfClabe">
+          <option value="">¿Tienes CLABE para recibir tus pagos?</option>
+          <option value="Sí">Sí, tengo CLABE</option>
+          <option value="No">No, todavía no</option>
+        </select>
+        <textarea id="pfMsg" placeholder="Mensaje / algo que quieras agregar (opcional)" rows="2"></textarea>
+        <p id="pfError" class="error" style="display:none"></p>
+        <button class="primary" type="submit" style="width:100%">Enviar por WhatsApp</button>
+      </form>
+      <p id="pfSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
+    </div>
+    <script>
+    // Formulario para fotógrafos: arma el mensaje y lo abre en WhatsApp
+    // de Orlan, ya escrito. El fotógrafo solo le da Enviar en WhatsApp.
+    // Mismo flujo que el formulario de organizadores (sin backend).
+    function sendPhotographerForm(e) {
+      e.preventDefault();
+      const v = id => (document.getElementById(id).value || '').trim();
+      const name = v('pfName'), city = v('pfCity'), phone = v('pfPhone'),
+        events = v('pfEvents'), camera = v('pfCamera'), link = v('pfLink'),
+        specialty = v('pfSpecialty'), dorsal = v('pfDorsal'), avail = v('pfAvail'),
+        clabe = v('pfClabe'), msg = v('pfMsg');
+      const missing = [];
+      if (!name) missing.push('Nombre completo');
+      if (!city) missing.push('Ciudad y estado');
+      if (!phone) missing.push('WhatsApp / teléfono');
+      if (!events) missing.push('Eventos cubiertos');
+      if (!link) missing.push('Link a tu trabajo');
+      const err = document.getElementById('pfError');
+      if (missing.length) {
+        err.textContent = 'Faltan campos obligatorios: ' + missing.join(', ') + '.';
+        err.style.display = '';
+        return false;
+      }
+      err.style.display = 'none';
+      let text = 'Hola, soy ' + name + '. Quiero unirme a OnlyClick como fotógrafo.';
+      text += '\nCiudad: ' + city;
+      text += '\nWhatsApp: ' + phone;
+      text += '\nEventos cubiertos: ' + events;
+      if (camera) text += '\nCámara: ' + camera;
+      text += '\nMi trabajo: ' + link;
+      if (specialty) text += '\nEspecialidad: ' + specialty;
+      if (dorsal) text += '\nExperiencia con dorsal/plataforma: ' + dorsal;
+      if (avail) text += '\nDisponibilidad: ' + avail;
+      if (clabe) text += '\nCLABE para pagos: ' + clabe;
+      if (msg) text += '\nMensaje: ' + msg;
+      window.open('https://wa.me/526444531015?text=' + encodeURIComponent(text), '_blank');
+      document.getElementById('pfSent').style.display = '';
+      return false;
+    }
+    </script>
+  </section>
+
+  <!-- EVENTOS -->
+  <section id="view-events" class="hidden">
+    <h2>Eventos</h2>
+    <div id="eventList" class="events-grid"></div>
+    <div id="eventDetail"></div>
+  </section>
+
+  <!-- MIS FOTOS -->
+  <section id="view-myphotos" class="hidden">
+    <h2>Mis fotos</h2>
+    <div id="myPhotosList"></div>
+  </section>
+
+  <!-- CARRITO -->
+  <section id="view-cart" class="hidden">
+    <h2>Tu carrito</h2>
+    <div id="cartBox"></div>
+  </section>
+
+  <!-- CUENTA: login/registro o perfil + panel fotógrafo -->
+  <section id="view-account" class="hidden">
+    <div id="auth" class="card">
+      <h2 id="authTitle">Iniciar sesión</h2>
+      <div id="authMsg"></div>
+      <input id="authName" placeholder="Nombre" style="display:none">
+      <input id="authEmail" type="email" autocomplete="username" placeholder="Correo">
+      <input id="authPass" type="password" autocomplete="current-password" placeholder="Contraseña (mín. 6 caracteres)">
+      <select id="authRole" style="display:none">
+        <option value="athlete">Soy deportista / corredor</option>
+        <option value="photographer">Soy fotógrafo (Orlan debe aprobar tu cuenta)</option>
+      </select>
+      <p class="muted" id="photoTakenNote"></p>
+      <button id="authSubmit" class="primary">Entrar</button>
+      <button class="secondary" id="authToggle">¿No tienes cuenta? Crear cuenta</button>
+      <button class="secondary" id="authForgot">¿Olvidaste tu contraseña?</button>
+      <div id="forgotBox" style="display:none">
+        <p class="muted">Te mandamos un enlace a tu correo para poner una nueva contraseña.</p>
+        <input id="forgotEmail" type="email" autocomplete="username" placeholder="Tu correo">
+        <button id="forgotSend" class="primary">Enviar enlace</button>
+        <p class="muted" id="forgotStatus"></p>
+      </div>
+      <div id="resetBox" style="display:none">
+        <p class="muted">Escribe tu nueva contraseña.</p>
+        <input id="resetPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mín. 6 caracteres)">
+        <button id="resetSend" class="primary">Guardar nueva contraseña</button>
+        <p class="muted" id="resetStatus"></p>
+      </div>
+    </div>
+
+    <div id="profileBlock" class="hidden">
+      <div class="card">
+        <h2 id="profileTitle">Mi cuenta</h2>
+        <p id="profileInfo" class="muted"></p>
+        <button id="profileLogout" class="secondary">Cerrar sesión</button>
+      </div>
+      <section id="view-photographer" class="card" style="display:none">
+        <h2>Panel fotógrafo</h2>
+        <div id="photoPanel"></div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<button id="cartFab" aria-label="Ver carrito">Carrito <span id="cartCount" class="cart-badge hidden">0</span></button>
+
+<nav id="bottomNav">
+  <button data-view="home">Inicio</button>
+  <button data-view="events">Eventos</button>
+  <button data-view="myphotos">Mis fotos</button>
+  <button data-view="account">Cuenta</button>
+</nav>
+
+<div id="lightbox">
+  <div style="position:relative;display:inline-block;max-width:100%">
+    <img id="lbImg" alt="Foto ampliada">
+    <div id="lbWm" style="position:absolute;inset:0;display:none;pointer-events:none;overflow:hidden">
+      <div style="position:absolute;left:-60%;top:-60%;width:220%;height:220%;transform:rotate(-30deg);display:flex;flex-direction:column;justify-content:space-evenly">
+        <span style="font-size:26px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap;text-align:center">ONLYCLICK • VISTA PREVIA&nbsp;&nbsp;&nbsp;ONLYCLICK • VISTA PREVIA</span>
+        <span style="font-size:26px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap;text-align:center">ONLYCLICK • VISTA PREVIA&nbsp;&nbsp;&nbsp;ONLYCLICK • VISTA PREVIA</span>
+        <span style="font-size:26px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap;text-align:center">ONLYCLICK • VISTA PREVIA&nbsp;&nbsp;&nbsp;ONLYCLICK • VISTA PREVIA</span>
+        <span style="font-size:26px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap;text-align:center">ONLYCLICK • VISTA PREVIA&nbsp;&nbsp;&nbsp;ONLYCLICK • VISTA PREVIA</span>
+        <span style="font-size:26px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap;text-align:center">ONLYCLICK • VISTA PREVIA&nbsp;&nbsp;&nbsp;ONLYCLICK • VISTA PREVIA</span>
+      </div>
+    </div>
+  </div>
+  <div class="actions">
+    <p class="muted" id="lbInfo"></p>
+    <button id="lbSave" class="primary">Guardar gratis</button>
+    <button class="secondary" id="lbCart">Agregar al carrito</button>
+    <button class="secondary" id="lbClose">Cerrar</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
