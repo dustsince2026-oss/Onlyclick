@@ -5,13 +5,15 @@
 // gestor de descargas real. NO es un blob URL ni navigator.share.
 let token = localStorage.getItem('onlyclick_token') || '';
 let me = null;
-let mode = 'login'; // login | register 
+let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
 let currentEvent = null;
 let currentTipClabe = '';
-  let currentTipName = '';
+let currentTipName = '';
 let currentPhotos = [];
 let lightboxPhoto = null;
+let lightboxFreeMode = true;
+let lightboxPriceMxn = 0;
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
 let currentView = 'search';
 let suppressPush = false;
@@ -51,35 +53,44 @@ async function refreshAuth() {
 
 // ---- Mensaje de cooperación voluntaria tras una descarga gratis ----
 function showTipModal(clabe, name) {
-    document.getElementById('tipModal')?.remove();
-    const m = document.createElement('div');
-    m.id = 'tipModal';
-    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
-    m.innerHTML = `<div style="background:#1a1a2e;color:#fff;border-radius:12px;padding:20px;max-width:340px;text-align:center">
-        <p>¡Gracias por descargar tu foto! Es gratis. Si te gustó el servicio y quieres cooperar para que sigamos en los eventos, te dejo mi CLABE:</p>
-            <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p> ${name ? `<p>A nombre de: <strong>${esc(name)}</strong></p>` : ''}
-                <div class="row" style="justify-content:center"><button id="tipCopy">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
-                    <p id="tipCopyMsg" class="muted"></p></div>`;
-    document.body.appendChild(m);
-    m.querySelector('#tipClose').onclick = () => m.remove();
-    m.onclick = (e) => { if (e.target === m) m.remove(); };
-    m.querySelector('#tipCopy').onclick = async () => {
-          try { await navigator.clipboard.writeText(clabe); m.querySelector('#tipCopyMsg').textContent = 'CLABE copiada.'; }
-          catch (_) { m.querySelector('#tipCopyMsg').textContent = 'No se pudo copiar, cópiala a mano.'; }
-    };
+  document.getElementById('tipModal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'tipModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
+  m.innerHTML = `<div style="background:#1a1a2e;color:#fff;border-radius:12px;padding:20px;max-width:340px;text-align:center">
+    <p>¡Gracias por descargar tu foto! Es gratis. Si te gustó el servicio y quieres cooperar para que sigamos en los eventos, te dejo mi CLABE:</p>
+    <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p>
+    ${name ? `<p>A nombre de: <strong>${esc(name)}</strong></p>` : ''}
+    <div class="row" style="justify-content:center"><button id="tipCopy">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
+    <p id="tipCopyMsg" class="muted"></p></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#tipClose').onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.querySelector('#tipCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(clabe); m.querySelector('#tipCopyMsg').textContent = 'CLABE copiada.'; }
+    catch (_) { m.querySelector('#tipCopyMsg').textContent = 'No se pudo copiar, cópiala a mano.'; }
+  };
 }
-// ---- Descarga real: un solo botón "Guardar" ----
-// 1) Registra la descarga gratis (o compra) en el servidor.
-// 2) Dispara un <a href="/api/photo?id=..."> de mismo origen con download.
-//    En Chrome Android eso guarda el archivo en Descargas / galería.
-async function savePhoto(photo, freeMode) {
+
+// ---- Descarga real: un solo botón "Guardar" / "Pagar y descargar" ----
+// Gratis: registra la descarga en el servidor y dispara el <a> de mismo
+// origen con download (Chrome Android guarda en Descargas / galería).
+// De pago y sin comprar: crea el link de Clip y redirige al checkout
+// seguro de Clip; al pagar, Clip nos devuelve y se descarga la foto.
+async function savePhoto(photo, freeMode, priceMxn) {
+  const price = Number(priceMxn || photo.price || 0);
   const btns = document.querySelectorAll(`[data-save="${photo.id}"]`);
   btns.forEach(b => { b.disabled = true; b.textContent = 'Guardando…'; });
   try {
     if (freeMode) await api('/api/claim', { method: 'POST', body: JSON.stringify({ photoIds: [photo.id] }) });
     else if (!photo.owned) {
-      if (!confirm(`Esta foto cuesta $${photo.price || 0} MXN. ¿Confirmas la compra? (Pago simulado, sin cargo real)`)) return;
-      await api('/api/purchase', { method: 'POST', body: JSON.stringify({ photoIds: [photo.id] }) });
+      const r = await api('/api/checkout-create', { method: 'POST', body: JSON.stringify({ photoId: photo.id }) });
+      if (r.paid) { /* ya era tuya: seguir a descargar */ }
+      else if (r.checkoutUrl) {
+        btns.forEach(b => { b.textContent = 'Abriendo pago seguro…'; });
+        location.href = r.checkoutUrl;
+        return;
+      } else throw new Error('No se pudo crear el pago con Clip.');
     }
     const a = document.createElement('a');
     a.href = `/api/photo?id=${photo.id}`;
@@ -90,34 +101,86 @@ async function savePhoto(photo, freeMode) {
     setTimeout(() => loadEventDetail(currentEvent), 1500);
   } catch (e) {
     alert('No se pudo guardar: ' + e.message);
-    btns.forEach(b => { b.disabled = false; b.textContent = freeMode ? 'Guardar gratis' : 'Guardar'; });
+    btns.forEach(b => { b.disabled = false; b.textContent = freeMode ? 'Guardar gratis' : (photo.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN'); });
   }
 }
 
-function photoCard(p, freeMode) {
+// ---- Regreso desde Clip (pago) ----
+// Clip redirige a /api/checkout-return, que verifica con Clip y nos
+// devuelve aquí con ?event=&photo=&paid=1 | pay=pending | pay=failed.
+async function handlePayReturn() {
+  const q = new URLSearchParams(location.search);
+  const paid = q.get('paid'), pay = q.get('pay');
+  const eventId = Number(q.get('event') || 0), photoId = Number(q.get('photo') || 0);
+  if (!paid && !pay) return;
+  history.replaceState({}, '', location.pathname);
+  if (paid === '1' && eventId && photoId) {
+    alert('¡Pago confirmado! Descargando tu foto…');
+    const a = document.createElement('a');
+    a.href = `/api/photo?id=${photoId}`; a.download = `onlyclick-foto-${photoId}.jpg`;
+    document.body.appendChild(a); a.click(); a.remove();
+    showView('events'); loadEventDetail(eventId);
+    return;
+  }
+  if (pay === 'pending') {
+    alert('Tu pago está en proceso (puede ser efectivo en OXXO o confirmación pendiente). En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
+    if (eventId && photoId) pollPayment(photoId);
+    return;
+  }
+  if (pay === 'failed') alert('El pago no se completó (cancelado o vencido). Puedes intentarlo de nuevo con "Pagar y descargar".');
+  if (pay === 'error') alert('No se pudo verificar el pago. Revisa "Mis fotos" en unos minutos; si no aparece, inténtalo de nuevo.');
+}
+// Pregunta cada 5 s (máx 2 min) si un pago pendiente ya se confirmó.
+async function pollPayment(photoId) {
+  for (let i = 0; i < 24; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoId }) });
+      if (s.paid) {
+        alert('¡Pago confirmado! Descargando tu foto…');
+        const a = document.createElement('a');
+        a.href = `/api/photo?id=${photoId}`; a.download = `onlyclick-foto-${photoId}.jpg`;
+        document.body.appendChild(a); a.click(); a.remove();
+        return;
+      }
+      if (s.status === 'cancelled' || s.status === 'expired') return;
+    } catch (_) { return; }
+  }
+}
+
+function photoCard(p) {
+  const freeMode = p.freeMode !== false;
+  const price = Number(p.priceMxn || p.price || 0);
   const bibs = (p.bibs || []).map(b => `<span class="badge">Dorsal ${esc(b)}</span>`).join('');
   return `<div class="photo">
     <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
-      ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${p.price || 0} MXN</span>`}
+      ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
-      <button data-save="${p.id}">${freeMode ? 'Guardar gratis' : 'Guardar'}</button>
+      <button data-save="${p.id}">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
     </div></div>`;
 }
 
-function bindPhotos(photos, freeMode) {
+function bindPhotos(photos) {
   document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => {
     const p = photos.find(x => x.id === Number(b.dataset.save)) || currentPhotos.find(x => x.id === Number(b.dataset.save));
-    if (p) savePhoto(p, freeMode);
+    if (p) savePhoto(p, p.freeMode !== false, p.priceMxn);
   });
   document.querySelectorAll('[data-open]').forEach(img => img.onclick = () => {
     const p = photos.find(x => x.id === Number(img.dataset.open));
     if (!p) return;
     lightboxPhoto = p;
+    const freeMode = p.freeMode !== false;
+    const price = Number(p.priceMxn || p.price || 0);
+    lightboxFreeMode = freeMode;
+    lightboxPriceMxn = price;
     $('#lbImg').src = `/api/photo?id=${p.id}&inline=1`;
-    $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + (p.price || 0) + ' MXN'}`;
-    $('#lbSave').textContent = freeMode ? 'Guardar gratis' : 'Guardar';
+    $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}`;
+    $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
     $('#lbSave').dataset.save = p.id;
+    // Marca de agua en la vista previa de pago: el servidor ya sirve la
+    // miniatura en vez del original; este texto va encima.
+    $('#lbWm').style.display = (!freeMode && !p.owned) ? 'flex' : 'none';
     $('#lightbox').style.display = 'flex';
     lightboxPushed = true;
     lastBackAtHome = 0;
@@ -133,11 +196,9 @@ async function searchBib() {
     const r = await api('/api/search?bib=' + encodeURIComponent(bib));
     currentPhotos = r.photos;
     box.innerHTML = r.photos.length
-      ? `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p, p.freeMode)).join('')}</div>`
+      ? `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`
       : `<p>No hay fotos con el dorsal ${esc(bib)} en ningún evento.</p>`;
-    bindPhotos(r.photos, true);
-    // Los botones de resultados mezclan eventos gratis/de pago: re-enlazar con su modo real
-    r.photos.forEach(p => { const b = document.querySelector(`[data-save="${p.id}"]`); if (b) b.onclick = () => savePhoto(p, p.freeMode); });
+    bindPhotos(r.photos);
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
@@ -145,8 +206,9 @@ async function loadEvents() {
   const r = await api('/api/events');
   $('#eventList').innerHTML = r.events.length ? r.events.map(e => `
     <div class="card" style="background:#12142a">
-      ${e.coverPath ? `<img src="/api/cover?eventId=${e.id}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:8px">` : ''} <strong>${esc(e.name)}</strong> · ${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}<br>
-      <span class="muted">${e.photoCount} foto(s) · ${e.freeMode ? 'Descarga gratis' : 'De pago'}</span><br>
+      ${e.coverPath ? `<img src="/api/cover?eventId=${e.id}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:8px">` : ''}
+      <strong>${esc(e.name)}</strong> · ${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}<br>
+      <span class="muted">${e.photoCount} foto(s) · ${e.freeMode ? 'Descarga gratis' : 'De pago · $' + (e.priceMxn || 20) + ' MXN/foto'}</span><br>
       <button data-ev="${e.id}">Ver fotos</button>
     </div>`).join('') : '<p>No hay eventos todavía.</p>';
   document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => loadEventDetail(Number(b.dataset.ev), true));
@@ -158,19 +220,22 @@ async function loadEventDetail(eventId, push) {
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
   currentTipClabe = r.tipClabe || '';
-    currentTipName = r.tipName || '';
+  currentTipName = r.tipName || '';
+  r.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
-    ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''} <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago'}</p>
+    ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
+    <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" inputmode="numeric" placeholder="Buscar dorsal en este evento"><button id="evBibBtn">Buscar</button></div>
-    <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, r.event.freeMode)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
-  bindPhotos(r.photos, r.event.freeMode);
+    <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
+  bindPhotos(r.photos);
   $('#evBibBtn').onclick = async () => {
     const bib = $('#evBib').value.trim(); if (!bib) return;
     const s = await api('/api/search?bib=' + encodeURIComponent(bib) + '&eventId=' + eventId);
     currentPhotos = s.photos;
-    $('#evGrid').innerHTML = s.photos.map(p => photoCard(p, r.event.freeMode)).join('') || '<p>No hay fotos con ese dorsal en este evento.</p>';
-    bindPhotos(s.photos, r.event.freeMode);
+    s.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
+    $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos con ese dorsal en este evento.</p>';
+    bindPhotos(s.photos);
   };
 }
 
@@ -178,8 +243,9 @@ async function loadMyPhotos() {
   currentTipClabe = '';
   currentTipName = '';
   const r = await api('/api/my-photos');
-  $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, true)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
-  bindPhotos(r.photos, true);
+  r.photos.forEach(p => { p.freeMode = true; });
+  $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
+  bindPhotos(r.photos);
 }
 
 async function loadPhotographer() {
@@ -192,32 +258,53 @@ async function loadPhotographer() {
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
     <button id="evCreate">Crear evento</button>
-        <h3>Cooperación voluntaria</h3>
-            <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
-                <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave">Guardar CLABE</button></div>
-                    <p id="tipStatus" class="muted"></p>
-                    <h3>Subir fotos</h3>
+    <h3>Cooperación voluntaria</h3>
+    <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
+    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave">Guardar CLABE</button></div>
+    <p id="tipStatus" class="muted"></p>
+    <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn">Subir fotos</button>
-    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p> <h3>Portada del evento</h3> <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p> <div class="row"><select id="covEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div> <div id="covPreview"></div> <button id="covBtn">Subir portada</button> <p id="covStatus" class="muted"></p>
+    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
+    <h3>Portada del evento</h3>
+    <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p>
+    <div class="row"><select id="covEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
+    <div id="covPreview"></div>
+    <button id="covBtn">Subir portada</button>
+    <p id="covStatus" class="muted"></p>
     <h3>Mis eventos</h3>
-    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     <h3>Descargas y ventas</h3>
-    <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos simulados: $${sales.revenue} MXN</p>
+    <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos por ventas: $${sales.revenue} MXN</p>
     ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
   $('#tipSave').onclick = async () => {
-        try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
+    try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
   };
-    function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }  $('#covEvent').onchange = renderCovPreview;  renderCovPreview();  $('#covBtn').onclick = async () => { const file = $('#covFile').files[0]; if (!file) { alert('Elige una foto para la portada.'); return; } $('#covStatus').textContent = 'Subiendo portada…'; try { const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(file); }); const small = await downscale(dataUrl, 1600); await api('/api/event-cover', { method: 'POST', body: JSON.stringify({ eventId: Number($('#covEvent').value), dataBase64: small.split(',')[1], mimeType: 'image/jpeg' }) }); $('#covStatus').textContent = 'Portada guardada.'; loadPhotographer(); loadEvents(); } catch (e) { $('#covStatus').textContent = e.message; } }; // --- Lectura automática de dorsales ---
+  function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }
+  $('#covEvent').onchange = renderCovPreview;
+  renderCovPreview();
+  $('#covBtn').onclick = async () => {
+    const file = $('#covFile').files[0];
+    if (!file) { alert('Elige una foto para la portada.'); return; }
+    $('#covStatus').textContent = 'Subiendo portada…';
+    try {
+      const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(file); });
+      const small = await downscale(dataUrl, 1600);
+      await api('/api/event-cover', { method: 'POST', body: JSON.stringify({ eventId: Number($('#covEvent').value), dataBase64: small.split(',')[1], mimeType: 'image/jpeg' }) });
+      $('#covStatus').textContent = 'Portada guardada.';
+      loadPhotographer(); loadEvents();
+    } catch (e) { $('#covStatus').textContent = e.message; }
+  };
+  // --- Lectura automática de dorsales ---
   // 1) Visión por IA (Gemini, gratis) en el servidor: lee el número como lo
   //    vería una persona. 2) Si no hay llave de IA o falla, OCR local mejorado
   //    en el teléfono. El número siempre queda editable antes de subir.
@@ -324,7 +411,6 @@ async function loadPhotographer() {
     $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.';
     return;
   };
-    
   // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
   // sin saturar la conexión ni la llave de IA.
   async function runPool(items, n, fn) {
@@ -344,7 +430,9 @@ async function loadPhotographer() {
       try {
         const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(row.file); });
         // Se comprime a 1600px antes de subir: pesa mucho menos, sube más
-        // rápido y ocupa menos espacio en Supabase.
+        // rápido y ocupa menos espacio en Supabase. Además se genera una
+        // miniatura de 400px (~30-50 KB) para que la galería cargue rápido;
+        // si falla, la subida sigue igual y la galería usa la foto completa.
         const small = await downscale(dataUrl, 1600);
         const b64 = small.split(',')[1];
         let thumbB64 = '';
@@ -365,12 +453,17 @@ async function loadPhotographer() {
     await api('/api/set-free-mode', { method: 'POST', body: JSON.stringify({ eventId: ev.id, freeMode: !ev.freeMode }) });
     loadPhotographer(); loadEvents();
   });
+  document.querySelectorAll('[data-saveprice]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.saveprice);
+    const inp = document.querySelector(`[data-price="${id}"]`);
+    try { await api('/api/set-event-price', { method: 'POST', body: JSON.stringify({ eventId: id, priceMxn: Number(inp.value) }) }); alert('Precio guardado: $' + inp.value + ' MXN por foto.'); loadPhotographer(); } catch (e) { alert(e.message); }
+  });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-  const ev = events.find(e => e.id === Number(b.dataset.del));
-  if (!confirm(`¿Borrar el evento "${ev.name}" con sus ${ev.photoCount || 0} foto(s)? Se libera el espacio, pero no se puede deshacer.`)) return;
-  try { const r = await api('/api/event-delete', { method: 'POST', body: JSON.stringify({ eventId: ev.id }) }); alert('Evento borrado. Se eliminaron ' + (r.photos || 0) + ' foto(s).'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
-});
-document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
+    const ev = events.find(e => e.id === Number(b.dataset.del));
+    if (!confirm(`¿Borrar el evento "${ev.name}" con sus ${ev.photoCount || 0} foto(s)? Se libera el espacio, pero no se puede deshacer.`)) return;
+    try { const r = await api('/api/event-delete', { method: 'POST', body: JSON.stringify({ eventId: ev.id }) }); alert('Evento borrado. Se eliminaron ' + (r.photos || 0) + ' foto(s).'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-rev]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.rev));
     const box = $('#revList');
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
@@ -515,7 +608,7 @@ document.querySelectorAll('nav button[data-view]').forEach(b => b.onclick = () =
 $('#bibSearch').onclick = searchBib;
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
-$('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, true); };
+$('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
 $('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; $('#authToggle').textContent = mode === 'login' ? '¿No tienes cuenta? Crear cuenta' : '¿Ya tienes cuenta? Iniciar sesión'; $('#authName').style.display = mode === 'register' ? '' : 'none'; $('#authRole').style.display = mode === 'register' ? '' : 'none'; };
 $('#authSubmit').onclick = async () => {
   const body = { email: $('#authEmail').value, password: $('#authPass').value };
@@ -526,21 +619,31 @@ $('#authSubmit').onclick = async () => {
     saveToken(r.token); await refreshAuth(); showView('search');
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 };
+$('#authForgot').onclick = () => { const box = $('#forgotBox'); box.style.display = box.style.display === 'none' ? '' : 'none'; };
+$('#forgotSend').onclick = async () => {
+  const email = $('#forgotEmail').value.trim();
+  if (!email.includes('@')) { $('#forgotStatus').textContent = 'Escribe un correo válido.'; return; }
+  $('#forgotStatus').textContent = 'Enviando…';
+  try { await api('/api/password-forgot', { method: 'POST', body: JSON.stringify({ email }) }); $('#forgotStatus').textContent = 'Si el correo está registrado, te llegó un enlace para restablecer tu contraseña.'; }
+  catch (e) { $('#forgotStatus').textContent = e.message; }
+};
+$('#resetSend').onclick = async () => {
+  const pass = $('#resetPass').value;
+  if (pass.length < 6) { $('#resetStatus').textContent = 'La contraseña debe tener al menos 6 caracteres.'; return; }
+  try {
+    await api('/api/password-reset', { method: 'POST', body: JSON.stringify({ token: resetToken, password: pass }) });
+    $('#resetStatus').textContent = 'Contraseña actualizada. Ya puedes entrar con la nueva.';
+    $('#resetBox').style.display = 'none';
+    history.replaceState({}, '', location.pathname);
+  } catch (e) { $('#resetStatus').textContent = e.message; }
+};
 
-$('#authForgot').onclick = () => { const box = $('#forgotBox'); box.style.display = box.style.display === 'none' ? '' : 'none'; }; 
-$('#forgotSend').onclick = async () => { 
-    const email = $('#forgotEmail').value.trim(); 
-    if (!email.includes('@')) { $('#forgotStatus').textContent = 'Escribe un correo válido.'; return; } 
-    $('#forgotStatus').textContent = 'Enviando…'; 
-    try { await api('/api/password-forgot', { method: 'POST', body: JSON.stringify({ email }) }); $('#forgotStatus').textContent = 'Si el correo está registrado, te llegó un enlace para restablecer tu contraseña.'; } 
-      catch (e) { $('#forgotStatus').textContent = e.message; } }; 
-$('#resetSend').onclick = async () => { 
-    const pass = $('#resetPass').value; 
-    
-        if (pass.length < 6) { $('#resetStatus').textContent = 'La contraseña debe tener al menos 6 caracteres.'; return; } try { await api('/api/password-reset', { method: 'POST', body: JSON.stringify({ token: resetToken, password: pass }) }); $('#resetStatus').textContent = 'Contraseña actualizada. Ya puedes entrar con la nueva.'; $('#resetBox').style.display = 'none'; history.replaceState({}, '', location.pathname); } catch (e) { $('#resetStatus').textContent = e.message; } }; // Estado inicial en el historial para que la primera flecha de atrás no // saque de la app.
+// Estado inicial en el historial para que la primera flecha de atrás no
+// saque de la app.
 try { history.replaceState({ view: 'search' }, ''); } catch (_) {}
 
 refreshAuth();
+handlePayReturn();
 
 // Si la URL trae ?reset=... (enlace del correo), mostrar el formulario
 // de nueva contraseña aunque haya sesión iniciada.
