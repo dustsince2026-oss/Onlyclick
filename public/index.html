@@ -81,9 +81,9 @@
   .event-meta { font-size: 14px; color: #f5f5f2; }
   .event-cta { color: #d4af37; font-weight: 700; font-size: 14px; margin-top: 4px; }
   /* ---------- Navegación inferior fija (móvil) ---------- */
-  #bottomNav { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(11,11,14,.97); border-top: 1px solid #26262c; display: flex; z-index: 40; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
-  #bottomNav button { flex: 1; background: none; border: none; color: #a7a7ad; font-size: 13px; font-weight: 600; padding: 8px 4px; margin: 0; border-radius: 8px; }
-  #bottomNav button.active { color: #d4af37; }
+  #bottomNav { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(11,11,14,.97); border-top: 2px solid #d4af37; display: flex; z-index: 40; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
+  #bottomNav button { flex: 1; background: none; border: none; color: #d8d8dc; font-size: 14px; font-weight: 600; padding: 10px 4px; margin: 0; border-radius: 8px; }
+  #bottomNav button.active { color: #d4af37; font-weight: 700; }
   @media (min-width: 720px) { #bottomNav { display: none; } }
   /* ---------- Lightbox ---------- */
   #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
@@ -120,6 +120,7 @@
       <button data-view="home">Inicio</button>
       <button data-view="events">Eventos</button>
       <button data-view="myphotos">Mis fotos</button>
+      <button data-view="notifications" style="display:none">Notificaciones <span id="notifCountTop" class="cart-badge hidden">0</span></button>
       <button data-view="account">Cuenta</button>
     </nav>
     <div id="session"></div>
@@ -279,6 +280,20 @@
     <div id="cartBox"></div>
   </section>
 
+  <!-- NOTIFICACIONES: avisos del dueño a todos los fotógrafos -->
+  <section id="view-notifications" class="hidden">
+    <h2>Notificaciones</h2>
+    <div id="notifForm" class="card" style="display:none">
+      <h3>Publicar un aviso a los fotógrafos</h3>
+      <input id="notifTitle" type="text" maxlength="80" placeholder="Título del aviso">
+      <textarea id="notifBody" rows="3" maxlength="1000" placeholder="Mensaje para los fotógrafos..."></textarea>
+      <button id="notifPublish" class="primary">Publicar aviso</button>
+      <p id="notifFormStatus" class="muted"></p>
+    </div>
+    <p id="notifStatus" class="muted"></p>
+    <div id="notifList"></div>
+  </section>
+
   <!-- CUENTA: login/registro o perfil + panel fotógrafo -->
   <section id="view-account" class="hidden">
     <div id="auth" class="card">
@@ -335,6 +350,7 @@
   <button data-view="home">Inicio</button>
   <button data-view="events">Eventos</button>
   <button data-view="myphotos">Mis fotos</button>
+  <button data-view="notifications" style="display:none">Notificaciones <span id="notifCountBottom" class="cart-badge hidden">0</span></button>
   <button data-view="account">Cuenta</button>
 </nav>
 

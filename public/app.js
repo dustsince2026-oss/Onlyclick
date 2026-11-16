@@ -293,7 +293,11 @@ async function refreshAuth() {
       $('#avatarBtn').onclick = (e) => { e.stopPropagation(); $('#userMenu').classList.toggle('hidden'); };
       const pl = $('#profileLogout');
       if (pl) pl.onclick = doLogout;
+      updateNotificationsNav();
+      refreshNotifBadge();
     } else {
+      updateNotificationsNav();
+      updateNotifBadge(0);
       $('#auth').classList.remove('hidden');
       $('#profileBlock').classList.add('hidden');
       sessionEl.innerHTML = `<button id="loginBtn" class="ghost">Entrar</button>`;
@@ -1327,8 +1331,11 @@ async function loadPhotographer() {
 function showView(v) {
   // Un estado viejo del historial (versión anterior) puede traer una vista
   // que ya no existe ('search', 'photographer'): caer al inicio.
-  if (!['home', 'events', 'myphotos', 'account', 'cart'].includes(v)) v = 'home';
-  ['home', 'events', 'myphotos', 'account', 'cart'].forEach(x => {
+  if (!['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].includes(v)) v = 'home';
+  // Notificaciones es solo para fotógrafos (dueño incluido): cualquiera
+  // más que intente abrirla (URL o clic) cae al inicio.
+  if (v === 'notifications' && !(me && me.role === 'photographer')) v = 'home';
+  ['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].forEach(x => {
     const el = $('#view-' + x);
     if (el) el.classList.toggle('hidden', x !== v);
   });
@@ -1338,7 +1345,59 @@ function showView(v) {
   if (v === 'events') loadEvents();
   if (v === 'myphotos') loadMyPhotos();
   if (v === 'cart') renderCartView();
+  if (v === 'notifications') loadNotifications();
   if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
+}
+
+// ---- Notificaciones: avisos del dueño a los fotógrafos ----
+// El botón solo se ve si el usuario es fotógrafo (dueño incluido).
+function updateNotificationsNav() {
+  const show = !!(me && me.role === 'photographer');
+  document.querySelectorAll('button[data-view="notifications"]').forEach(b => { b.style.display = show ? '' : 'none'; });
+}
+function updateNotifBadge(n) {
+  ['notifCountTop', 'notifCountBottom'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = String(n || 0);
+    el.classList.toggle('hidden', !n);
+  });
+}
+// Conteo de no leídos al entrar con sesión de fotógrafo. Si el endpoint
+// falla, no se rompe nada: el badge queda oculto.
+async function refreshNotifBadge() {
+  if (!me || me.role !== 'photographer') { updateNotifBadge(0); return; }
+  try { const r = await api('/api/list-announcements'); updateNotifBadge(r.unreadCount || 0); }
+  catch (_) { updateNotifBadge(0); }
+}
+async function loadNotifications() {
+  const list = $('#notifList'), status = $('#notifStatus'), form = $('#notifForm');
+  if (form) form.style.display = (me && me.isOwner) ? '' : 'none';
+  try {
+    const r = await api('/api/list-announcements');
+    const items = r.announcements || [];
+    list.innerHTML = items.length
+      ? items.map(x => `<div class="card"><strong>${esc(x.title)}</strong><p>${esc(x.body).replace(/\n/g, '<br>')}</p><p class="muted">${esc(String(x.createdAt || '').slice(0, 10))}</p></div>`).join('')
+      : '<p>No hay avisos todavía.</p>';
+    if (status) status.textContent = '';
+    // Al abrirlas ya se vieron: marcar leídas y limpiar el numerito.
+    api('/api/mark-announcements-read', { method: 'POST', body: JSON.stringify({}) }).then(() => updateNotifBadge(0)).catch(() => {});
+  } catch (e) {
+    list.innerHTML = '';
+    if (status) status.textContent = 'No se pudieron cargar los avisos. Intenta de nuevo.';
+  }
+}
+async function publishAnnouncement() {
+  const st = $('#notifFormStatus');
+  const title = $('#notifTitle').value.trim();
+  const body = $('#notifBody').value.trim();
+  try {
+    await api('/api/create-announcement', { method: 'POST', body: JSON.stringify({ title, body }) });
+    $('#notifTitle').value = '';
+    $('#notifBody').value = '';
+    if (st) st.textContent = 'Aviso publicado a todos los fotógrafos.';
+    loadNotifications();
+  } catch (e) { if (st) st.textContent = e.message; }
 }
 
 // ---- Botón atrás del teléfono ----
@@ -1411,6 +1470,8 @@ window.addEventListener('popstate', (e) => {
 });
 
 document.querySelectorAll('button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
+const notifPublishBtn = $('#notifPublish');
+if (notifPublishBtn) notifPublishBtn.onclick = publishAnnouncement;
 $('#brandHome').onclick = () => showView('home');
 $('#cartFab').onclick = () => showView('cart');
 $('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
