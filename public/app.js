@@ -15,10 +15,11 @@ let lightboxPhoto = null;
 let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
-let currentView = 'search';
+let currentView = 'home';
 let suppressPush = false;
 let lightboxPushed = false;
 let lastBackAtHome = 0;
+let forceResetView = false; // ?reset=... : mostrar el form de nueva contraseña aunque haya sesión
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -39,17 +40,51 @@ async function refreshAuth() {
     const s = await api('/api/auth-status');
     me = s.user;
     $('#photoTakenNote').textContent = s.photographerTaken ? 'La cuenta de fotógrafo ya está ocupada.' : 'Todavía no hay cuenta de fotógrafo: la primera que se cree será la única.';
-    if (me) {
-      $('#auth').classList.add('hidden'); $('#app').classList.remove('hidden');
-      $('#session').innerHTML = `<span>Hola, ${esc(me.name)} (${me.role === 'photographer' ? 'fotógrafo' : 'deportista'})</span> <button class="secondary" id="logoutBtn" style="width:auto">Cerrar sesión</button>`;
-      $('#logoutBtn').onclick = () => { saveToken(''); me = null; location.reload(); };
-      $('#navPhoto').style.display = me.role === 'photographer' ? '' : 'none';
+    const sessionEl = $('#session');
+    if (me && !forceResetView) {
+      $('#auth').classList.add('hidden');
+      $('#profileBlock').classList.remove('hidden');
+      $('#profileTitle').textContent = 'Hola, ' + me.name;
+      $('#profileInfo').textContent = me.email + ' · ' + (me.role === 'photographer' ? 'Fotógrafo' : 'Deportista');
+      $('#view-photographer').style.display = me.role === 'photographer' ? '' : 'none';
+      const initials = me.name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || 'OC';
+      sessionEl.innerHTML = `<button id="avatarBtn" class="avatar" aria-label="Mi cuenta">${esc(initials)}</button>`;
+      renderUserMenu();
+      $('#avatarBtn').onclick = (e) => { e.stopPropagation(); $('#userMenu').classList.toggle('hidden'); };
+      const pl = $('#profileLogout');
+      if (pl) pl.onclick = doLogout;
     } else {
-      $('#auth').classList.remove('hidden'); $('#app').classList.add('hidden');
-      $('#session').innerHTML = '';
+      $('#auth').classList.remove('hidden');
+      $('#profileBlock').classList.add('hidden');
+      sessionEl.innerHTML = `<button id="loginBtn" class="ghost">Entrar</button>`;
+      $('#loginBtn').onclick = () => showView('account');
+      closeUserMenu();
     }
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
+
+function doLogout() { saveToken(''); me = null; location.reload(); }
+
+// Menú del avatar (header): saludo + accesos + cerrar sesión. El logo
+// nunca choca con ningún botón: aquí solo hay un círculo.
+function renderUserMenu() {
+  const m = $('#userMenu');
+  if (!me) { m.innerHTML = ''; m.classList.add('hidden'); return; }
+  m.innerHTML = `<div class="um-name">Hola, ${esc(me.name)}</div>
+    <div class="um-sub">${esc(me.email)} · ${me.role === 'photographer' ? 'Fotógrafo' : 'Deportista'}</div>
+    <button id="umPhotos">Mis fotos</button>
+    ${me.role === 'photographer' ? '<button id="umPanel">Panel fotógrafo</button>' : ''}
+    <button id="umLogout">Cerrar sesión</button>`;
+  m.querySelector('#umPhotos').onclick = () => { closeUserMenu(); showView('myphotos'); };
+  const up = m.querySelector('#umPanel');
+  if (up) up.onclick = () => { closeUserMenu(); showView('account'); };
+  m.querySelector('#umLogout').onclick = doLogout;
+}
+function closeUserMenu() { $('#userMenu').classList.add('hidden'); }
+document.addEventListener('click', (e) => {
+  const m = $('#userMenu');
+  if (!m.classList.contains('hidden') && !m.contains(e.target) && !(e.target.closest && e.target.closest('#avatarBtn'))) closeUserMenu();
+});
 
 // ---- Mensaje de cooperación voluntaria tras una descarga gratis ----
 function showTipModal(clabe, name) {
@@ -57,11 +92,11 @@ function showTipModal(clabe, name) {
   const m = document.createElement('div');
   m.id = 'tipModal';
   m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
-  m.innerHTML = `<div style="background:#1a1a2e;color:#fff;border-radius:12px;padding:20px;max-width:340px;text-align:center">
+  m.innerHTML = `<div style="background:#17171c;color:#fff;border:1px solid #2a2a30;border-radius:12px;padding:20px;max-width:340px;text-align:center">
     <p>¡Gracias por descargar tu foto! Es gratis. Si te gustó el servicio y quieres cooperar para que sigamos en los eventos, te dejo mi CLABE:</p>
     <p style="font-size:20px;font-weight:bold;letter-spacing:1px">${esc(clabe)}</p>
     ${name ? `<p>A nombre de: <strong>${esc(name)}</strong></p>` : ''}
-    <div class="row" style="justify-content:center"><button id="tipCopy">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
+    <div class="row" style="justify-content:center"><button id="tipCopy" class="primary">Copiar CLABE</button><button id="tipClose">Cerrar</button></div>
     <p id="tipCopyMsg" class="muted"></p></div>`;
   document.body.appendChild(m);
   m.querySelector('#tipClose').onclick = () => m.remove();
@@ -79,6 +114,14 @@ function showTipModal(clabe, name) {
 // seguro de Clip; al pagar, Clip nos devuelve y se descarga la foto.
 async function savePhoto(photo, freeMode, priceMxn) {
   const price = Number(priceMxn || photo.price || 0);
+  // La búsqueda es pública, pero descargar/comprar sí exige sesión:
+  // sin sesión, primero se pide iniciar sesión (vista Cuenta).
+  if (!token) {
+    hideLightbox();
+    alert('Inicia sesión para descargar tu foto.');
+    showView('account');
+    return;
+  }
   const btns = document.querySelectorAll(`[data-save="${photo.id}"]`);
   btns.forEach(b => { b.disabled = true; b.textContent = 'Guardando…'; });
   try {
@@ -193,7 +236,7 @@ function photoCard(p) {
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
-      <button data-save="${p.id}">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
+      <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
     </div></div>`;
 }
 
@@ -238,16 +281,62 @@ async function searchBib() {
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
+// Tarjeta de evento: portada, nombre, fecha, fotos reales y precio real
+// por foto ("Desde $X MXN/foto" o "Descarga gratis"). NUNCA se inventan
+// eventos ni precios: solo se muestran los que devuelve /api/events.
+// PAQUETE: mostrar cuando Orlan defina el precio — p. ej. una línea
+// "Todas tus fotos $Y MXN" junto al precio por foto. No mostrar precio
+// inventado.
+function eventCard(e) {
+  const price = Number(e.priceMxn || 20);
+  const priceTxt = e.freeMode ? 'Descarga gratis' : 'Desde $' + price + ' MXN/foto';
+  return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
+    ${e.coverPath ? `<img class="event-cover" src="/api/cover?eventId=${e.id}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
+    <div class="event-body">
+      <strong>${esc(e.name)}</strong>
+      <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
+      <span class="event-meta">${e.photoCount || 0} fotos · ${priceTxt}</span>
+      <span class="event-cta">Ver fotos →</span>
+    </div></div>`;
+}
+
+function bindEventCards() {
+  document.querySelectorAll('[data-ev]').forEach(b => {
+    b.onclick = () => loadEventDetail(Number(b.dataset.ev), true);
+    b.onkeydown = (e) => { if (e.key === 'Enter') loadEventDetail(Number(b.dataset.ev), true); };
+  });
+}
+
+// Inicio (público, sin login): hero con la portada y los datos reales del
+// evento más reciente + tarjetas de eventos recientes.
+async function loadHome() {
+  try {
+    const r = await api('/api/events');
+    const evs = r.events || [];
+    const hero = $('#hero');
+    if (evs.length) {
+      const ev = [...evs].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
+      $('#heroTitle').textContent = 'Encuentra tus fotos del ' + ev.name;
+      $('#heroSub').textContent = (ev.photoCount || 0) + ' fotos listas' + (ev.location ? ' · ' + ev.location : '') + (ev.eventDate ? ' · ' + ev.eventDate : '');
+      hero.style.backgroundImage = ev.coverPath
+        ? 'linear-gradient(rgba(11,11,14,.60), rgba(11,11,14,.88)), url("/api/cover?eventId=' + ev.id + '")'
+        : '';
+    } else {
+      $('#heroTitle').textContent = 'Encuentra tus fotos';
+      $('#heroSub').textContent = 'Aún no hay eventos publicados.';
+      hero.style.backgroundImage = '';
+    }
+    $('#homeEvents').innerHTML = evs.length ? evs.map(e => eventCard(e)).join('') : '<p class="muted">Aún no hay eventos publicados.</p>';
+    bindEventCards();
+  } catch (e) {
+    $('#heroSub').textContent = 'No se pudieron cargar los eventos.';
+  }
+}
+
 async function loadEvents() {
   const r = await api('/api/events');
-  $('#eventList').innerHTML = r.events.length ? r.events.map(e => `
-    <div class="card" style="background:#12142a">
-      ${e.coverPath ? `<img src="/api/cover?eventId=${e.id}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:8px">` : ''}
-      <strong>${esc(e.name)}</strong> · ${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}<br>
-      <span class="muted">${e.photoCount} foto(s) · ${e.freeMode ? 'Descarga gratis' : 'De pago · $' + (e.priceMxn || 20) + ' MXN/foto'}</span><br>
-      <button data-ev="${e.id}">Ver fotos</button>
-    </div>`).join('') : '<p>No hay eventos todavía.</p>';
-  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => loadEventDetail(Number(b.dataset.ev), true));
+  $('#eventList').innerHTML = r.events.length ? r.events.map(e => eventCard(e)).join('') : '<p>No hay eventos todavía.</p>';
+  bindEventCards();
 }
 
 async function loadEventDetail(eventId, push) {
@@ -262,7 +351,7 @@ async function loadEventDetail(eventId, push) {
     <h3>${esc(r.event.name)}</h3>
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
-    <div class="row"><input id="evBib" inputmode="numeric" placeholder="Buscar dorsal en este evento"><button id="evBibBtn">Buscar</button></div>
+    <div class="row"><input id="evBib" inputmode="numeric" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   $('#evBibBtn').onclick = async () => {
@@ -278,6 +367,13 @@ async function loadEventDetail(eventId, push) {
 async function loadMyPhotos() {
   currentTipClabe = '';
   currentTipName = '';
+  // "Mis fotos" sí exige sesión: sin sesión se invita a entrar, no se
+  // llama a la API (devolvería 401).
+  if (!me) {
+    $('#myPhotosList').innerHTML = `<div class="card"><p>Inicia sesión para ver tus fotos guardadas y compradas.</p><button id="myPhotosLogin" class="primary">Iniciar sesión</button></div>`;
+    $('#myPhotosLogin').onclick = () => showView('account');
+    return;
+  }
   const r = await api('/api/my-photos');
   $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos);
@@ -292,10 +388,10 @@ async function loadPhotographer() {
     <h3>Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
-    <button id="evCreate">Crear evento</button>
+    <button id="evCreate" class="primary">Crear evento</button>
     <h3>Cooperación voluntaria</h3>
     <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
-    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave">Guardar CLABE</button></div>
+    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave" class="primary">Guardar CLABE</button></div>
     <p id="tipStatus" class="muted"></p>
     <h3>Subir fotos</h3>
     <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
@@ -303,13 +399,13 @@ async function loadPhotographer() {
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
-    <button id="upBtn">Subir fotos</button>
+    <button id="upBtn" class="primary">Subir fotos</button>
     <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
     <h3>Portada del evento</h3>
     <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p>
     <div class="row"><select id="covEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
     <div id="covPreview"></div>
-    <button id="covBtn">Subir portada</button>
+    <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
     <h3>Mis eventos</h3>
     ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
@@ -504,7 +600,7 @@ async function loadPhotographer() {
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
     try {
       const r = await api('/api/event-get?eventId=' + ev.id);
-      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
+      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
           <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" inputmode="numeric" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
@@ -563,11 +659,19 @@ async function loadPhotographer() {
 }
 
 function showView(v) {
-  ['search', 'events', 'myphotos', 'photographer'].forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
+  // Un estado viejo del historial (versión anterior) puede traer una vista
+  // que ya no existe ('search', 'photographer'): caer al inicio.
+  if (!['home', 'events', 'myphotos', 'account'].includes(v)) v = 'home';
+  ['home', 'events', 'myphotos', 'account'].forEach(x => {
+    const el = $('#view-' + x);
+    if (el) el.classList.toggle('hidden', x !== v);
+  });
+  document.querySelectorAll('button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
   if (v !== currentView) { currentView = v; lastBackAtHome = 0; pushNav({ view: v }); }
+  if (v === 'home') loadHome();
   if (v === 'events') loadEvents();
   if (v === 'myphotos') loadMyPhotos();
-  if (v === 'photographer') loadPhotographer();
+  if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
 }
 
 // ---- Botón atrás del teléfono ----
@@ -590,18 +694,18 @@ function closeLightbox() {
   hideLightbox();
 }
 function atHome() {
-  return currentView === 'search' && !lightboxPhoto && !(($('#eventDetail').innerHTML || '').trim());
+  return currentView === 'home' && !lightboxPhoto && !(($('#eventDetail').innerHTML || '').trim());
 }
 function showExitToast() {
   const t = document.createElement('div');
   t.textContent = 'Pulsa atrás otra vez para salir de OnlyClick';
-  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2c3157;color:#fff;padding:10px 16px;border-radius:8px;z-index:99;font-size:15px';
+  t.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#26262c;color:#fff;padding:10px 16px;border-radius:8px;z-index:99;font-size:15px';
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2200);
 }
 function guardHomeExit() {
   lastBackAtHome = Date.now();
-  try { history.pushState({ view: 'search', homeGuard: true }, ''); } catch (_) {}
+  try { history.pushState({ view: 'home', homeGuard: true }, ''); } catch (_) {}
   showExitToast();
 }
 function applyNavState(st) {
@@ -613,7 +717,7 @@ function applyNavState(st) {
     else if (st && st.view) {
       if (st.view === 'events') $('#eventDetail').innerHTML = '';
       showView(st.view);
-    } else { showView('search'); }
+    } else { showView('home'); }
   } finally { suppressPush = false; }
 }
 window.addEventListener('popstate', (e) => {
@@ -624,7 +728,7 @@ window.addEventListener('popstate', (e) => {
       guardHomeExit();
       return;
     }
-    applyNavState({ view: 'search' });
+    applyNavState({ view: 'home' });
     return;
   }
   if (st.homeGuard) {
@@ -639,7 +743,8 @@ window.addEventListener('popstate', (e) => {
   applyNavState(st);
 });
 
-document.querySelectorAll('nav button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
+document.querySelectorAll('button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
+$('#brandHome').onclick = () => showView('home');
 $('#bibSearch').onclick = searchBib;
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
@@ -651,7 +756,7 @@ $('#authSubmit').onclick = async () => {
     let r;
     if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
     else r = await api('/api/auth-login', { method: 'POST', body: JSON.stringify(body) });
-    saveToken(r.token); await refreshAuth(); showView('search');
+    saveToken(r.token); await refreshAuth(); showView('home');
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 };
 $('#authForgot').onclick = () => { const box = $('#forgotBox'); box.style.display = box.style.display === 'none' ? '' : 'none'; };
@@ -675,18 +780,19 @@ $('#resetSend').onclick = async () => {
 
 // Estado inicial en el historial para que la primera flecha de atrás no
 // saque de la app.
-try { history.replaceState({ view: 'search' }, ''); } catch (_) {}
-
-refreshAuth();
-handlePayReturn();
+try { history.replaceState({ view: 'home' }, ''); } catch (_) {}
 
 // Si la URL trae ?reset=... (enlace del correo), mostrar el formulario
 // de nueva contraseña aunque haya sesión iniciada.
 resetToken = new URLSearchParams(location.search).get('reset') || '';
 if (resetToken) {
-  $('#auth').classList.remove('hidden');
-  $('#app').classList.add('hidden');
+  forceResetView = true;
   $('#resetBox').style.display = '';
   $('#forgotBox').style.display = 'none';
   $('#authTitle').textContent = 'Nueva contraseña';
 }
+
+refreshAuth();
+loadHome();
+handlePayReturn();
+if (resetToken) showView('account');
