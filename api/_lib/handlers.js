@@ -395,6 +395,8 @@ function eventPrice(ev) {
 // bloque aquí y su gemelo en public/app.js; el servidor siempre manda.
 const PACKAGE_SIZE = 10;
 const PACKAGE_DISCOUNT = 0.25;
+const CART_MAX_TOTAL = 5000; // límite de Clip por transacción (MXN)
+const CART_MAX_ITEMS = 100; // máximo de fotos por carrito
 const SINGLE_TIERS = [
   { from: 1, to: 3, discount: 0 },
   { from: 4, to: 5, discount: 0.20 },
