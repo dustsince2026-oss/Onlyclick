@@ -644,7 +644,7 @@ async function loadEventDetail(eventId, push) {
     <h3>${esc(r.event.name)}</h3>
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
-    <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="off" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
+    <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   $('#evBibBtn').onclick = async () => {
@@ -896,7 +896,7 @@ async function loadPhotographer() {
       box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
           <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
-          <input id="revBib-${p.id}" type="search" inputmode="numeric" autocomplete="off" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
+          <input id="revBib-${p.id}" type="search" inputmode="numeric" autocomplete="one-time-code" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
           <button data-reread="${p.id}">Releer con IA</button>
           <button data-savebib="${p.id}">Guardar</button>
           <span id="revState-${p.id}" class="muted"></span>
