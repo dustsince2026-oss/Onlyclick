@@ -182,6 +182,118 @@ async function listSales(store, user) {
   return { status: 200, data: { sales: rows, totalDownloads: rows.length, freeDownloads: freeCount, revenue } };
 }
 
+// ---- Estadísticas del fotógrafo (vistas) ----
+// Las vistas se cuentan SOLO desde que se activa el registro: lo de
+// antes no se puede recuperar. viewerKey es anónimo ('v:…' del navegador
+// o 'u:<id>' con sesión): nunca se guarda el nombre de quien solo mira.
+function cleanViewerKey(k) {
+  const s = String(k || '').trim();
+  if (!s || s.length > 64 || !/^[A-Za-z0-9:_-]+$/.test(s)) return null;
+  return s;
+}
+
+async function trackView(store, user, body) {
+  const kind = String(body.kind || '');
+  if (kind !== 'photo' && kind !== 'event' && kind !== 'search') throw err(400, 'Tipo de vista no válido.');
+  let photoId = null, eventId = null, bib = '';
+  if (kind === 'photo') {
+    photoId = Number(body.photoId);
+    if (!Number.isInteger(photoId)) throw err(400, 'Falta la foto.');
+    const p = await store.getPhoto(photoId);
+    if (!p) throw err(404, 'Foto no encontrada.');
+    eventId = p.eventId;
+  } else if (kind === 'event') {
+    eventId = Number(body.eventId);
+    if (!Number.isInteger(eventId)) throw err(400, 'Falta el evento.');
+    const ev = await store.getEvent(eventId);
+    if (!ev) throw err(404, 'Evento no encontrado.');
+  } else {
+    bib = normBib(body.bib);
+    if (!bib || bib.includes('@')) throw err(400, 'Escribe solo tu número de dorsal, sin correo.');
+    if (body.eventId != null && body.eventId !== '') {
+      const ev = await store.getEvent(Number(body.eventId));
+      if (ev) eventId = ev.id;
+    }
+  }
+  const viewerKey = (user && user.id) ? ('u:' + user.id) : (cleanViewerKey(body.viewerKey) || 'anon');
+  const v = { kind, photoId, eventId, bib, viewerKey };
+  if (await store.hasViewToday(v)) return { status: 200, data: { ok: true, counted: false } };
+  await store.recordView(v);
+  return { status: 200, data: { ok: true, counted: true } };
+}
+
+async function listStats(store, user) {
+  requirePhotographer(user);
+  const views = await store.listViews();
+  const downloads = await store.listAllDownloads();
+  const events = await store.listEvents();
+  const photos = new Map();
+  for (const ev of events) for (const p of await store.listPhotos(ev.id)) photos.set(p.id, p);
+  let photoViews = 0, eventViews = 0;
+  const viewers = new Set();
+  const perEvent = new Map();
+  for (const ev of events) perEvent.set(ev.id, { eventId: ev.id, name: ev.name, photoCount: ev.photoCount || 0, photoViews: 0, uniqueViewers: new Set(), eventViews: 0, downloads: 0, revenue: 0 });
+  const photoViewCount = new Map(), photoDlCount = new Map(), bibSearches = new Map();
+  for (const v of views) {
+    // Toda vista con visitante cuenta como visitante único (foto, evento
+    // o búsqueda); por evento solo cuentan sus fotos, sus visitas y sus
+    // búsquedas dentro de ese evento.
+    if (v.viewerKey) viewers.add(v.viewerKey);
+    if (v.kind === 'photo') {
+      photoViews += 1;
+      if (v.photoId != null) photoViewCount.set(v.photoId, (photoViewCount.get(v.photoId) || 0) + 1);
+      if (v.eventId != null && perEvent.has(v.eventId)) {
+        const pe = perEvent.get(v.eventId);
+        pe.photoViews += 1;
+        if (v.viewerKey) pe.uniqueViewers.add(v.viewerKey);
+      }
+    } else if (v.kind === 'event') {
+      eventViews += 1;
+      if (v.eventId != null && perEvent.has(v.eventId)) {
+        const pe = perEvent.get(v.eventId);
+        pe.eventViews += 1;
+        if (v.viewerKey) pe.uniqueViewers.add(v.viewerKey);
+      }
+    } else if (v.kind === 'search') {
+      if (v.bib) bibSearches.set(v.bib, (bibSearches.get(v.bib) || 0) + 1);
+      if (v.eventId != null && perEvent.has(v.eventId) && v.viewerKey) perEvent.get(v.eventId).uniqueViewers.add(v.viewerKey);
+    }
+  }
+  let totalDownloads = 0, freeDownloads = 0, revenue = 0;
+  for (const d of downloads) {
+    totalDownloads += 1;
+    revenue += Number(d.amount || 0);
+    if (!d.amount) freeDownloads += 1;
+    if (d.photoId != null) photoDlCount.set(d.photoId, (photoDlCount.get(d.photoId) || 0) + 1);
+    if (d.eventId != null && perEvent.has(d.eventId)) {
+      const pe = perEvent.get(d.eventId);
+      pe.downloads += 1;
+      pe.revenue += Number(d.amount || 0);
+    }
+  }
+  // Desempate determinista: a igualdad de vistas, primero la foto con
+  // más descargas y luego el id menor (listViews viene en orden
+  // descendente, así que sin desempate el orden del empate dependería
+  // de qué foto se vio más recientemente).
+  const topPhotos = [...photoViewCount.entries()]
+    .sort((a, b) => b[1] - a[1] || (photoDlCount.get(b[0]) || 0) - (photoDlCount.get(a[0]) || 0) || a[0] - b[0]).slice(0, 10)
+    .map(([photoId, views]) => {
+      const p = photos.get(photoId);
+      const ev = p ? events.find(e => e.id === p.eventId) : null;
+      return { photoId, eventId: p ? p.eventId : null, eventName: ev ? ev.name : '', bibs: p ? (p.bibs || []) : [], views, downloads: photoDlCount.get(photoId) || 0 };
+    });
+  const topBibs = [...bibSearches.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, 10)
+    .map(([bib, searches]) => ({ bib, searches }));
+  const evRows = [...perEvent.values()].map(pe => ({ eventId: pe.eventId, name: pe.name, photoCount: pe.photoCount, photoViews: pe.photoViews, uniqueViewers: pe.uniqueViewers.size, eventViews: pe.eventViews, downloads: pe.downloads, revenue: pe.revenue }));
+  return { status: 200, data: {
+    totals: { photoViews, uniqueViewers: viewers.size, eventViews, totalDownloads, freeDownloads, revenue },
+    events: evRows,
+    topPhotos,
+    topBibs,
+  } };
+}
+
 async function setFreeMode(store, user, body) {
   requirePhotographer(user);
   const ev = await store.getEvent(body.eventId);
@@ -795,6 +907,8 @@ async function dispatch(route, req) {
     case 'purchase': throw err(410, 'El pago ahora es con Clip. Usa el botón "Pagar y descargar".');
     case 'my-photos': return listPurchases(store, user);
     case 'sales': return listSales(store, user);
+    case 'track-view': return trackView(store, user, b);
+    case 'stats': return listStats(store, user);
     case 'set-free-mode': return setFreeMode(store, user, b);
     case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);

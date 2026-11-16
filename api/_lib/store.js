@@ -22,7 +22,7 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 // ---------------- Adaptador de archivo local ----------------
 function loadDb() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (_) {
-    return { users: [], events: [], photos: [], downloads: [], payments: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1 } };
+    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1 } };
   }
 }
 function saveDb(db) {
@@ -69,6 +69,26 @@ const fileStore = {
   async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
   async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId)); },
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
+  // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
+  // Una vista por visitante por foto / evento / dorsal por día (UTC).
+  async recordView(v) {
+    const db = loadDb();
+    if (!db.views) db.views = [];
+    if (!db.seq.view) db.seq.view = 1;
+    const row = { id: nextId(db, 'view'), kind: v.kind, photoId: v.photoId != null ? Number(v.photoId) : null, eventId: v.eventId != null ? Number(v.eventId) : null, bib: v.bib || '', viewerKey: v.viewerKey, createdAt: new Date().toISOString() };
+    db.views.push(row); saveDb(db); return row;
+  },
+  async hasViewToday(v) {
+    const db = loadDb();
+    const today = new Date().toISOString().slice(0, 10);
+    return (db.views || []).some(x => x.kind === v.kind
+      && (x.photoId == null ? null : Number(x.photoId)) === (v.photoId != null ? Number(v.photoId) : null)
+      && (x.eventId == null ? null : Number(x.eventId)) === (v.eventId != null ? Number(v.eventId) : null)
+      && (x.bib || '') === (v.bib || '')
+      && x.viewerKey === v.viewerKey
+      && String(x.createdAt || '').slice(0, 10) === today);
+  },
+  async listViews() { return (loadDb().views || []).slice().sort((a, b) => b.id - a.id); },
   async createPayment(p) { const db = loadDb(); const row = { id: nextId(db, 'payment'), currency: 'MXN', status: 'pending', receiptNo: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...p }; db.payments.push(row); saveDb(db); return row; },
   async getPaymentByClipId(id) { return loadDb().payments.find(x => x.clipPaymentRequestId === String(id)) || null; },
   // Todas las filas de un checkout (un carrito = varias filas con el
@@ -117,6 +137,7 @@ function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passw
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, thumbPath: r.thumb_path || '', createdAt: r.created_at } : null; }
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), createdAt: r.created_at } : null; }
+function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
@@ -202,6 +223,38 @@ const supabaseStore = {
   async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
   async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
   async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
+  // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
+  // Una vista por visitante por foto / evento / dorsal por día (UTC).
+  async recordView(v) {
+    const { data, error } = await supabase().from('views').insert({ kind: v.kind, photo_id: v.photoId != null ? v.photoId : null, event_id: v.eventId != null ? v.eventId : null, bib: v.bib || null, viewer_key: v.viewerKey }).select().single();
+    if (error) throw new Error(error.message);
+    return mapView(data);
+  },
+  async hasViewToday(v) {
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+    let q = supabase().from('views').select('id', { count: 'exact', head: true }).eq('kind', v.kind).eq('viewer_key', v.viewerKey).gte('created_at', start).lt('created_at', end);
+    if (v.photoId != null) q = q.eq('photo_id', v.photoId); else q = q.is('photo_id', null);
+    if (v.eventId != null) q = q.eq('event_id', v.eventId); else q = q.is('event_id', null);
+    if (v.bib) q = q.eq('bib', v.bib); else q = q.is('bib', null);
+    const { count } = await q;
+    return (count || 0) > 0;
+  },
+  // Paginado de 1000 en 1000 (límite de PostgREST por petición) hasta
+  // 20000 filas: las estadísticas solo cubren las vistas más recientes
+  // si la tabla pasa de ahí (ver README).
+  async listViews() {
+    const out = [];
+    const PAGE = 1000, MAX = 20000;
+    for (let from = 0; from < MAX; from += PAGE) {
+      const { data } = await supabase().from('views').select().order('id', { ascending: false }).range(from, from + PAGE - 1);
+      const rows = data || [];
+      out.push(...rows.map(mapView));
+      if (rows.length < PAGE) break;
+    }
+    return out;
+  },
   async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId); return (count || 0) > 0; },
   async createPayment(p) { const { data, error } = await supabase().from('payments').insert({ clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' }).select().single(); if (error) throw new Error(error.message); return mapPayment(data); },
   async getPaymentByClipId(id) { const { data } = await supabase().from('payments').select().eq('clip_payment_request_id', id).maybeSingle(); return mapPayment(data); },
