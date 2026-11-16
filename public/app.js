@@ -270,7 +270,9 @@ function bindPhotos(photos) {
 async function searchBib() {
   const bib = $('#bibInput').value.trim();
   if (!bib) return;
-  const box = $('#searchResults'); box.innerHTML = '<p>Buscando…</p>';
+  const box = $('#searchResults');
+  if (bib.includes('@')) { box.innerHTML = '<p>Escribe solo tu número de dorsal, sin correo.</p>'; return; }
+  box.innerHTML = '<p>Buscando…</p>';
   try {
     const r = await api('/api/search?bib=' + encodeURIComponent(bib));
     currentPhotos = r.photos;
@@ -316,8 +318,10 @@ async function loadHome() {
     const hero = $('#hero');
     if (evs.length) {
       const ev = [...evs].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
-      $('#heroTitle').textContent = 'Encuentra tus fotos del ' + ev.name;
-      $('#heroSub').textContent = (ev.photoCount || 0) + ' fotos listas' + (ev.location ? ' · ' + ev.location : '') + (ev.eventDate ? ' · ' + ev.eventDate : '');
+      // Título genérico: la búsqueda del hero es global (todos los eventos),
+      // el evento más reciente solo se destaca como referencia.
+      $('#heroTitle').textContent = 'Encuentra tus fotos';
+      $('#heroSub').textContent = 'Evento reciente: ' + ev.name + ' · ' + (ev.photoCount || 0) + ' fotos listas' + (ev.location ? ' · ' + ev.location : '') + (ev.eventDate ? ' · ' + ev.eventDate : '');
       hero.style.backgroundImage = ev.coverPath
         ? 'linear-gradient(rgba(11,11,14,.60), rgba(11,11,14,.88)), url("/api/cover?eventId=' + ev.id + '")'
         : '';
@@ -351,7 +355,7 @@ async function loadEventDetail(eventId, push) {
     <h3>${esc(r.event.name)}</h3>
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
-    <div class="row"><input id="evBib" inputmode="numeric" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
+    <div class="row"><input id="evBib" inputmode="numeric" autocomplete="off" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   $('#evBibBtn').onclick = async () => {
@@ -756,7 +760,11 @@ $('#authSubmit').onclick = async () => {
     let r;
     if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
     else r = await api('/api/auth-login', { method: 'POST', body: JSON.stringify(body) });
-    saveToken(r.token); await refreshAuth(); showView('home');
+    saveToken(r.token); await refreshAuth();
+    // El autocompletado de Chrome a veces deja el correo en el buscador
+    // de dorsal al entrar: si parece correo, se limpia.
+    const bibEl = $('#bibInput'); if (bibEl && bibEl.value.includes('@')) bibEl.value = '';
+    showView('home');
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 };
 $('#authForgot').onclick = () => { const box = $('#forgotBox'); box.style.display = box.style.display === 'none' ? '' : 'none'; };
