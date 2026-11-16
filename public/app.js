@@ -21,6 +21,120 @@ let lightboxPushed = false;
 let lastBackAtHome = 0;
 let forceResetView = false; // ?reset=... : mostrar el form de nueva contraseña aunque haya sesión
 
+// ---- Carrito con descuentos por volumen ----
+// Regla FINAL (decisión del dueño 2026-11-16): los paquetes son APARTE.
+// Fotos INDIVIDUALES: 1-3 a precio normal, 4a y 5a con 20% de descuento
+// cada una, 6a en adelante a precio NORMAL (sin descuento).
+// PAQUETES: el carrito forma AUTOMÁTICAMENTE floor(N/10) paquetes de 10
+// fotos; cada paquete cuesta 25% menos que el total de sus 10 fotos.
+// NINGÚN precio está fijo en el código: todos salen de priceMxn (el
+// precio por foto del evento, editable en "Mis eventos"), así los
+// porcentajes sirven con cualquier precio.
+// Regla de orden (igual en el servidor): precio descendente, luego id asc.
+// Para cambiar los porcentajes o el tamaño del paquete se toca SOLO este
+// bloque aquí y su gemelo en api/_lib/handlers.js. El servidor SIEMPRE
+// cobra lo que calcula su propia cartTotals, así que lo que se muestra
+// aquí y lo que se cobra es lo mismo mientras las dos copias digan lo mismo.
+const PACKAGE_SIZE = 10;
+const PACKAGE_DISCOUNT = 0.25;
+const SINGLE_TIERS = [
+  { from: 1, to: 3, discount: 0 },
+  { from: 4, to: 5, discount: 0.20 },
+  { from: 6, to: Infinity, discount: 0 },
+];
+const CART_MAX_TOTAL = 5000; // límite de Clip por transacción (MXN)
+const CART_KEY = 'onlyclick_cart';
+let cart = loadCart();
+function loadCart() {
+  try {
+    const raw = localStorage.getItem(CART_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter(x => x && Number(x.id)) : [];
+  } catch (_) { return []; }
+}
+function saveCart() {
+  try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch (_) {}
+  updateCartFab();
+}
+function singleDiscountForPosition(pos) {
+  for (const t of SINGLE_TIERS) if (pos >= t.from && pos <= t.to) return t.discount;
+  return 0;
+}
+// Reparte `total` en n partes enteras que suman exactamente total.
+function splitAmount(total, n) {
+  const base = Math.floor(total / n);
+  const rem = total - base * n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(base + (i < rem ? 1 : 0));
+  return out;
+}
+// items: [{ id, priceMxn }] — misma fórmula que api/_lib/handlers.js.
+function cartTotals(items) {
+  const sorted = items.slice().sort((a, b) => (Number(b.priceMxn || b.price || 0) - Number(a.priceMxn || a.price || 0)) || (Number(a.id) - Number(b.id)));
+  const numPackages = Math.floor(sorted.length / PACKAGE_SIZE);
+  const packages = [];
+  for (let p = 0; p < numPackages; p++) {
+    const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
+    const subtotal = group.reduce((s, it) => s + Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100, 0);
+    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT));
+    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
+  }
+  const singles = sorted.slice(numPackages * PACKAGE_SIZE);
+  const lines = singles.map((it, i) => {
+    const price = Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100;
+    const discount = singleDiscountForPosition(i + 1);
+    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount)) };
+  });
+  const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
+  const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
+  return { packages, lines, subtotal, discount: subtotal - total, total };
+}
+// Precio del paquete de 10 si el carrito (6-9 fotos) llegara a 10: se
+// supone que las fotos que faltan son del mismo precio que la más cara
+// del carrito (lo normal: mismo evento). Nunca un número fijo.
+function packageUpsell() {
+  if (cart.length < 6 || cart.length >= PACKAGE_SIZE) return null;
+  const missing = PACKAGE_SIZE - cart.length;
+  const maxPrice = Math.max(...cart.map(x => Number(x.priceMxn || x.price || 0)));
+  const currentSum = cart.reduce((s, x) => s + Math.round(Number(x.priceMxn || x.price || 0) * 100) / 100, 0);
+  const packageTotal = Math.round((currentSum + missing * maxPrice) * (1 - PACKAGE_DISCOUNT));
+  return { missing, packageTotal };
+}
+function cartHas(id) { return cart.some(x => x.id === Number(id)); }
+function updateCartFab() {
+  const fab = $('#cartFab'), badge = $('#cartCount');
+  if (!fab || !badge) return;
+  badge.textContent = String(cart.length);
+  badge.classList.toggle('hidden', cart.length === 0);
+}
+// Aviso corto abajo en pantalla (como el de "pulsa atrás otra vez").
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#26262c;color:#fff;padding:10px 16px;border-radius:8px;z-index:99;font-size:15px';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+}
+function addToCart(photo) {
+  const freeMode = photo.freeMode !== false;
+  if (freeMode || photo.owned) return;
+  if (cartHas(photo.id)) { showView('cart'); return; } // ya está: ir al carrito
+  cart.push({ id: photo.id, eventId: photo.eventId, eventName: photo.eventName || '', priceMxn: Number(photo.priceMxn || photo.price || 0), bibs: (photo.bibs || []).slice() });
+  saveCart();
+  document.querySelectorAll(`[data-cart="${photo.id}"]`).forEach(b => { b.textContent = 'En el carrito ✓'; b.disabled = true; });
+  const lb = $('#lbCart');
+  if (lb && Number(lb.dataset.cart) === photo.id) { lb.textContent = 'En el carrito ✓'; lb.disabled = true; }
+  showToast('Foto agregada al carrito (' + cart.length + ').');
+}
+function removeFromCart(id) {
+  cart = cart.filter(x => x.id !== Number(id));
+  saveCart();
+  document.querySelectorAll(`[data-cart="${id}"]`).forEach(b => { b.textContent = 'Agregar al carrito'; b.disabled = false; });
+  const lb = $('#lbCart');
+  if (lb && Number(lb.dataset.cart) === Number(id)) { lb.textContent = 'Agregar al carrito'; lb.disabled = false; }
+}
+function clearCart() { cart = []; saveCart(); }
+
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -159,6 +273,7 @@ async function savePhoto(photo, freeMode, priceMxn) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
     btns.forEach(b => { b.textContent = '✓ Guardar iniciada — busca la foto en Descargas'; });
     if (freeMode && currentTipClabe) showTipModal(currentTipClabe, currentTipName);
+    removeFromCart(photo.id); // si estaba en el carrito, ya es tuya
     setTimeout(() => loadEventDetail(currentEvent), 1500);
   } catch (e) {
     alert('No se pudo guardar: ' + e.message);
@@ -173,10 +288,18 @@ async function handlePayReturn() {
   const q = new URLSearchParams(location.search);
   const paid = q.get('paid'), pay = q.get('pay');
   const eventId = Number(q.get('event') || 0), photoId = Number(q.get('photo') || 0);
+  // Regreso de un carrito: ?view=cart&pid=<payment_request_id>&paid=1 | pay=...
+  const view = q.get('view'), pid = q.get('pid');
+  if (view === 'cart' && (paid || pay)) {
+    history.replaceState({}, '', location.pathname);
+    handleCartReturn(pid, paid, pay);
+    return;
+  }
   if (!paid && !pay) return;
   history.replaceState({}, '', location.pathname);
   if (paid === '1' && eventId && photoId) {
     alert('¡Pago confirmado! Descargando tu foto…');
+    removeFromCart(photoId);
     try {
       const dlHeaders = {};
       if (token) dlHeaders.Authorization = 'Bearer ' + token;
@@ -227,6 +350,157 @@ async function pollPayment(photoId) {
   }
 }
 
+// ---- Vista del carrito ----
+function renderCartView() {
+  const box = $('#cartBox');
+  if (!cart.length) {
+    box.innerHTML = '<p>Tu carrito está vacío. Busca tu dorsal y agrega tus fotos.</p><button class="primary" id="cartGoHome">Buscar mis fotos</button>';
+    $('#cartGoHome').onclick = () => showView('home');
+    return;
+  }
+  const t = cartTotals(cart);
+  const byId = {};
+  cart.forEach(it => { byId[it.id] = it; });
+  const lineById = {};
+  t.lines.forEach(l => { lineById[l.id] = l; });
+  const upsell = packageUpsell();
+  // Líneas por separado: primero los paquetes, luego las individuales.
+  const packageRows = t.packages.map((pkg, pi) => {
+    const first = byId[pkg.photoIds[0]];
+    const bibs = pkg.photoIds.map(id => (byId[id] && (byId[id].bibs || []).join(', ')) || 'sin dorsal').join(', ');
+    return `<div class="cart-row cart-package">
+      <img src="/api/photo?id=${pkg.photoIds[0]}&thumb=1&inline=1" alt="" loading="lazy">
+      <div class="cart-info"><strong>Paquete de 10 fotos</strong><span class="muted">Dorsales: ${esc(bibs)}${first && first.eventName ? ' · ' + esc(first.eventName) : ''}</span></div>
+      <div class="cart-price"><s class="muted">$${pkg.subtotal}</s> <strong>$${pkg.total} MXN</strong> <span class="badge">-25%</span></div>
+      <button data-rmpackage="${pi}" class="secondary">Quitar paquete</button>
+    </div>`;
+  }).join('');
+  const singleRows = t.lines.map(l => {
+    const it = byId[l.id];
+    return `<div class="cart-row">
+      <img src="/api/photo?id=${it.id}&thumb=1&inline=1" alt="" loading="lazy">
+      <div class="cart-info"><strong>Dorsal ${esc((it.bibs || []).join(', ') || 'sin dorsal')}</strong><span class="muted">${esc(it.eventName || '')}</span></div>
+      <div class="cart-price">${l.discount ? `<s class="muted">$${l.price}</s> <strong>$${l.lineTotal} MXN</strong> <span class="badge">-${Math.round(l.discount * 100)}%</span>` : `<strong>$${l.lineTotal} MXN</strong>`}</div>
+      <button data-rmcart="${it.id}" class="secondary">Quitar</button>
+    </div>`;
+  }).join('');
+  box.innerHTML = '<p class="muted">' + cart.length + ' foto(s) · Individuales: 1-3 a precio normal, 4a y 5a con -20%. Cada 10 fotos forman un Paquete de 10 con -25%.</p>' +
+    (upsell ? `<p class="cart-upsell">Agrega ${upsell.missing} foto(s) más y llévate el paquete de 10 por $${upsell.packageTotal}.</p>` : '') +
+    packageRows + singleRows +
+    `<div class="card"><p>Subtotal: $${t.subtotal} MXN</p><p>Descuento: -$${t.discount} MXN</p><p><strong>Total a pagar: $${t.total} MXN</strong></p>
+    ${t.total > CART_MAX_TOTAL ? `<p class="error">El total supera el límite de $${CART_MAX_TOTAL} MXN por pago de Clip. Quita fotos o divide tu compra en dos.</p>` : ''}
+    <div class="row"><button id="cartPay" class="primary" ${t.total > CART_MAX_TOTAL ? 'disabled' : ''}>Pagar todo · $${t.total} MXN</button><button id="cartClear" class="secondary">Vaciar carrito</button></div>
+    <p class="muted">Pagas una sola vez con Clip (tarjeta o efectivo). Tus fotos quedan en "Mis fotos".</p></div>`;
+  box.querySelectorAll('[data-rmcart]').forEach(b => b.onclick = () => { removeFromCart(Number(b.dataset.rmcart)); renderCartView(); });
+  box.querySelectorAll('[data-rmpackage]').forEach(b => b.onclick = () => {
+    const pkg = t.packages[Number(b.dataset.rmpackage)];
+    if (!pkg) return;
+    if (!confirm('¿Quitar el paquete de 10 fotos del carrito?')) return;
+    pkg.photoIds.forEach(id => removeFromCart(id));
+    renderCartView();
+  });
+  $('#cartPay').onclick = checkoutCart;
+  $('#cartClear').onclick = () => { if (confirm('¿Vaciar el carrito?')) { clearCart(); renderCartView(); } };
+}
+
+async function checkoutCart() {
+  if (!cart.length) return;
+  // Pagar exige sesión, igual que comprar una foto suelta.
+  if (!token) { alert('Inicia sesión para pagar tu carrito.'); showView('account'); return; }
+  const t = cartTotals(cart);
+  if (t.total > CART_MAX_TOTAL) { alert('El total supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos.'); return; }
+  const btn = $('#cartPay');
+  if (btn) { btn.disabled = true; btn.textContent = 'Abriendo pago seguro…'; }
+  try {
+    const r = await api('/api/checkout-create-cart', { method: 'POST', body: JSON.stringify({ photoIds: cart.map(x => x.id) }) });
+    if (r.paid) { clearCart(); alert('¡Listo! Esas fotos ya eran tuyas.'); showView('myphotos'); return; }
+    if (r.checkoutUrl) { location.href = r.checkoutUrl; return; }
+    throw new Error('No se pudo crear el pago con Clip.');
+  } catch (e) {
+    // La foto ya no existe o pasó a gratis: se quita sola del carrito.
+    const gone = /Foto no encontrada: (\d+)/.exec(e.message);
+    const freeNow = /La foto (\d+) es de un evento gratis/.exec(e.message);
+    if (gone) { removeFromCart(Number(gone[1])); renderCartView(); alert('Una foto del carrito ya no existe y se quitó. Inténtalo de nuevo.'); return; }
+    if (freeNow) { removeFromCart(Number(freeNow[1])); renderCartView(); alert('Una foto ahora es gratis: se quitó del carrito, descárgala gratis desde el evento.'); return; }
+    alert('No se pudo pagar el carrito: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Pagar todo · $' + t.total + ' MXN'; }
+  }
+}
+
+// Descarga con fetch + blob (igual que la descarga de una foto): el
+// token va en el header porque la sesión vive en localStorage.
+async function downloadPhotoBlob(photoId) {
+  const dlHeaders = {};
+  if (token) dlHeaders.Authorization = 'Bearer ' + token;
+  const res = await fetch(`/api/photo?id=${photoId}`, { headers: dlHeaders });
+  if (!res.ok) throw new Error('descarga ' + res.status);
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl; a.download = `onlyclick-foto-${photoId}.jpg`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+}
+
+async function downloadCartPhotos(ids) {
+  for (const id of ids) {
+    try { await downloadPhotoBlob(id); } catch (_) {}
+    await new Promise(r => setTimeout(r, 400));
+  }
+  alert('Descargas iniciadas — busca las fotos en Descargas.');
+}
+
+function cartPaidBox(photoIds) {
+  const n = photoIds.length;
+  const box = $('#cartBox');
+  box.innerHTML = `<div class="card"><h3>¡Pago confirmado!</h3><p>${n} foto(s) ya son tuyas y están en "Mis fotos".</p><div class="row"><button id="cartDlAll" class="primary">Descargar todas</button><button id="cartGoPhotos" class="secondary">Ver en Mis fotos</button></div></div>`;
+  $('#cartGoPhotos').onclick = () => showView('myphotos');
+  $('#cartDlAll').onclick = () => downloadCartPhotos(photoIds);
+}
+
+// Regreso desde Clip tras pagar un carrito (?view=cart&pid=...).
+async function handleCartReturn(pid, paid, pay) {
+  showView('cart');
+  const box = $('#cartBox');
+  if (paid === '1') {
+    box.innerHTML = '<p>Verificando tu pago…</p>';
+    try {
+      const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
+      if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
+      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".</p>';
+      pollCartPayment(pid);
+      return;
+    } catch (_) {
+      box.innerHTML = '<p>No se pudo verificar el pago todavía. Revisa "Mis fotos" en unos minutos.</p>';
+      return;
+    }
+  }
+  if (pay === 'pending') {
+    alert('Tu pago está en proceso (puede ser efectivo en OXXO o confirmación pendiente). En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
+    pollCartPayment(pid);
+    return;
+  }
+  if (pay === 'failed') { alert('El pago no se completó (cancelado o vencido). Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
+  if (pay === 'error') { alert('No se pudo verificar el pago. Revisa "Mis fotos" en unos minutos; si no aparece, inténtalo de nuevo.'); renderCartView(); }
+}
+// Pregunta cada 5 s (máx 2 min) si un pago de carrito ya se confirmó.
+async function pollCartPayment(pid) {
+  if (!pid) return;
+  for (let i = 0; i < 24; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
+      if (s.paid) {
+        clearCart();
+        alert('¡Pago confirmado! ' + (s.photoIds || []).length + ' foto(s) ya son tuyas.');
+        if (currentView === 'cart') cartPaidBox(s.photoIds || []);
+        return;
+      }
+      if (s.status === 'cancelled' || s.status === 'expired') return;
+    } catch (_) { return; }
+  }
+}
+
 function photoCard(p) {
   const freeMode = p.freeMode !== false;
   const price = Number(p.priceMxn || p.price || 0);
@@ -237,6 +511,7 @@ function photoCard(p) {
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
+      ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
     </div></div>`;
 }
 
@@ -244,6 +519,10 @@ function bindPhotos(photos) {
   document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => {
     const p = photos.find(x => x.id === Number(b.dataset.save)) || currentPhotos.find(x => x.id === Number(b.dataset.save));
     if (p) savePhoto(p, p.freeMode !== false, p.priceMxn);
+  });
+  document.querySelectorAll('[data-cart]').forEach(b => b.onclick = () => {
+    const p = photos.find(x => x.id === Number(b.dataset.cart)) || currentPhotos.find(x => x.id === Number(b.dataset.cart));
+    if (p) addToCart(p);
   });
   document.querySelectorAll('[data-open]').forEach(img => img.onclick = () => {
     const p = photos.find(x => x.id === Number(img.dataset.open));
@@ -257,6 +536,12 @@ function bindPhotos(photos) {
     $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}`;
     $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
     $('#lbSave').dataset.save = p.id;
+    // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
+    const lbCart = $('#lbCart');
+    lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
+    lbCart.dataset.cart = p.id;
+    lbCart.disabled = cartHas(p.id);
+    lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito';
     // Marca de agua en la vista previa de pago: el servidor ya sirve la
     // miniatura en vez del original; este texto va encima.
     $('#lbWm').style.display = (!freeMode && !p.owned) ? 'flex' : 'none';
@@ -669,8 +954,8 @@ async function loadPhotographer() {
 function showView(v) {
   // Un estado viejo del historial (versión anterior) puede traer una vista
   // que ya no existe ('search', 'photographer'): caer al inicio.
-  if (!['home', 'events', 'myphotos', 'account'].includes(v)) v = 'home';
-  ['home', 'events', 'myphotos', 'account'].forEach(x => {
+  if (!['home', 'events', 'myphotos', 'account', 'cart'].includes(v)) v = 'home';
+  ['home', 'events', 'myphotos', 'account', 'cart'].forEach(x => {
     const el = $('#view-' + x);
     if (el) el.classList.toggle('hidden', x !== v);
   });
@@ -679,6 +964,7 @@ function showView(v) {
   if (v === 'home') loadHome();
   if (v === 'events') loadEvents();
   if (v === 'myphotos') loadMyPhotos();
+  if (v === 'cart') renderCartView();
   if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
 }
 
@@ -753,6 +1039,8 @@ window.addEventListener('popstate', (e) => {
 
 document.querySelectorAll('button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
 $('#brandHome').onclick = () => showView('home');
+$('#cartFab').onclick = () => showView('cart');
+$('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
 $('#bibSearch').onclick = searchBib;
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
@@ -807,4 +1095,5 @@ if (resetToken) {
 refreshAuth();
 loadHome();
 handlePayReturn();
+updateCartFab();
 if (resetToken) showView('account');
