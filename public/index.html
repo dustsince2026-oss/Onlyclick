@@ -50,7 +50,6 @@
   .badge.free { background: #1d7a4d; }
   .badge.owned { background: #7a5a1d; }
   .muted { color: #a7a7ad; font-size: 14px; }
-  .pf-commission { background: #141419; border: 1px solid rgba(212,175,55,.55); border-radius: 10px; padding: 12px; text-align: left; font-size: 15px; }
   .error { color: #ff8a7a; }
   .ok { color: #7ddba3; }
   /* ---------- Hero: foto del evento + buscador protagonista ---------- */
@@ -182,72 +181,6 @@
     }
     </script>
 
-    <div class="card" style="text-align:center">
-      <h3>¿Eres fotógrafo? Únete a OnlyClick</h3>
-      <p>Vende tus fotos de eventos deportivos en todo México: los corredores las encuentran por su dorsal con inteligencia artificial y las compran en línea. Tú solo sube tus fotos, nosotros nos encargamos de la plataforma y los pagos.</p>
-      <p class="pf-commission">Tus fotos se venden en OnlyClick y se te paga tu parte cada 72 horas a tu CLABE. De cada foto: Clip cobra 4.18%, OnlyClick se queda el 10% de lo que queda, y tú te quedas el 90%. Ejemplo: foto de $20 → Clip $0.84 → OnlyClick $1.92 → tú $17.24.</p>
-      <form id="photoForm" style="text-align:left" onsubmit="return sendPhotographerForm(event)">
-        <input id="pfName" placeholder="Nombre completo *" autocomplete="name" required>
-        <input id="pfCity" placeholder="Ciudad y estado donde cubres eventos *" required>
-        <input id="pfPhone" type="tel" placeholder="WhatsApp / teléfono *" autocomplete="tel" required>
-        <input id="pfEvents" placeholder="¿Cuántos eventos deportivos has cubierto? (número y años de experiencia) *" required>
-        <input id="pfCamera" placeholder="¿Qué cámara usas? (marca y modelo)">
-        <input id="pfLink" type="url" placeholder="Link a tu trabajo: 3-5 fotos de un evento que hayas cubierto (Facebook, Instagram, Google Drive o tu página) *" required>
-        <p class="muted" style="margin:0 0 6px">Si no tienes link, manda tus 3-5 mejores fotos por WhatsApp al mismo número después de enviar el formulario.</p>
-        <input id="pfSpecialty" placeholder="¿En qué tipo de eventos te especializas? (5K/10K, medio maratón, triatlón, ciclismo, trail...)">
-        <input id="pfDorsal" placeholder="¿Tienes experiencia entregando fotos por dorsal o plataforma digital? (sí/no, ¿cuál?)">
-        <input id="pfAvail" placeholder="¿Qué días/eventos puedes cubrir? (disponibilidad)">
-        <select id="pfClabe">
-          <option value="">¿Tienes CLABE para recibir tus pagos?</option>
-          <option value="Sí">Sí, tengo CLABE</option>
-          <option value="No">No, todavía no</option>
-        </select>
-        <textarea id="pfMsg" placeholder="Mensaje / algo que quieras agregar (opcional)" rows="2"></textarea>
-        <p id="pfError" class="error" style="display:none"></p>
-        <button class="primary" type="submit" style="width:100%">Enviar por WhatsApp</button>
-      </form>
-      <p id="pfSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
-    </div>
-    <script>
-    // Formulario para fotógrafos: arma el mensaje y lo abre en WhatsApp
-    // de Orlan, ya escrito. El fotógrafo solo le da Enviar en WhatsApp.
-    // Mismo flujo que el formulario de organizadores (sin backend).
-    function sendPhotographerForm(e) {
-      e.preventDefault();
-      const v = id => (document.getElementById(id).value || '').trim();
-      const name = v('pfName'), city = v('pfCity'), phone = v('pfPhone'),
-        events = v('pfEvents'), camera = v('pfCamera'), link = v('pfLink'),
-        specialty = v('pfSpecialty'), dorsal = v('pfDorsal'), avail = v('pfAvail'),
-        clabe = v('pfClabe'), msg = v('pfMsg');
-      const missing = [];
-      if (!name) missing.push('Nombre completo');
-      if (!city) missing.push('Ciudad y estado');
-      if (!phone) missing.push('WhatsApp / teléfono');
-      if (!events) missing.push('Eventos cubiertos');
-      if (!link) missing.push('Link a tu trabajo');
-      const err = document.getElementById('pfError');
-      if (missing.length) {
-        err.textContent = 'Faltan campos obligatorios: ' + missing.join(', ') + '.';
-        err.style.display = '';
-        return false;
-      }
-      err.style.display = 'none';
-      let text = 'Hola, soy ' + name + '. Quiero unirme a OnlyClick como fotógrafo.';
-      text += '\nCiudad: ' + city;
-      text += '\nWhatsApp: ' + phone;
-      text += '\nEventos cubiertos: ' + events;
-      if (camera) text += '\nCámara: ' + camera;
-      text += '\nMi trabajo: ' + link;
-      if (specialty) text += '\nEspecialidad: ' + specialty;
-      if (dorsal) text += '\nExperiencia con dorsal/plataforma: ' + dorsal;
-      if (avail) text += '\nDisponibilidad: ' + avail;
-      if (clabe) text += '\nCLABE para pagos: ' + clabe;
-      if (msg) text += '\nMensaje: ' + msg;
-      window.open('https://wa.me/526444531015?text=' + encodeURIComponent(text), '_blank');
-      document.getElementById('pfSent').style.display = '';
-      return false;
-    }
-    </script>
   </section>
 
   <!-- EVENTOS -->
