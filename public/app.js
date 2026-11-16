@@ -21,6 +21,77 @@ let lightboxPushed = false;
 let lastBackAtHome = 0;
 let forceResetView = false; // ?reset=... : mostrar el form de nueva contraseña aunque haya sesión
 
+// ---- Pestañas y paginación del panel del fotógrafo ----
+// El panel se divide en pestañas (Ventas, Estadísticas, Fotógrafos /
+// Mis ganancias, Gestión) para que no sea un scroll infinito, y cada
+// lista larga muestra 10 renglones por página con botones de página.
+// Solo cambia cómo se MUESTRA lo ya cargado: no toca qué datos se piden
+// ni los totales. Al recargar el panel (loadPhotographer) las listas
+// vuelven a la página 1; la pestaña activa sí se recuerda mientras se
+// navega por el panel.
+const PANEL_PAGE_SIZE = 10;
+let panelTab = 'ventas'; // pestaña activa del panel
+let panelPages = {}; // clave de lista -> página actual (empieza en 1)
+
+// Muestra solo la pestaña pedida del panel; las demás se esconden.
+function showPanelTab(tab) {
+  panelTab = tab;
+  document.querySelectorAll('#photoPanel [data-tabpanel]').forEach(s => s.classList.toggle('hidden', s.dataset.tabpanel !== tab));
+  document.querySelectorAll('#photoPanel [data-panel-tabbtn]').forEach(b => b.classList.toggle('primary', b.dataset.panelTabbtn === tab));
+}
+
+// Dibuja los botones de página (‹ Anterior, números, Siguiente › y
+// "Página X de Y") debajo de una lista. Si hay más de 7 páginas se
+// muestran la primera, la última y las cercanas a la actual, con "…" en
+// medio, para que los botones no se alarguen tampoco.
+function renderPagerControls(key, totalPages, page) {
+  const box = document.querySelector(`#photoPanel [data-pg-controls="${key}"]`);
+  if (!box) return;
+  if (totalPages <= 1) { box.innerHTML = ''; return; }
+  const nums = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (totalPages <= 7 || p === 1 || p === totalPages || Math.abs(p - page) <= 1) nums.push(p);
+    else if (nums[nums.length - 1] !== '…') nums.push('…');
+  }
+  box.innerHTML = `<p class="muted" style="margin:8px 0 0">Página ${page} de ${totalPages} · <button data-pg-goto="${key}|${page - 1}" ${page <= 1 ? 'disabled' : ''} style="padding:6px 10px;font-size:14px">‹ Anterior</button> ` +
+    nums.map(n => n === '…' ? '<span class="muted">…</span> ' : `<button data-pg-goto="${key}|${n}" class="${n === page ? 'primary' : ''}" style="padding:6px 10px;font-size:14px">${n}</button> `).join('') +
+    `<button data-pg-goto="${key}|${page + 1}" ${page >= totalPages ? 'disabled' : ''} style="padding:6px 10px;font-size:14px">Siguiente ›</button></p>`;
+}
+
+// Aplica la paginación a todas las listas del panel ([data-pg]): muestra
+// solo los 10 renglones de la página actual y dibuja sus controles.
+function applyPanelPagination() {
+  document.querySelectorAll('#photoPanel [data-pg]').forEach(list => {
+    const key = list.dataset.pg;
+    const items = Array.from(list.children);
+    const totalPages = Math.max(1, Math.ceil(items.length / PANEL_PAGE_SIZE));
+    let page = panelPages[key] || 1;
+    if (page > totalPages) page = totalPages;
+    if (page < 1) page = 1;
+    panelPages[key] = page;
+    items.forEach((it, i) => { it.style.display = (i >= (page - 1) * PANEL_PAGE_SIZE && i < page * PANEL_PAGE_SIZE) ? '' : 'none'; });
+    renderPagerControls(key, totalPages, page);
+  });
+}
+
+// Pestañas y paginación del panel: un solo listener delegado en el panel
+// (sobrevive a los re-renders de loadPhotographer, así que se liga una
+// sola vez al cargar la página).
+(function () {
+  const panel = document.getElementById('photoPanel');
+  if (!panel) return;
+  panel.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('[data-panel-tabbtn]');
+    if (tabBtn) { showPanelTab(tabBtn.dataset.panelTabbtn); return; }
+    const pgBtn = e.target.closest('[data-pg-goto]');
+    if (pgBtn && !pgBtn.disabled) {
+      const parts = pgBtn.dataset.pgGoto.split('|');
+      panelPages[parts[0]] = Number(parts[1]);
+      applyPanelPagination();
+    }
+  });
+})();
+
 // ---- Carrito con descuentos por volumen ----
 // Regla FINAL (decisión del dueño 2026-11-16): los paquetes son APARTE.
 // Fotos INDIVIDUALES: 1-3 a precio normal, 4a y 5a con 20% de descuento
@@ -741,8 +812,20 @@ async function loadPhotographer() {
     return;
   }
   const dueCount = payouts ? (payouts.photographers || []).filter(p => p.isDue && p.pendingBalance > 0).length : 0;
+  // Al recargar el panel las listas vuelven a la página 1 (la pestaña
+  // activa sí se recuerda mientras se navega).
+  panelPages = {};
+  const panelTabs = me.isOwner
+    ? [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['fotografos', 'Fotógrafos'], ['gestion', 'Gestión']]
+    : [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['ganancias', 'Mis ganancias'], ['gestion', 'Gestión']];
+  if (!panelTabs.some(t => t[0] === panelTab)) panelTab = 'ventas';
+  // "Mis ganancias" es el mismo bloque para todos: el dueño lo ve dentro
+  // de la pestaña Fotógrafos y los demás fotógrafos en su propia pestaña.
+  const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión Orlan (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">Orlan te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y Orlan se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
   box.innerHTML = `
-    ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa "Pagos a fotógrafos" abajo.</p>` : ''}
+    ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
+    <div class="row" style="gap:6px;margin-bottom:12px">${panelTabs.map(t => `<button data-panel-tabbtn="${t[0]}" style="flex:0 0 auto;min-width:0">${t[1]}</button>`).join('')}</div>
+    <section data-tabpanel="gestion">
     <h3>Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
@@ -770,18 +853,28 @@ async function loadPhotographer() {
     <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
     <h3>Mis eventos</h3>
-    ${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
+    <div data-pg-controls="events"></div>
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
+    </section>
+    <section data-tabpanel="ventas">
     <h3>Descargas y ventas</h3>
     <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos por ventas: $${sales.revenue} MXN</p>
-    ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}
+    <div data-pg="sales">${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}</div>
+    <div data-pg-controls="sales"></div>
+    </section>
+    ${me.isOwner ? '' : `<section data-tabpanel="ganancias">
     <h3>Mis ganancias</h3>
-    ${earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión Orlan (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">Orlan te paga tu parte cada 72 horas a la CLABE de arriba. Clip quita 4.18% primero y Orlan se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>'}
-    ${me.isOwner && payouts ? `<h3>Pagos a fotógrafos</h3>
+    ${earningsHtml}
+    </section>`}
+    ${me.isOwner && payouts ? `<section data-tabpanel="fotografos">
+    <h3>Mis ganancias</h3>
+    ${earningsHtml}
+    <h3>Pagos a fotógrafos</h3>
     <p class="muted">Todo el dinero cae en tu cuenta de Clip. Cada 72 horas desde la primera venta sin pagar, el pago se vence y sale en rojo. Mándale el dinero a su CLABE y luego marca "Pagado".</p>
     <p>Totales — Vendido: ${fmtMxn(payouts.totals.totalSold)} · Clip: ${fmtMxn(payouts.totals.clipFee)} · Tu comisión (10%): ${fmtMxn(payouts.totals.orlanFee)} · Para fotógrafos: ${fmtMxn(payouts.totals.photographerShare)} · Pendiente por pagar: ${fmtMxn(payouts.totals.pendingBalance)}</p>
-    ${(payouts.photographers || []).length ? (payouts.photographers || []).map(p => `
+    <div data-pg="payouts">${(payouts.photographers || []).length ? (payouts.photographers || []).map(p => `
     <div class="card">
       <p><strong>${esc(p.name)}</strong> ${p.approved ? '' : '<span class="error">(pendiente de aprobación)</span>'} · ${esc(p.email)}</p>
       <p class="muted">Vendido: ${fmtMxn(p.totalSold)} · Clip: ${fmtMxn(p.clipFee)} · Tu comisión: ${fmtMxn(p.orlanFee)} · Su parte: ${fmtMxn(p.photographerShare)}</p>
@@ -789,20 +882,26 @@ async function loadPhotographer() {
       <p class="muted">CLABE para pagarle: ${p.payoutClabe ? `<strong>${esc(p.payoutClabe)}</strong> <button data-copyclabe="${esc(p.payoutClabe)}">Copiar CLABE</button>` : '<span class="error">El fotógrafo aún no pone su CLABE.</span>'}</p>
       ${p.lastPayout ? `<p class="muted">Último pago: ${fmtMxn(p.lastPayout.amountMxn)} el ${String(p.lastPayout.paidAt || '').slice(0, 10)}</p>` : ''}
       <button data-pay="${p.photographerId}" class="primary" ${p.pendingBalance > 0 ? '' : 'disabled'}>Marcar como pagado</button>
-    </div>`).join('') : '<p class="muted">Todavía no hay otros fotógrafos.</p>'}
-    ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<p><strong>Historial de pagos enviados</strong></p>` + payoutHistory.payouts.map(h => `<p class="muted">${esc(h.photographerName)} · ${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</p>`).join('') : ''}
+    </div>`).join('') : '<p class="muted">Todavía no hay otros fotógrafos.</p>'}</div>
+    <div data-pg-controls="payouts"></div>
+    ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<p><strong>Historial de pagos enviados</strong></p><div data-pg="history">` + payoutHistory.payouts.map(h => `<p class="muted">${esc(h.photographerName)} · ${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</p>`).join('') + `</div><div data-pg-controls="history"></div>` : ''}
     <h3>Fotógrafos</h3>
     <p class="muted">Aprueba a los fotógrafos nuevos para que puedan crear eventos y vender. Solo tú ves esta lista.</p>
-    ${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}` : ''}
+    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
+    <div data-pg-controls="photogs"></div>
+    </section>` : ''}
+    <section data-tabpanel="estadisticas">
     <h3>Estadísticas</h3>
     ${(stats.totals.photoViews || stats.totals.eventViews || stats.totals.totalDownloads)
       ? `<p>Vistas de fotos: ${stats.totals.photoViews} · Visitantes únicos: ${stats.totals.uniqueViewers} · Visitas a eventos: ${stats.totals.eventViews} · Descargas: ${stats.totals.totalDownloads} · Ingresos: $${stats.totals.revenue} MXN</p>
-    ${(stats.events || []).map(e => `<p class="muted">${esc(e.name)} — Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</p>`).join('')}
+    <div data-pg="statsevents">${(stats.events || []).map(e => `<p class="muted">${esc(e.name)} — Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</p>`).join('')}</div>
+    <div data-pg-controls="statsevents"></div>
     <p><strong>Fotos más vistas</strong></p>
     ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<p class="muted"><img src="/api/photo?id=${p.photoId}&thumb=1&inline=1" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')} · ${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</p>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
     <p><strong>Dorsales más buscados</strong></p>
     ${(stats.topBibs || []).length ? (stats.topBibs || []).map(b => `<p class="muted">Dorsal ${esc(b.bib)} · ${b.searches} búsqueda(s)</p>`).join('') : '<p class="muted">Sin búsquedas todavía.</p>'}`
-      : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}`;
+      : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}
+    </section>`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
@@ -1075,6 +1174,9 @@ async function loadPhotographer() {
       });
     } catch (e) { box.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
   });
+  // Pestañas y paginación: se aplican después de cada render del panel.
+  showPanelTab(panelTab);
+  applyPanelPagination();
 }
 
 function showView(v) {
