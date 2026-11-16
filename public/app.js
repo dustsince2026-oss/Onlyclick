@@ -149,6 +149,35 @@ async function api(path, opts = {}) {
 
 function saveToken(t) { token = t || ''; if (t) localStorage.setItem('onlyclick_token', t); else localStorage.removeItem('onlyclick_token'); }
 
+// Visitante anónimo para estadísticas: un código por navegador, creado
+// una sola vez. No es un nombre ni un correo: solo sirve para contar
+// cuántas personas diferentes vieron las fotos.
+function getVisitorKey() {
+  try {
+    let id = localStorage.getItem('onlyclick_vid');
+    if (!id) {
+      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem('onlyclick_vid', id);
+    }
+    return 'v:' + id;
+  } catch (_) { return 'anon'; }
+}
+// Registro de vistas (fotos/eventos/búsquedas): nunca bloquea ni rompe
+// nada — si falla, se ignora en silencio. En una sesión no se reenvía
+// la misma vista dos veces; el servidor además cuenta 1 por visitante
+// por foto / evento / dorsal por día.
+const _viewedThisSession = new Set();
+function trackView(kind, photoId, eventId, bib) {
+  try {
+    const key = [kind, photoId || '', eventId || '', bib || ''].join('|');
+    if (_viewedThisSession.has(key)) return;
+    _viewedThisSession.add(key);
+    api('/api/track-view', { method: 'POST', body: JSON.stringify({ kind, photoId: photoId || null, eventId: eventId || null, bib: bib || '', viewerKey: getVisitorKey() }) }).catch(() => {});
+  } catch (_) {}
+}
+
 async function refreshAuth() {
   try {
     const s = await api('/api/auth-status');
@@ -528,6 +557,7 @@ function bindPhotos(photos) {
     const p = photos.find(x => x.id === Number(img.dataset.open));
     if (!p) return;
     lightboxPhoto = p;
+    trackView('photo', p.id, p.eventId || null);
     const freeMode = p.freeMode !== false;
     const price = Number(p.priceMxn || p.price || 0);
     lightboxFreeMode = freeMode;
@@ -565,6 +595,7 @@ async function searchBib() {
       ? `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`
       : `<p>No hay fotos con el dorsal ${esc(bib)} en ningún evento.</p>`;
     bindPhotos(r.photos);
+    trackView('search', null, null, bib);
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
@@ -647,6 +678,7 @@ async function loadEventDetail(eventId, push) {
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
+  trackView('event', null, eventId);
   $('#evBibBtn').onclick = async () => {
     const bib = $('#evBib').value.trim(); if (!bib) return;
     const s = await api('/api/search?bib=' + encodeURIComponent(bib) + '&eventId=' + eventId);
@@ -654,6 +686,7 @@ async function loadEventDetail(eventId, push) {
     s.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
     $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos con ese dorsal en este evento.</p>';
     bindPhotos(s.photos);
+    trackView('search', null, eventId, bib);
   };
 }
 
@@ -677,6 +710,7 @@ async function loadPhotographer() {
   if (!me || me.role !== 'photographer') { box.innerHTML = '<p>Solo la cuenta de fotógrafo ve este panel.</p>'; return; }
   const events = (await api('/api/events')).events;
   const sales = await api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }));
+  const stats = await api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }));
   box.innerHTML = `
     <h3>Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
@@ -706,7 +740,16 @@ async function loadPhotographer() {
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     <h3>Descargas y ventas</h3>
     <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos por ventas: $${sales.revenue} MXN</p>
-    ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}`;
+    ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}
+    <h3>Estadísticas</h3>
+    ${(stats.totals.photoViews || stats.totals.eventViews || stats.totals.totalDownloads)
+      ? `<p>Vistas de fotos: ${stats.totals.photoViews} · Visitantes únicos: ${stats.totals.uniqueViewers} · Visitas a eventos: ${stats.totals.eventViews} · Descargas: ${stats.totals.totalDownloads} · Ingresos: $${stats.totals.revenue} MXN</p>
+    ${(stats.events || []).map(e => `<p class="muted">${esc(e.name)} — Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</p>`).join('')}
+    <p><strong>Fotos más vistas</strong></p>
+    ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<p class="muted"><img src="/api/photo?id=${p.photoId}&thumb=1&inline=1" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')} · ${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</p>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
+    <p><strong>Dorsales más buscados</strong></p>
+    ${(stats.topBibs || []).length ? (stats.topBibs || []).map(b => `<p class="muted">Dorsal ${esc(b.bib)} · ${b.searches} búsqueda(s)</p>`).join('') : '<p class="muted">Sin búsquedas todavía.</p>'}`
+      : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}`;
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
