@@ -31,6 +31,42 @@ function requireOwner(u) { requireUser(u); if (!u.isOwner) throw err(403, 'Solo 
 // El fotógrafo dueño del evento, o Orlan (dueño de la página, ve todo).
 function isEventOwner(user, ev) { return !!user && !!ev && (user.isOwner || ev.photographerId === user.id); }
 
+// ---- Eventos compartidos: nombre y precio POR FOTO ----
+// El nombre que se muestra ("Foto de ...") es el display_name que el
+// fotógrafo eligió (apodo o marca, ej. "Only Dust"); si no puso nada,
+// sale su primer nombre. Nunca se inventa un nombre.
+function displayNameFor(u) {
+  if (!u) return '';
+  const d = String(u.displayName || '').trim();
+  if (d) return d;
+  return String(u.name || '').trim().split(/\s+/)[0] || '';
+}
+// Dueño de UNA foto: quien la subió; en fotos viejas (sin
+// photographer_id) es el creador del evento.
+function photoOwnerId(p, ev) {
+  if (p && p.photographerId != null) return Number(p.photographerId);
+  return ev ? ev.photographerId : null;
+}
+// Precio de UNA foto en un evento de pago: el precio que SU fotógrafo
+// puso al unirse al evento; si no hay fila (foto vieja o evento de un
+// solo fotógrafo), el precio del evento.
+async function photoPrice(store, p, ev) {
+  const pid = photoOwnerId(p, ev);
+  if (pid != null && ev) {
+    const part = await store.getParticipant(ev.id, pid).catch(() => null);
+    if (part && Number(part.priceMxn) >= 1 && Number(part.priceMxn) <= 5000) return Number(part.priceMxn);
+  }
+  return eventPrice(ev);
+}
+// ¿Puede este usuario ver/descargar esta foto gratis como fotógrafo?
+// El dueño de la página sí; el fotógrafo DE LA FOTO sí; los demás
+// fotógrafos son corredores como cualquier otro y deben comprar.
+async function isPhotoOwner(user, p, ev) {
+  if (!user) return false;
+  if (user.isOwner) return true;
+  return photoOwnerId(p, ev) === user.id;
+}
+
 // ---- Comisiones (decisión del dueño 2026-11-16) ----
 // Todo el dinero cae en la cuenta de Clip de Orlan; él les paga a los
 // fotógrafos. Por cada venta de $A: Clip se queda 4.18% (3.6% + IVA),
@@ -119,14 +155,30 @@ async function resetPassword(store, body) {
   return { status: 200, data: { ok: true } };
 }
 
-async function listEvents(store) {
+async function listEvents(store, user) {
   const events = await store.listEvents();
   // Nombre del fotógrafo de cada evento (se muestra en la tarjeta y en
   // el detalle: "Fotos de <nombre>"). La búsqueda y el inicio son
   // globales: se ven los eventos de todos los fotógrafos.
   const names = new Map();
-  for (const ph of await store.listPhotographers()) names.set(ph.id, ph.name || '');
-  return { status: 200, data: { events: events.map(e => ({ ...e, photographerName: names.get(e.photographerId) || '' })) } };
+  for (const ph of await store.listPhotographers()) names.set(ph.id, displayNameFor(ph));
+  const out = [];
+  for (const e of events) {
+    const parts = await store.listParticipants(e.id).catch(() => []);
+    const myPart = user ? parts.find(pt => Number(pt.photographerId) === user.id) : null;
+    const isCreator = user ? e.photographerId === user.id : false;
+    out.push({
+      ...e,
+      photographerName: names.get(e.photographerId) || '',
+      // Sin filas (tabla aún sin correr el SQL): el creador es el único
+      // participante y el evento no es compartido.
+      participantsCount: Math.max(parts.length, 1),
+      isShared: parts.length > 1,
+      joined: isCreator || !!myPart,
+      myPrice: myPart ? Number(myPart.priceMxn) : (isCreator ? eventPrice(e) : undefined),
+    });
+  }
+  return { status: 200, data: { events: out } };
 }
 
 async function createEvent(store, user, body) {
@@ -140,6 +192,8 @@ async function createEvent(store, user, body) {
     freeMode: body.freeMode !== false,
     priceMxn: (Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : 20,
   });
+  // El creador ya es participante de su evento, con el precio del evento.
+  try { await store.joinEvent(ev.id, user.id, ev.priceMxn); } catch (_) {}
   return { status: 201, data: { event: ev } };
 }
 
@@ -150,14 +204,46 @@ async function getEvent(store, user, eventId) {
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
   const photographer = await store.findUserById(ev.photographerId);
-  return { status: 200, data: { event: ev, photographerName: photographer ? (photographer.name || '') : '', photos: photos.map(p => ({ ...p, owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined })), tipClabe: photographer ? (photographer.tipClabe || '') : '', tipName: photographer ? (photographer.name || '') : '' } };
+  const parts = await store.listParticipants(eventId).catch(() => []);
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  // Cada foto lleva su autor, su precio y la propina DE SU fotógrafo.
+  const enriched = photos.map(p => {
+    const pid = photoOwnerId(p, ev);
+    const u = pid != null ? users.get(pid) : null;
+    const part = pid != null ? parts.find(pt => Number(pt.photographerId) === pid) : null;
+    return {
+      ...p, photographerId: pid, photographerName: displayNameFor(u),
+      priceMxn: part ? Number(part.priceMxn) : eventPrice(ev),
+      tipClabe: u ? (u.tipClabe || '') : '', tipName: displayNameFor(u),
+      owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined,
+    };
+  });
+  const partRows = parts.length ? parts : [{ photographerId: ev.photographerId, priceMxn: ev.priceMxn, joinedAt: ev.createdAt }];
+  const myPart = user ? parts.find(pt => Number(pt.photographerId) === user.id) : null;
+  const isCreator = user ? ev.photographerId === user.id : false;
+  return { status: 200, data: {
+    event: ev,
+    photographerName: photographer ? displayNameFor(photographer) : '',
+    photos: enriched,
+    tipClabe: photographer ? (photographer.tipClabe || '') : '',
+    tipName: photographer ? displayNameFor(photographer) : '',
+    participants: partRows.map(pt => {
+      const u = users.get(Number(pt.photographerId));
+      return { photographerId: Number(pt.photographerId), displayName: displayNameFor(u), photoCount: photos.filter(p => photoOwnerId(p, ev) === Number(pt.photographerId)).length, priceMxn: Number(pt.priceMxn) };
+    }),
+    isShared: parts.length > 1,
+    isParticipant: isCreator || !!myPart,
+    myPrice: myPart ? Number(myPart.priceMxn) : (isCreator ? eventPrice(ev) : null),
+  } };
 }
 
 async function uploadPhoto(store, user, body) {
   requirePhotographer(user);
   const ev = await store.getEvent(body.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
-  if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  // Subir a un evento compartido: el creador o cualquier participante.
+  const part = ev.photographerId !== user.id ? await store.getParticipant(ev.id, user.id).catch(() => null) : null;
+  if (ev.photographerId !== user.id && !part) throw err(403, 'No participas en ese evento. Únete primero desde el evento.');
   const dataBase64 = String(body.dataBase64 || '');
   if (!dataBase64) throw err(400, 'No llegó ninguna foto.');
   const fileBuffer = Buffer.from(dataBase64, 'base64');
@@ -173,7 +259,9 @@ async function uploadPhoto(store, user, body) {
     const buf = Buffer.from(thumbBase64, 'base64');
     if (buf.length > 0 && buf.length <= 1024 * 1024) thumbBuffer = buf;
   }
-  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), fileBuffer, thumbBuffer });
+  // La foto queda a nombre de QUIEN LA SUBE (de la sesión, nunca de lo
+  // que mande el cliente): así cada quien cobra sus fotos en el evento.
+  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), photographerId: user.id, fileBuffer, thumbBuffer });
   return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined, thumbPath: undefined } } };
 }
 
@@ -182,10 +270,17 @@ async function searchBib(store, query) {
   if (!bib) throw err(400, 'Escribe un dorsal.');
   const eventId = query.eventId ? Number(query.eventId) : null;
   const events = eventId ? [await store.getEvent(eventId)].filter(Boolean) : await store.listEvents();
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
   const out = [];
   for (const ev of events) {
+    const parts = await store.listParticipants(ev.id).catch(() => []);
+    const priceByPh = new Map(parts.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
     for (const p of await store.listPhotos(ev.id)) {
-      if ((p.bibs || []).map(normBib).includes(bib)) out.push({ ...p, eventName: ev.name, freeMode: ev.freeMode, priceMxn: ev.priceMxn, filePath: undefined, storagePath: undefined, thumbPath: undefined });
+      if ((p.bibs || []).map(normBib).includes(bib)) {
+        const pid = photoOwnerId(p, ev);
+        const u = pid != null ? users.get(pid) : null;
+        out.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev.name, freeMode: ev.freeMode, priceMxn: (pid != null && priceByPh.has(pid)) ? priceByPh.get(pid) : eventPrice(ev), tipClabe: u ? (u.tipClabe || '') : '', tipName: displayNameFor(u), filePath: undefined, storagePath: undefined, thumbPath: undefined });
+      }
     }
   }
   return { status: 200, data: { bib, photos: out } };
@@ -220,7 +315,9 @@ async function listPurchases(store, user) {
   for (const d of downloads) {
     const p = await store.getPhoto(d.photoId); if (!p) continue;
     const ev = await store.getEvent(d.eventId);
-    photos.push({ ...p, eventName: ev ? ev.name : '', freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
+    const pid = photoOwnerId(p, ev);
+    const u = pid != null ? await store.findUserById(pid) : null;
+    photos.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev ? ev.name : '', freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
   }
   return { status: 200, data: { photos } };
 }
@@ -228,10 +325,18 @@ async function listPurchases(store, user) {
 async function listSales(store, user) {
   requirePhotographer(user);
   const downloads = await store.listAllDownloads();
-  const events = await store.listEvents();
-  const evOwner = new Map(events.map(e => [e.id, e.photographerId]));
-  // Cada fotógrafo ve SOLO las descargas de sus eventos; el dueño ve todas.
-  const mine = user.isOwner ? downloads : downloads.filter(d => evOwner.get(d.eventId) === user.id);
+  // Cada fotógrafo ve SOLO las descargas de SUS FOTOS (en eventos
+  // compartidos, las fotos de los demás no son suyas); el dueño ve todas.
+  let mine = downloads;
+  if (!user.isOwner) {
+    mine = [];
+    for (const d of downloads) {
+      const p = await store.getPhoto(d.photoId);
+      if (!p) continue;
+      const ev = await store.getEvent(p.eventId);
+      if (photoOwnerId(p, ev) === user.id) mine.push(d);
+    }
+  }
   const rows = [];
   let revenue = 0, freeCount = 0;
   for (const d of mine) {
@@ -289,16 +394,36 @@ async function listStats(store, user) {
   let downloads = await store.listAllDownloads();
   let events = await store.listEvents();
   if (!user.isOwner) {
-    // Cada fotógrafo ve SOLO las estadísticas de sus eventos; el dueño
-    // ve todas. Las vistas sin evento (búsqueda global sin dorsal de un
-    // evento) no se pueden atribuir y no se cuentan para nadie más.
-    const own = new Set(events.filter(e => e.photographerId === user.id).map(e => e.id));
+    // Cada fotógrafo ve SOLO las estadísticas de sus eventos: los que
+    // creó y los compartidos en los que participa. El dueño ve todas.
+    // Las vistas sin evento (búsqueda global) no se pueden atribuir y no
+    // se cuentan para nadie más.
+    const joined = new Set(await store.listJoinedEventIds(user.id).catch(() => []));
+    const own = new Set(events.filter(e => e.photographerId === user.id || joined.has(e.id)).map(e => e.id));
     events = events.filter(e => own.has(e.id));
     views = views.filter(v => v.eventId != null && own.has(v.eventId));
     downloads = downloads.filter(d => own.has(d.eventId));
   }
   const photos = new Map();
   for (const ev of events) for (const p of await store.listPhotos(ev.id)) photos.set(p.id, p);
+  if (!user.isOwner) {
+    // En un evento compartido: las descargas y las vistas de FOTO son
+    // de quien subió esa foto (las visitas al evento sí se ven para
+    // todos los participantes, porque el evento también es suyo).
+    downloads = downloads.filter(d => {
+      const p = photos.get(d.photoId);
+      if (!p) return false;
+      const ev = events.find(e => e.id === p.eventId);
+      return photoOwnerId(p, ev) === user.id;
+    });
+    views = views.filter(v => {
+      if (v.kind !== 'photo' || v.photoId == null) return true;
+      const p = photos.get(v.photoId);
+      if (!p) return false;
+      const ev = events.find(e => e.id === p.eventId);
+      return photoOwnerId(p, ev) === user.id;
+    });
+  }
   let photoViews = 0, eventViews = 0;
   const viewers = new Set();
   const perEvent = new Map();
@@ -386,7 +511,7 @@ async function updatePhoto(store, user, body) {
   const p = await store.getPhoto(body.photoId);
   if (!p) throw err(404, 'Foto no encontrada.');
   const ev = await store.getEvent(p.eventId);
-  if (!ev || ev.photographerId !== user.id) throw err(403, 'Esa foto no es tuya.');
+  if (!ev || !(await isPhotoOwner(user, p, ev))) throw err(403, 'Esa foto no es tuya.');
   const patch = {};
   if (body.bibs !== undefined) patch.bibs = (Array.isArray(body.bibs) ? body.bibs : [body.bibs]).map(normBib).filter(Boolean);
   if (body.price !== undefined) patch.price = Number(body.price || 0);
@@ -399,7 +524,7 @@ async function deletePhoto(store, user, photoId) {
   const p = await store.getPhoto(photoId);
   if (!p) throw err(404, 'Foto no encontrada.');
   const ev = await store.getEvent(p.eventId);
-  if (!ev || ev.photographerId !== user.id) throw err(403, 'Esa foto no es tuya.');
+  if (!ev || !(await isPhotoOwner(user, p, ev))) throw err(403, 'Esa foto no es tuya.');
   await store.deletePhoto(p.id);
   return { status: 200, data: { ok: true } };
 }
@@ -456,7 +581,7 @@ async function readBib(store, user, body) {
     const p = await store.getPhoto(body.photoId);
     if (!p) throw err(404, 'Foto no encontrada.');
     const ev = await store.getEvent(p.eventId);
-    if (!ev || ev.photographerId !== user.id) throw err(403, 'Esa foto no es tuya.');
+    if (!ev || !(await isPhotoOwner(user, p, ev))) throw err(403, 'Esa foto no es tuya.');
     buf = await store.readPhotoBytes(p); mime = p.mimeType || mime;
   } else if (body.dataBase64) {
     buf = Buffer.from(String(body.dataBase64), 'base64');
@@ -512,9 +637,9 @@ async function photoFile(store, user, photoId, req) {
     // Nota: esta versión no añade marca de agua a la vista previa; si el
     // fotógrafo vende fotos, conviene añadirla antes de cobrar de verdad.
     if (!user) throw err(401, 'Inicia sesión para descargar esta foto.');
-    // Solo el fotógrafo DE ESTE EVENTO (o el dueño) descarga gratis: los
+    // Solo el fotógrafo DE ESTA FOTO (o el dueño) descarga gratis: los
     // demás fotógrafos son corredores como cualquier otro y deben comprar.
-    if (!isEventOwner(user, ev) && !(await store.hasDownload(user.id, photo.id))) throw err(403, 'Esta foto es de pago. Cómprala primero.');
+    if (!(await isPhotoOwner(user, photo, ev)) && !(await store.hasDownload(user.id, photo.id))) throw err(403, 'Esta foto es de pago. Cómprala primero.');
   }
   // Miniatura para la galería (?thumb=1): si la foto tiene miniatura se
   // sirve esa (~30-50 KB en vez de ~300 KB); si no tiene (fotos subidas
@@ -531,7 +656,7 @@ async function photoFile(store, user, photoId, req) {
   // "ONLYCLICK • VISTA PREVIA". Si no hay miniatura (fotos viejas), cae
   // al original, pero el texto del frontend sigue visible. El original
   // solo se descarga con compra (o siendo el fotógrafo).
-  if (!bytes && inline && !ev.freeMode && !(user && (isEventOwner(user, ev) || await store.hasDownload(user.id, photo.id)))) {
+  if (!bytes && inline && !ev.freeMode && !(user && ((await isPhotoOwner(user, photo, ev)) || await store.hasDownload(user.id, photo.id)))) {
     bytes = await store.readThumbBytes(photo);
     if (bytes) mimeType = 'image/jpeg';
   }
@@ -710,9 +835,9 @@ async function createCheckout(store, user, body) {
   const ev = await store.getEvent(photo.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
   if (ev.freeMode) throw err(400, 'Ese evento es gratis, no se cobra.');
-  if (user.role === 'photographer' && ev.photographerId === user.id) throw err(400, 'No puedes comprar tus propias fotos.');
+  if (user.role === 'photographer' && photoOwnerId(photo, ev) === user.id) throw err(400, 'No puedes comprar tus propias fotos.');
   if (await store.hasDownload(user.id, photo.id)) return { status: 200, data: { paid: true, photoId: photo.id } };
-  const price = eventPrice(ev);
+  const price = await photoPrice(store, photo, ev);
   // Reutilizar un link pendiente vigente para no crear links de más.
   const pending = await store.getLatestPaymentByUserPhoto(user.id, photo.id);
   if (pending && pending.status === 'pending' && pending.clipPaymentRequestId) {
@@ -729,7 +854,7 @@ async function createCheckout(store, user, body) {
   const created = await createCheckoutLink({
     amount: price,
     currency: 'MXN',
-    purchase_description: ('Foto OnlyClick — ' + ev.name + ' — dorsal ' + ((photo.bibs || []).join(', ') || 'sin dorsal')).slice(0, 255),
+    purchase_description: ('Foto OnlyClick — ' + ev.name + ' — ' + displayNameFor(await store.findUserById(photoOwnerId(photo, ev))) + ' — dorsal ' + ((photo.bibs || []).join(', ') || 'sin dorsal')).slice(0, 255),
     redirection_url: {
       success: base + '/api/checkout-return?ref=' + encodeURIComponent(ref) + '&photoId=' + photo.id,
       error: base + '/api/checkout-return?ref=' + encodeURIComponent(ref) + '&photoId=' + photo.id + '&result=error',
@@ -768,8 +893,8 @@ async function createCartCheckout(store, user, body) {
     if (ev.freeMode) throw err(400, 'La foto ' + id + ' es de un evento gratis: quítala del carrito y descárgala gratis.');
     // Un fotógrafo no puede comprar sus PROPIAS fotos; las de otros
     // fotógrafos sí las puede comprar como cualquier corredor.
-    if (user.role === 'photographer' && ev.photographerId === user.id) throw err(400, 'La foto ' + id + ' es tuya: no puedes comprar tus propias fotos. Quítala del carrito.');
-    items.push({ id: photo.id, eventId: ev.id, eventName: ev.name, bibs: photo.bibs || [], price: eventPrice(ev) });
+    if (user.role === 'photographer' && photoOwnerId(photo, ev) === user.id) throw err(400, 'La foto ' + id + ' es tuya: no puedes comprar tus propias fotos. Quítala del carrito.');
+    items.push({ id: photo.id, eventId: ev.id, eventName: ev.name, bibs: photo.bibs || [], price: await photoPrice(store, photo, ev) });
   }
   // Fotos ya compradas: se excluyen del cobro, no se cobran dos veces.
   const toPay = [];
@@ -879,9 +1004,10 @@ async function checkoutStatus(store, user, body) {
   if (body.paymentRequestId) {
     const payments = await store.getPaymentsByClipId(String(body.paymentRequestId));
     if (!payments.length) return { status: 200, data: { paid: false, status: 'none' } };
-    // Ver el estado: el que pagó, el dueño, o el fotógrafo del evento.
+    // Ver el estado: el que pagó, el dueño, o el fotógrafo DE LA FOTO.
     const ev0 = await store.getEvent(payments[0].eventId);
-    if (payments[0].userId !== user.id && !isEventOwner(user, ev0)) throw err(403, 'Ese pago no es tuyo.');
+    const ph0 = await store.getPhoto(payments[0].photoId);
+    if (payments[0].userId !== user.id && !(await isPhotoOwner(user, ph0, ev0))) throw err(403, 'Ese pago no es tuyo.');
     const photoIds = payments.map(p => p.photoId);
     if (payments.every(p => p.status === 'completed')) return { status: 200, data: { paid: true, status: 'completed', photoIds, count: payments.length, receiptNo: payments[0].receiptNo || '' } };
     if (payments.every(p => p.status === 'cancelled' || p.status === 'expired')) return { status: 200, data: { paid: false, status: payments[0].status, photoIds, count: payments.length } };
@@ -907,7 +1033,8 @@ async function checkoutStatus(store, user, body) {
   if (body.photoId) payment = await store.getLatestPaymentByUserPhoto(user.id, Number(body.photoId));
   if (!payment) return { status: 200, data: { paid: false, status: 'none' } };
   const evPay = await store.getEvent(payment.eventId);
-  if (payment.userId !== user.id && !isEventOwner(user, evPay)) throw err(403, 'Ese pago no es tuyo.');
+  const phPay = await store.getPhoto(payment.photoId);
+  if (payment.userId !== user.id && !(await isPhotoOwner(user, phPay, evPay))) throw err(403, 'Ese pago no es tuyo.');
   if (payment.status === 'completed') return { status: 200, data: { paid: true, status: 'completed', receiptNo: payment.receiptNo || '' } };
   if (payment.status === 'cancelled' || payment.status === 'expired') return { status: 200, data: { paid: false, status: payment.status } };
   try {
@@ -979,19 +1106,30 @@ async function listPhotographers(store, user) {
   const photographers = await store.listPhotographers();
   const events = await store.listEvents();
   const downloads = await store.listAllDownloads();
-  const evOwner = new Map(events.map(e => [e.id, e.photographerId]));
+  // Dueño de cada descarga: el fotógrafo DE LA FOTO (en eventos
+  // compartidos, las ventas de los demás no son del creador del evento).
+  const photoOwnerCache = new Map();
+  async function ownerOfDownload(d) {
+    if (!photoOwnerCache.has(d.photoId)) {
+      const p = await store.getPhoto(d.photoId);
+      const ev = p ? await store.getEvent(p.eventId) : null;
+      photoOwnerCache.set(d.photoId, p ? photoOwnerId(p, ev) : null);
+    }
+    return photoOwnerCache.get(d.photoId);
+  }
   // Fotógrafos que llegaron por solicitud aprobada (tienen su solicitud
   // ligada). Los demás se registraron directo: "Sin solicitud". Si la
   // tabla de solicitudes aún no existe (falta correr el SQL), no se
   // rompe el panel: todos salen sin solicitud.
   let linked = new Set();
   try { linked = new Set((await store.listApplications()).map(a => a.photographerId).filter(id => id != null)); } catch (_) { linked = new Set(); }
-  const rows = photographers.map(ph => {
+  const rows = [];
+  for (const ph of photographers) {
     let eventCount = 0, totalSold = 0;
     for (const e of events) if (e.photographerId === ph.id) eventCount++;
-    for (const d of downloads) if (evOwner.get(d.eventId) === ph.id) totalSold += Number(d.amount || 0);
-    return { id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', eventCount, totalSold: Math.round(totalSold * 100) / 100, hasApplication: linked.has(ph.id) };
-  });
+    for (const d of downloads) if ((await ownerOfDownload(d)) === ph.id) totalSold += Number(d.amount || 0);
+    rows.push({ id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', displayName: displayNameFor(ph), eventCount, totalSold: Math.round(totalSold * 100) / 100, hasApplication: linked.has(ph.id) });
+  }
   return { status: 200, data: { photographers: rows } };
 }
 
@@ -1105,15 +1243,24 @@ async function setPayoutClabe(store, user, body) {
 // las sumas sean exactas. pending = descargas de pago sin payout_id
 // (aún no liquidadas); pendingSince = la venta sin pagar más vieja.
 async function photographerEarnings(store, photographerId) {
-  const events = await store.listEvents();
-  const ownEvents = new Set(events.filter(e => e.photographerId === photographerId).map(e => e.id));
   const downloads = await store.listAllDownloads();
   const payouts = await store.listPayoutsByPhotographer(photographerId);
+  // Solo las descargas de SUS fotos (en eventos compartidos, las fotos
+  // de los demás fotógrafos no cuentan para él).
+  const photoOwnerCache = new Map();
+  async function ownerOf(d) {
+    if (!photoOwnerCache.has(d.photoId)) {
+      const p = await store.getPhoto(d.photoId);
+      const ev = p ? await store.getEvent(p.eventId) : null;
+      photoOwnerCache.set(d.photoId, p ? photoOwnerId(p, ev) : null);
+    }
+    return photoOwnerCache.get(d.photoId);
+  }
   let totalSoldC = 0, clipC = 0, orlanC = 0, shareC = 0;
   let pendingShareC = 0, pendingClipC = 0, pendingOrlanC = 0, pendingSince = null;
   const pendingIds = [];
   for (const d of downloads) {
-    if (!ownEvents.has(d.eventId)) continue;
+    if ((await ownerOf(d)) !== photographerId) continue;
     const amt = Number(d.amount || 0);
     if (!amt) continue; // gratis: no genera comisión ni pago
     const s = splitSale(amt);
@@ -1196,6 +1343,87 @@ async function myEarnings(store, user) {
   return { status: 200, data: { totalSold: e.totalSold, clipFee: e.clipFee, orlanFee: e.orlanFee, photographerShare: e.photographerShare, pendingBalance: e.pendingBalance, pendingSince: e.pendingSince, paidShare: e.paidShare, lastPayout: e.lastPayout } };
 }
 
+// ---- Eventos compartidos ----
+function validPrice(v) {
+  const p = Number(v);
+  if (!Number.isFinite(p) || p < 1 || p > 5000) return null;
+  return Math.round(p * 100) / 100;
+}
+
+// POST /api/join-event { eventId, priceMxn } — un fotógrafo aprobado
+// entra LIBRE a un evento creado por otro (o por el dueño) y vende sus
+// fotos ahí a su precio. Volver a unirse solo actualiza el precio.
+async function joinEvent(store, user, body) {
+  requirePhotographer(user);
+  const ev = await store.getEvent(Number(body.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const price = validPrice(body.priceMxn);
+  if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
+  if (ev.photographerId === user.id) return { status: 200, data: { ok: true, alreadyCreator: true, eventId: ev.id, priceMxn: ev.priceMxn } };
+  const row = await store.joinEvent(ev.id, user.id, price);
+  return { status: 200, data: { ok: true, eventId: ev.id, photographerId: user.id, priceMxn: row.priceMxn } };
+}
+
+// POST /api/leave-event { eventId } — salir de un evento compartido.
+// No se puede salir si ya subiste fotos ahí (esas fotos ya son parte
+// del evento y pueden estar vendidas). El creador no "sale" de su
+// propio evento: si ya no lo quiere, lo borra.
+async function leaveEvent(store, user, body) {
+  requirePhotographer(user);
+  const ev = await store.getEvent(Number(body.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  if (ev.photographerId === user.id) throw err(400, 'Eres el creador de este evento: para quitarlo usa "Eliminar evento".');
+  const mine = (await store.listPhotos(ev.id)).filter(p => photoOwnerId(p, ev) === user.id);
+  if (mine.length) throw err(400, 'Ya subiste ' + mine.length + ' foto(s) a este evento: no puedes salir. Tus fotos se quedan en el evento.');
+  await store.leaveEvent(ev.id, user.id);
+  return { status: 200, data: { ok: true } };
+}
+
+// GET /api/event-participants?eventId=... — público: quiénes participan
+// en el evento, con su nombre a mostrar, cuántas fotos y su precio.
+async function eventParticipants(store, query) {
+  const ev = await store.getEvent(Number(query.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const parts = await store.listParticipants(ev.id).catch(() => []);
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  const photos = await store.listPhotos(ev.id);
+  const list = (parts.length ? parts : [{ photographerId: ev.photographerId, priceMxn: ev.priceMxn }])
+    .map(pt => {
+      const u = users.get(Number(pt.photographerId));
+      return { photographerId: Number(pt.photographerId), displayName: displayNameFor(u), photoCount: photos.filter(p => photoOwnerId(p, ev) === Number(pt.photographerId)).length, priceMxn: Number(pt.priceMxn) };
+    });
+  return { status: 200, data: { eventId: ev.id, participants: list, isShared: parts.length > 1 } };
+}
+
+// POST /api/set-display-name { displayName } — el nombre que sale en
+// "Foto de ...": primer nombre, apodo o marca/página (máx. 40 caracteres).
+// Vacío = volver al primer nombre.
+async function setDisplayName(store, user, body) {
+  requirePhotographer(user);
+  const name = String(body.displayName || '').trim().slice(0, 40);
+  const updated = await store.setDisplayName(user.id, name);
+  return { status: 200, data: { displayName: updated ? (updated.displayName || '') : name } };
+}
+
+// POST /api/set-my-event-price { eventId, priceMxn } — cambiar MI precio
+// en un evento compartido. Si eres el creador, cambia el precio del
+// evento (el que heredan las fotos sin participante).
+async function setMyEventPrice(store, user, body) {
+  requirePhotographer(user);
+  const ev = await store.getEvent(Number(body.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const price = validPrice(body.priceMxn);
+  if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
+  if (ev.photographerId === user.id) {
+    const updated = await store.updateEvent(ev.id, { priceMxn: price });
+    return { status: 200, data: { event: updated } };
+  }
+  const part = await store.getParticipant(ev.id, user.id).catch(() => null);
+  if (!part) throw err(403, 'No participas en ese evento. Únete primero.');
+  const row = await store.joinEvent(ev.id, user.id, price);
+  return { status: 200, data: { ok: true, priceMxn: row.priceMxn } };
+}
+
 async function dispatch(route, req) {
   const store = getStore();
   const user = await currentUser(store, req.token);
@@ -1206,7 +1434,7 @@ async function dispatch(route, req) {
     case 'password-forgot': return requestPasswordReset(store, b);
     case 'password-reset': return resetPassword(store, b);
     case 'auth-status': return authStatus(store, req.token);
-    case 'list-events': return listEvents(store);
+    case 'list-events': return listEvents(store, user);
     case 'create-event': return createEvent(store, user, b);
     case 'get-event': return getEvent(store, user, req.query.eventId);
     case 'upload-photo': return uploadPhoto(store, user, b);
@@ -1244,9 +1472,14 @@ async function dispatch(route, req) {
     case 'payouts-mark-paid': return markPayoutPaid(store, user, b);
     case 'payouts-history': return payoutsHistory(store, user);
     case 'my-earnings': return myEarnings(store, user);
+    case 'join-event': return joinEvent(store, user, b);
+    case 'leave-event': return leaveEvent(store, user, b);
+    case 'event-participants': return eventParticipants(store, req.query);
+    case 'set-display-name': return setDisplayName(store, user, b);
+    case 'set-my-event-price': return setMyEventPrice(store, user, b);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
     default: throw err(404, 'Ruta no encontrada: ' + route);
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId };
