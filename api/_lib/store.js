@@ -71,6 +71,9 @@ const fileStore = {
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
   async createPayment(p) { const db = loadDb(); const row = { id: nextId(db, 'payment'), currency: 'MXN', status: 'pending', receiptNo: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...p }; db.payments.push(row); saveDb(db); return row; },
   async getPaymentByClipId(id) { return loadDb().payments.find(x => x.clipPaymentRequestId === String(id)) || null; },
+  // Todas las filas de un checkout (un carrito = varias filas con el
+  // mismo payment_request_id), en orden de creación.
+  async getPaymentsByClipId(id) { return loadDb().payments.filter(x => x.clipPaymentRequestId === String(id)).sort((a, b) => a.id - b.id); },
   async getPaymentByExternalRef(ref) { return loadDb().payments.find(x => x.externalReference === String(ref)) || null; },
   async getPaymentById(id) { return loadDb().payments.find(x => x.id === Number(id)) || null; },
   async getLatestPaymentByUserPhoto(userId, photoId) { const rows = loadDb().payments.filter(x => x.userId === Number(userId) && x.photoId === Number(photoId)).sort((a, b) => b.id - a.id); return rows[0] || null; },
@@ -202,6 +205,9 @@ const supabaseStore = {
   async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId); return (count || 0) > 0; },
   async createPayment(p) { const { data, error } = await supabase().from('payments').insert({ clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' }).select().single(); if (error) throw new Error(error.message); return mapPayment(data); },
   async getPaymentByClipId(id) { const { data } = await supabase().from('payments').select().eq('clip_payment_request_id', id).maybeSingle(); return mapPayment(data); },
+  // Todas las filas de un checkout (un carrito = varias filas con el
+  // mismo payment_request_id), en orden de creación.
+  async getPaymentsByClipId(id) { const { data } = await supabase().from('payments').select().eq('clip_payment_request_id', id).order('id'); return (data || []).map(mapPayment); },
   async getPaymentByExternalRef(ref) { const { data } = await supabase().from('payments').select().eq('external_reference', ref).maybeSingle(); return mapPayment(data); },
   async getPaymentById(id) { const { data } = await supabase().from('payments').select().eq('id', id).maybeSingle(); return mapPayment(data); },
   async getLatestPaymentByUserPhoto(userId, photoId) { const { data } = await supabase().from('payments').select().eq('user_id', userId).eq('photo_id', photoId).order('id', { ascending: false }).limit(1).maybeSingle(); return mapPayment(data); },

@@ -375,10 +375,83 @@ function eventPrice(ev) {
   return 20;
 }
 
+// ---- Precios del carrito (decisión FINAL del dueño 2026-11-16) ----
+// Los paquetes son APARTE, no un descuento por foto desde la 6a.
+// Fotos INDIVIDUALES: 1-3 a precio normal, 4a y 5a con 20% de descuento
+// cada una, 6a en adelante a precio NORMAL (sin descuento).
+// PAQUETES (producto aparte): el carrito forma AUTOMÁTICAMENTE
+// floor(N/10) paquetes de 10 fotos; cada paquete cuesta 25% menos que el
+// total de sus 10 fotos. Las fotos restantes se cobran individuales con
+// la regla de arriba. NINGÚN precio está fijo en el código: todos salen
+// de events.price_mxn (editable por evento), así los porcentajes sirven
+// con cualquier precio ($20/foto -> paquete $150; $50/foto -> $375).
+// Para precios mezclados, las fotos se ordenan por precio descendente y
+// luego id ascendente antes de formar los paquetes (los paquetes se
+// llevan las más caras: máximo ahorro). Misma regla en cliente y servidor.
+// El precio de un paquete se reparte por foto en partes enteras que suman
+// EXACTAMENTE el total del paquete, así lo que se muestra, lo que se cobra
+// y lo que queda registrado por foto coinciden al peso.
+// Para cambiar los porcentajes o el tamaño del paquete se toca SOLO este
+// bloque aquí y su gemelo en public/app.js; el servidor siempre manda.
+const PACKAGE_SIZE = 10;
+const PACKAGE_DISCOUNT = 0.25;
+const SINGLE_TIERS = [
+  { from: 1, to: 3, discount: 0 },
+  { from: 4, to: 5, discount: 0.20 },
+  { from: 6, to: Infinity, discount: 0 },
+];
+
+function singleDiscountForPosition(pos) {
+  for (const t of SINGLE_TIERS) if (pos >= t.from && pos <= t.to) return t.discount;
+  return 0;
+}
+
+// Reparte `total` en n partes enteras que suman exactamente total.
+function splitAmount(total, n) {
+  const base = Math.floor(total / n);
+  const rem = total - base * n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(base + (i < rem ? 1 : 0));
+  return out;
+}
+
+// items: [{ id, price }] — devuelve { packages: [{ photoIds, subtotal,
+// discount, total, amounts }], lines: [{ id, price, discount, lineTotal
+// }] (fotos individuales), subtotal, discount, total }.
+// Misma fórmula que el cliente (public/app.js).
+function cartTotals(items) {
+  const sorted = items.slice().sort((a, b) => (Number(b.price) - Number(a.price)) || (Number(a.id) - Number(b.id)));
+  const numPackages = Math.floor(sorted.length / PACKAGE_SIZE);
+  const packages = [];
+  for (let p = 0; p < numPackages; p++) {
+    const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
+    const subtotal = group.reduce((s, it) => s + Math.round(Number(it.price) * 100) / 100, 0);
+    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT));
+    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
+  }
+  const singles = sorted.slice(numPackages * PACKAGE_SIZE);
+  const lines = singles.map((it, i) => {
+    const price = Math.round(Number(it.price) * 100) / 100;
+    const discount = singleDiscountForPosition(i + 1);
+    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount)) };
+  });
+  const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
+  const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
+  return { packages, lines, subtotal, discount: subtotal - total, total };
+}
+
 // Referencia externa de Clip (metadata.external_reference): máx 36
 // caracteres. Sirve para atar el regreso desde Clip con nuestro pago.
 function makeExternalRef(photoId, userId) {
-  return ('OC-' + photoId + '-' + userId + '-' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')).slice(0, 36);
+  return ('OC-' + photoId + '-' + userId + '-' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex')).slice(0, 36);
+}
+
+// Referencia de una fila del carrito: lleva el índice dentro del carrito
+// para que dos filas del mismo checkout nunca choquen aunque se creen en
+// el mismo milisegundo. La primera fila lleva la referencia del regreso
+// desde Clip (metadata.external_reference y ?ref=...).
+function makeCartRef(userId, index) {
+  return ('OC-C' + userId + '-' + index + '-' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex')).slice(0, 36);
 }
 
 // URL del webhook: el secreto es nuestro (CLIP_WEBHOOK_SECRET, inventado
@@ -413,17 +486,31 @@ async function markPaymentPaid(store, payment, clipData) {
   return { already };
 }
 
-// Vuelve a consultar el estado real en Clip y actualiza nuestro pago.
-// Es el único lugar donde se decide si algo está pagado: ni el webhook
-// ni la redirección del navegador son prueba de pago por sí solos.
-async function refreshPaymentFromClip(store, payment) {
-  const cur = await getCheckout(payment.clipPaymentRequestId);
-  if (clipStatusToPayment(cur.status) === 'completed') {
-    await markPaymentPaid(store, payment, cur);
-    return { clip: cur, payment: await store.getPaymentById(payment.id), paid: true };
+// Vuelve a consultar el estado real en Clip y actualiza TODAS las filas
+// que comparten un payment_request_id (una foto suelta = una fila; un
+// carrito = una fila por foto). Es el único lugar donde se decide si algo
+// está pagado: ni el webhook ni la redirección del navegador son prueba
+// de pago por sí solos. Se consulta a Clip UNA sola vez por checkout.
+async function refreshPaymentsByClipId(store, clipId) {
+  const payments = await store.getPaymentsByClipId(clipId);
+  if (!payments.length) return { clip: null, payments, paid: false };
+  const cur = await getCheckout(clipId);
+  const status = clipStatusToPayment(cur.status);
+  if (status === 'completed') {
+    for (const p of payments) await markPaymentPaid(store, p, cur);
+    return { clip: cur, payments: await store.getPaymentsByClipId(clipId), paid: true };
   }
-  await store.updatePaymentStatus(payment.id, { status: clipStatusToPayment(cur.status) });
-  return { clip: cur, payment: await store.getPaymentById(payment.id), paid: false };
+  for (const p of payments) {
+    if (p.status !== status) await store.updatePaymentStatus(p.id, { status });
+  }
+  return { clip: cur, payments: await store.getPaymentsByClipId(clipId), paid: false };
+}
+
+// Versión de una sola fila (flujo de una foto): delega en la de grupo.
+async function refreshPaymentFromClip(store, payment) {
+  const r = await refreshPaymentsByClipId(store, payment.clipPaymentRequestId);
+  const mine = r.payments.find(p => p.id === payment.id) || payment;
+  return { clip: r.clip, payment: mine, paid: r.paid };
 }
 
 // POST /api/checkout-create { photoId } — crea el link de pago de Clip
@@ -475,6 +562,77 @@ async function createCheckout(store, user, body) {
   return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentId: payment.id, amount: price } };
 }
 
+// POST /api/checkout-create-cart { photoIds: [...] } — crea UN solo link
+// de pago de Clip para todo el carrito, con los descuentos por volumen.
+// El total se calcula EN EL SERVIDOR desde events.price_mxn: lo que el
+// cliente manda (solo los ids) nunca decide el monto. Se guarda UNA fila
+// en payments por cada foto, todas con el mismo payment_request_id.
+async function createCartCheckout(store, user, body) {
+  requireUser(user);
+  if (user.role === 'photographer') throw err(400, 'Eres el fotógrafo de este evento.');
+  const ids = [...new Set((Array.isArray(body.photoIds) ? body.photoIds : []).map(Number).filter(Boolean))];
+  if (!ids.length) throw err(400, 'El carrito está vacío.');
+  if (ids.length > CART_MAX_ITEMS) throw err(400, 'El carrito no puede tener más de ' + CART_MAX_ITEMS + ' fotos.');
+  // Precios desde la base, foto por foto.
+  const items = [];
+  for (const id of ids) {
+    const photo = await store.getPhoto(id);
+    if (!photo) throw err(404, 'Foto no encontrada: ' + id + '.');
+    const ev = await store.getEvent(photo.eventId);
+    if (!ev) throw err(404, 'Evento no encontrado.');
+    if (ev.freeMode) throw err(400, 'La foto ' + id + ' es de un evento gratis: quítala del carrito y descárgala gratis.');
+    items.push({ id: photo.id, eventId: ev.id, eventName: ev.name, bibs: photo.bibs || [], price: eventPrice(ev) });
+  }
+  // Fotos ya compradas: se excluyen del cobro, no se cobran dos veces.
+  const toPay = [];
+  const alreadyPaid = [];
+  for (const it of items) {
+    if (await store.hasDownload(user.id, it.id)) alreadyPaid.push(it.id);
+    else toPay.push(it);
+  }
+  if (!toPay.length) return { status: 200, data: { paid: true, photoIds: alreadyPaid, amount: 0 } };
+  const totals = cartTotals(toPay.map(t => ({ id: t.id, price: t.price })));
+  if (totals.total <= 0) throw err(400, 'El total no es válido.');
+  if (totals.total > CART_MAX_TOTAL) throw err(400, 'El total ($' + totals.total + ' MXN) supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos carritos.');
+  const base = publicBase();
+  const firstRef = makeCartRef(user.id, 0);
+  const created = await createCheckoutLink({
+    amount: totals.total,
+    currency: 'MXN',
+    purchase_description: ('OnlyClick: ' + toPay.length + (toPay.length === 1 ? ' foto' : ' fotos')).slice(0, 255),
+    redirection_url: {
+      success: base + '/api/checkout-return?ref=' + encodeURIComponent(firstRef) + '&cart=1',
+      error: base + '/api/checkout-return?ref=' + encodeURIComponent(firstRef) + '&cart=1&result=error',
+      default: base + '/',
+    },
+    metadata: { external_reference: firstRef, customer_info: { name: user.name, email: user.email } },
+    webhook_url: webhookUrl(),
+    override_settings: { locale: 'es-MX', tip_enabled: false },
+  });
+  // Una fila por foto, todas con el mismo payment_request_id. Las fotos
+  // de un paquete llevan su parte del total del paquete (reparto exacto);
+  // las individuales llevan su precio con su descuento.
+  const rows = [];
+  let refIndex = 0;
+  const addRow = async (photoId, amount) => {
+    const it = toPay.find(t => t.id === photoId);
+    rows.push(await store.createPayment({
+      clipPaymentRequestId: created.payment_request_id,
+      // La primera fila lleva la referencia del regreso desde Clip; las
+      // demás llevan su propio índice para no chocar entre sí.
+      externalReference: refIndex === 0 ? firstRef : makeCartRef(user.id, refIndex),
+      userId: user.id, photoId, eventId: it.eventId,
+      amount, currency: 'MXN', status: 'pending',
+    }));
+    refIndex++;
+  };
+  for (const pkg of totals.packages) {
+    for (let i = 0; i < pkg.photoIds.length; i++) await addRow(pkg.photoIds[i], pkg.amounts[i]);
+  }
+  for (const line of totals.lines) await addRow(line.id, line.lineTotal);
+  return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentIds: rows.map(r => r.id), amount: totals.total, subtotal: totals.subtotal, discount: totals.discount, photoIds: toPay.map(t => t.id), alreadyPaid, packages: totals.packages, lines: totals.lines } };
+}
+
 // GET /api/checkout-return?ref=...&photoId=... — Clip redirige aquí
 // después del pago. Verifica con Clip y redirige (302) al corredor.
 // NO requiere sesión: la verificación es contra Clip, no contra el token.
@@ -482,11 +640,31 @@ async function checkoutReturn(store, query) {
   const ref = String(query.ref || '');
   const pid = String(query.pid || '');
   const photoId = Number(query.photoId || 0);
+  const isCart = String(query.cart || '') === '1';
   const base = publicBase();
   let payment = null;
   if (ref) payment = await store.getPaymentByExternalRef(ref);
-  if (!payment && pid) payment = await store.getPaymentByClipId(pid);
+  if (!payment && pid) {
+    const rows = await store.getPaymentsByClipId(pid);
+    payment = rows[0] || null;
+  }
   if (!payment) return { status: 302, redirect: base + '/?pay=error', data: {} };
+  // Regreso de un carrito: se verifica TODO el checkout (todas sus
+  // fotos) y se vuelve a la vista del carrito con el pid para que el
+  // frontend lo re-consulte y limpie el carrito al confirmarse.
+  if (isCart) {
+    const clipId = payment.clipPaymentRequestId;
+    const cartBack = base + '/?view=cart&pid=' + encodeURIComponent(clipId);
+    try {
+      const r = await refreshPaymentsByClipId(store, clipId);
+      if (r.paid) return { status: 302, redirect: cartBack + '&paid=1', data: {} };
+      const st = r.payments[0] ? r.payments[0].status : 'pending';
+      if (st === 'cancelled' || st === 'expired') return { status: 302, redirect: cartBack + '&pay=failed', data: {} };
+      return { status: 302, redirect: cartBack + '&pay=pending', data: {} };
+    } catch (_) {
+      return { status: 302, redirect: cartBack + '&pay=pending', data: {} };
+    }
+  }
   const back = base + '/?event=' + payment.eventId + (photoId ? '&photo=' + photoId : '');
   try {
     const r = await refreshPaymentFromClip(store, payment);
@@ -500,13 +678,43 @@ async function checkoutReturn(store, query) {
   }
 }
 
-// POST /api/checkout-status { paymentRequestId } o { photoId } — para
-// que el frontend pregunte si un pago pendiente ya se confirmó.
+// POST /api/checkout-status { paymentRequestId } o { photoId } o
+// { photoIds: [...] } — para que el frontend pregunte si un pago
+// pendiente ya se confirmó.
+//  - paymentRequestId: estado de TODO un checkout (una foto o un carrito
+//    completo); devuelve photoIds y count.
+//  - photoIds: estado por foto (útil tras pagar un carrito).
+//  - photoId: como antes, una sola foto.
 async function checkoutStatus(store, user, body) {
   requireUser(user);
+  // Carrito (o foto suelta) por payment_request_id.
+  if (body.paymentRequestId) {
+    const payments = await store.getPaymentsByClipId(String(body.paymentRequestId));
+    if (!payments.length) return { status: 200, data: { paid: false, status: 'none' } };
+    if (payments[0].userId !== user.id && user.role !== 'photographer') throw err(403, 'Ese pago no es tuyo.');
+    const photoIds = payments.map(p => p.photoId);
+    if (payments.every(p => p.status === 'completed')) return { status: 200, data: { paid: true, status: 'completed', photoIds, count: payments.length, receiptNo: payments[0].receiptNo || '' } };
+    if (payments.every(p => p.status === 'cancelled' || p.status === 'expired')) return { status: 200, data: { paid: false, status: payments[0].status, photoIds, count: payments.length } };
+    try {
+      const r = await refreshPaymentsByClipId(store, String(body.paymentRequestId));
+      return { status: 200, data: { paid: r.paid, status: r.payments[0] ? r.payments[0].status : 'pending', photoIds: r.payments.map(p => p.photoId), count: r.payments.length, receiptNo: r.payments[0] ? (r.payments[0].receiptNo || '') : '' } };
+    } catch (_) {
+      return { status: 200, data: { paid: false, status: payments[0].status, clipError: true, photoIds, count: payments.length } };
+    }
+  }
+  // Estado por foto, para una lista de ids.
+  if (Array.isArray(body.photoIds) && body.photoIds.length) {
+    const photos = [];
+    for (const id of body.photoIds.map(Number).filter(Boolean)) {
+      const p = await store.getLatestPaymentByUserPhoto(user.id, id);
+      const owned = await store.hasDownload(user.id, id);
+      photos.push({ photoId: id, paid: owned || (p && p.status === 'completed'), status: owned ? 'completed' : (p ? p.status : 'none') });
+    }
+    return { status: 200, data: { paid: photos.length > 0 && photos.every(x => x.paid), photos } };
+  }
+  // Una foto: como antes.
   let payment = null;
-  if (body.paymentRequestId) payment = await store.getPaymentByClipId(String(body.paymentRequestId));
-  else if (body.photoId) payment = await store.getLatestPaymentByUserPhoto(user.id, Number(body.photoId));
+  if (body.photoId) payment = await store.getLatestPaymentByUserPhoto(user.id, Number(body.photoId));
   if (!payment) return { status: 200, data: { paid: false, status: 'none' } };
   if (payment.userId !== user.id && user.role !== 'photographer') throw err(403, 'Ese pago no es tuyo.');
   if (payment.status === 'completed') return { status: 200, data: { paid: true, status: 'completed', receiptNo: payment.receiptNo || '' } };
@@ -538,12 +746,14 @@ async function clipWebhook(store, body, query) {
   if (!id) return { status: 200, data: { ok: false, reason: 'no-id' } };
   if (body.origin && body.origin !== 'checkout-api') return { status: 200, data: { ok: true, ignored: 'origin' } };
   if (resource && resource !== 'CHECKOUT') return { status: 200, data: { ok: true, ignored: resource } };
-  const payment = await store.getPaymentByClipId(id);
-  if (!payment) return { status: 200, data: { ok: true, ignored: 'unknown-payment' } };
-  if (payment.status === 'completed') return { status: 200, data: { ok: true, already: true } };
+  // Un checkout puede cubrir varias fotos (carrito): todas sus filas
+  // comparten el payment_request_id y se marcan juntas.
+  const payments = await store.getPaymentsByClipId(id);
+  if (!payments.length) return { status: 200, data: { ok: true, ignored: 'unknown-payment' } };
+  if (payments.every(p => p.status === 'completed')) return { status: 200, data: { ok: true, already: true } };
   try {
-    const r = await refreshPaymentFromClip(store, payment);
-    return { status: 200, data: { ok: true, paid: r.paid, status: r.payment.status } };
+    const r = await refreshPaymentsByClipId(store, id);
+    return { status: 200, data: { ok: true, paid: r.paid, status: r.payments[0] ? r.payments[0].status : 'pending', photos: r.payments.length } };
   } catch (_) {
     return { status: 200, data: { ok: false, reason: 'clip-error' } };
   }
@@ -592,6 +802,7 @@ async function dispatch(route, req) {
     case 'cover-file': return coverFile(store, user, req.query.eventId);
     case 'read-bib': return readBib(store, user, b);
     case 'checkout-create': return createCheckout(store, user, b);
+    case 'checkout-create-cart': return createCartCheckout(store, user, b);
     case 'checkout-return': return checkoutReturn(store, req.query);
     case 'checkout-status': return checkoutStatus(store, user, b);
     case 'clip-webhook': return clipWebhook(store, b, req.query);
@@ -601,4 +812,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS };
