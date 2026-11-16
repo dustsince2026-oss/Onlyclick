@@ -187,7 +187,7 @@
       <div id="pfSection" style="display:none;text-align:center;margin-top:14px">
       <p>Vende tus fotos de eventos deportivos en todo México: los corredores las encuentran por su dorsal con inteligencia artificial y las compran en línea. Tú solo sube tus fotos, nosotros nos encargamos de la plataforma y los pagos.</p>
       <p class="pf-commission">Tus fotos se venden en OnlyClick y se te paga tu parte cada 72 horas a tu CLABE. De cada foto: Clip cobra 4.18%, OnlyClick se queda el 10% de lo que queda, y tú te quedas el 90%. Ejemplo: foto de $20 → Clip $0.84 → OnlyClick $1.92 → tú $17.24.</p>
-      <form id="photoForm" style="text-align:left" onsubmit="return sendPhotographerForm(event)">
+      <form id="photoForm" style="text-align:left" onsubmit="return submitPhotographerForm(event)">
         <input id="pfName" placeholder="Nombre completo *" autocomplete="name" required>
         <input id="pfCity" placeholder="Ciudad y estado donde cubres eventos *" required>
         <input id="pfPhone" type="tel" placeholder="WhatsApp / teléfono *" autocomplete="tel" required>
@@ -205,9 +205,9 @@
         </select>
         <textarea id="pfMsg" placeholder="Mensaje / algo que quieras agregar (opcional)" rows="2"></textarea>
         <p id="pfError" class="error" style="display:none"></p>
-        <button class="primary" type="submit" style="width:100%">Enviar por WhatsApp</button>
+        <button class="primary" type="submit" style="width:100%">Enviar solicitud</button>
       </form>
-      <p id="pfSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
+      <p id="pfSent" class="muted" style="display:none"></p>
       </div>
     </div>
     <script>
@@ -216,42 +216,32 @@
       var el = document.getElementById('pfSection');
       el.style.display = (el.style.display === 'none') ? '' : 'none';
     }
-    // Formulario para fotógrafos: arma el mensaje y lo abre en WhatsApp
-    // de Orlan, ya escrito. El fotógrafo solo le da Enviar en WhatsApp.
-    // Mismo flujo que el formulario de organizadores (sin backend).
-    function sendPhotographerForm(e) {
+    // Solicitud de fotógrafo: se guarda en la página (ya NO se abre
+    // WhatsApp). Orlan la revisa en su panel y le manda el link de
+    // invitación al fotógrafo por WhatsApp.
+    async function submitPhotographerForm(e) {
       e.preventDefault();
       const v = id => (document.getElementById(id).value || '').trim();
-      const name = v('pfName'), city = v('pfCity'), phone = v('pfPhone'),
-        events = v('pfEvents'), camera = v('pfCamera'), link = v('pfLink'),
-        specialty = v('pfSpecialty'), dorsal = v('pfDorsal'), avail = v('pfAvail'),
-        clabe = v('pfClabe'), msg = v('pfMsg');
-      const missing = [];
-      if (!name) missing.push('Nombre completo');
-      if (!city) missing.push('Ciudad y estado');
-      if (!phone) missing.push('WhatsApp / teléfono');
-      if (!events) missing.push('Eventos cubiertos');
-      if (!link) missing.push('Link a tu trabajo');
+      const body = {
+        name: v('pfName'), city: v('pfCity'), phone: v('pfPhone'),
+        events: v('pfEvents'), camera: v('pfCamera'), sampleLink: v('pfLink'),
+        specialty: v('pfSpecialty'), dorsalExp: v('pfDorsal'), availability: v('pfAvail'),
+        clabe: v('pfClabe'), message: v('pfMsg'),
+      };
       const err = document.getElementById('pfError');
-      if (missing.length) {
-        err.textContent = 'Faltan campos obligatorios: ' + missing.join(', ') + '.';
+      const sent = document.getElementById('pfSent');
+      err.style.display = 'none'; sent.style.display = 'none';
+      try {
+        const res = await fetch('/api/submit-application', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'No se pudo enviar la solicitud.');
+        document.getElementById('photoForm').reset();
+        sent.textContent = 'Solicitud enviada. Orlan la revisará y te mandará el link para crear tu cuenta.';
+        sent.style.display = '';
+      } catch (ex) {
+        err.textContent = ex.message;
         err.style.display = '';
-        return false;
       }
-      err.style.display = 'none';
-      let text = 'Hola, soy ' + name + '. Quiero unirme a OnlyClick como fotógrafo.';
-      text += '\nCiudad: ' + city;
-      text += '\nWhatsApp: ' + phone;
-      text += '\nEventos cubiertos: ' + events;
-      if (camera) text += '\nCámara: ' + camera;
-      text += '\nMi trabajo: ' + link;
-      if (specialty) text += '\nEspecialidad: ' + specialty;
-      if (dorsal) text += '\nExperiencia con dorsal/plataforma: ' + dorsal;
-      if (avail) text += '\nDisponibilidad: ' + avail;
-      if (clabe) text += '\nCLABE para pagos: ' + clabe;
-      if (msg) text += '\nMensaje: ' + msg;
-      window.open('https://wa.me/526444531015?text=' + encodeURIComponent(text), '_blank');
-      document.getElementById('pfSent').style.display = '';
       return false;
     }
     </script>
@@ -281,6 +271,7 @@
     <div id="auth" class="card">
       <h2 id="authTitle">Iniciar sesión</h2>
       <div id="authMsg"></div>
+      <div id="inviteBanner"></div>
       <input id="authName" placeholder="Nombre" style="display:none">
       <input id="authEmail" type="email" autocomplete="username" placeholder="Correo">
       <input id="authPass" type="password" autocomplete="current-password" placeholder="Contraseña (mín. 6 caracteres)">

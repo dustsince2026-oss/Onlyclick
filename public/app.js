@@ -7,6 +7,7 @@ let token = localStorage.getItem('onlyclick_token') || '';
 let me = null;
 let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
+let inviteToken = ''; // ?invite=... del link de invitación aprobado
 let currentEvent = null;
 let currentTipClabe = '';
 let currentTipName = '';
@@ -780,6 +781,16 @@ async function loadMyPhotos() {
 
 // Dinero en MXN con 2 decimales.
 function fmtMxn(n) { return '$' + Number(n || 0).toFixed(2) + ' MXN'; }
+// Link de invitación de una solicitud aprobada: se arma con el origen
+// actual (onlyclick-zeta.vercel.app hoy, onlyclick.com.mx cuando esté el
+// dominio) y el token guardado en la solicitud.
+function appInviteHtml(a) {
+  const url = location.origin + '/?invite=' + encodeURIComponent(a.inviteToken || '');
+  return `<p class="ok">Aprobada — link de invitación (vale hasta ${esc(String(a.inviteExpiresAt || '').slice(0, 10))}):</p>
+  <p style="word-break:break-all"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a></p>
+  <button data-copyinvite="${a.id}">Copiar link</button>
+  <button data-app-wa="${a.id}" class="primary">Enviar por WhatsApp</button>`;
+}
 
 async function loadPhotographer() {
   const box = $('#photoPanel');
@@ -794,6 +805,7 @@ async function loadPhotographer() {
   const payouts = me.isOwner ? await api('/api/payouts-summary').catch(() => null) : null;
   const payoutHistory = me.isOwner ? await api('/api/payouts-history').catch(() => ({ payouts: [] })) : null;
   const photographers = me.isOwner ? await api('/api/list-photographers').catch(() => ({ photographers: [] })) : null;
+  const applications = me.isOwner ? await api('/api/list-applications').catch(() => ({ applications: [] })) : null;
   // Cuenta pendiente de aprobación: no puede crear eventos ni vender
   // todavía. Sí puede dejar su CLABE de pagos y ver sus ganancias (en
   // ceros hasta que venda).
@@ -812,6 +824,28 @@ async function loadPhotographer() {
     return;
   }
   const dueCount = payouts ? (payouts.photographers || []).filter(p => p.isDue && p.pendingBalance > 0).length : 0;
+  // Solicitudes de fotógrafos: pendientes (con toda la info para decidir),
+  // aprobadas con link pendiente de usar, y revisadas (historial).
+  const apps = (applications && applications.applications) || [];
+  const appsPending = apps.filter(a => a.status === 'pending');
+  const appsOpen = apps.filter(a => a.status === 'approved' && a.photographerId == null);
+  const appsReviewed = apps.filter(a => a.status === 'rejected' || (a.status === 'approved' && a.photographerId != null));
+  const appCard = (a, withActions) => `
+    <div class="card">
+      <p><strong>${esc(a.name)}</strong> · ${esc(a.city)} · <span class="muted">${String(a.createdAt || '').slice(0, 10)}</span></p>
+      <p class="muted">WhatsApp: ${esc(a.phone)} · Eventos: ${esc(a.events)}</p>
+      <p class="muted">Cámara: ${esc(a.camera || '—')} · Especialidad: ${esc(a.specialty || '—')}</p>
+      <p class="muted">Experiencia con dorsal: ${esc(a.dorsalExp || '—')} · Disponibilidad: ${esc(a.availability || '—')}</p>
+      <p class="muted">CLABE para pagos: ${esc(a.clabe || '—')}</p>
+      <p class="muted">Trabajo: <a href="${esc(a.sampleLink)}" target="_blank" rel="noopener">${esc(a.sampleLink)}</a></p>
+      ${a.message ? `<p class="muted">Mensaje: ${esc(a.message)}</p>` : ''}
+      ${withActions ? `<button data-app-approve="${a.id}" class="primary">Aprobar</button> <button data-app-reject="${a.id}">Rechazar</button>` : appInviteHtml(a)}
+    </div>`;
+  const solicitudesHtml = me.isOwner ? `
+    <h3>Solicitudes</h3>
+    <p class="muted">Fotógrafos que llenaron el formulario del inicio. Aprueba al que te guste y se le genera un link para crear su cuenta; si no te convence, recházalo.</p>
+    ${appsPending.length || appsOpen.length ? `<div data-pg="applications">${appsPending.map(a => appCard(a, true)).join('')}${appsOpen.map(a => appCard(a, false)).join('')}</div><div data-pg-controls="applications"></div>` : '<p class="muted">No hay solicitudes pendientes.</p>'}
+    ${appsReviewed.length ? `<details><summary>Revisadas (${appsReviewed.length})</summary>${appsReviewed.map(a => `<p class="muted">${esc(a.name)} · ${a.status === 'approved' ? 'Aprobada' : 'Rechazada'} · ${String(a.createdAt || '').slice(0, 10)}</p>`).join('')}</details>` : ''}` : '';
   // Al recargar el panel las listas vuelven a la página 1 (la pestaña
   // activa sí se recuerda mientras se navega).
   panelPages = {};
@@ -885,9 +919,10 @@ async function loadPhotographer() {
     </div>`).join('') : '<p class="muted">Todavía no hay otros fotógrafos.</p>'}</div>
     <div data-pg-controls="payouts"></div>
     ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<p><strong>Historial de pagos enviados</strong></p><div data-pg="history">` + payoutHistory.payouts.map(h => `<p class="muted">${esc(h.photographerName)} · ${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</p>`).join('') + `</div><div data-pg-controls="history"></div>` : ''}
+    ${solicitudesHtml}
     <h3>Fotógrafos</h3>
     <p class="muted">Aprueba a los fotógrafos nuevos para que puedan crear eventos y vender. Solo tú ves esta lista.</p>
-    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
+    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${(!ph.isOwner && !ph.hasApplication) ? '<span class="error">Sin solicitud</span>' : ''} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
     <div data-pg-controls="photogs"></div>
     </section>` : ''}
     <section data-tabpanel="estadisticas">
@@ -937,6 +972,37 @@ async function loadPhotographer() {
     if (!confirm('¿Quitarle la aprobación a este fotógrafo? Ya no podrá crear eventos ni subir fotos, pero sus eventos y ventas se quedan.')) return;
     try { await api('/api/approve-photographer', { method: 'POST', body: JSON.stringify({ userId: Number(b.dataset.reject), approve: false }) }); alert('Aprobación quitada.'); loadPhotographer(); }
     catch (e) { alert(e.message); }
+  });
+  // Dueño: revisar solicitudes de fotógrafos (aprobar genera el link).
+  document.querySelectorAll('[data-app-approve]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Aprobar a este fotógrafo y generarle su link de invitación?')) return;
+    b.disabled = true;
+    try { await api('/api/review-application', { method: 'POST', body: JSON.stringify({ id: Number(b.dataset.appApprove), decision: 'approved' }) }); alert('Fotógrafo aprobado. El link de invitación está en su tarjeta: cópialo o mándaselo por WhatsApp.'); loadPhotographer(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+  document.querySelectorAll('[data-app-reject]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Rechazar esta solicitud? El fotógrafo no podrá crear su cuenta con link.')) return;
+    b.disabled = true;
+    try { await api('/api/review-application', { method: 'POST', body: JSON.stringify({ id: Number(b.dataset.appReject), decision: 'rejected' }) }); loadPhotographer(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+  // Copiar el link de invitación de una solicitud aprobada.
+  document.querySelectorAll('[data-copyinvite]').forEach(b => b.onclick = async () => {
+    const a = apps.find(x => x.id === Number(b.dataset.copyinvite));
+    if (!a) return;
+    const url = location.origin + '/?invite=' + encodeURIComponent(a.inviteToken || '');
+    try { await navigator.clipboard.writeText(url); b.textContent = 'Copiado ✓'; setTimeout(() => { b.textContent = 'Copiar link'; }, 2000); }
+    catch (_) { alert('No se pudo copiar, cópialo a mano: ' + url); }
+  });
+  // Mandar el link de invitación por WhatsApp al solicitante.
+  document.querySelectorAll('[data-app-wa]').forEach(b => b.onclick = () => {
+    const a = apps.find(x => x.id === Number(b.dataset.appWa));
+    if (!a) return;
+    const digits = String(a.phone || '').replace(/\D/g, '');
+    const waPhone = digits.length === 10 ? '52' + digits : digits;
+    const url = location.origin + '/?invite=' + encodeURIComponent(a.inviteToken || '');
+    const msg = `Hola ${a.name}, tu solicitud para ser fotógrafo de OnlyClick fue aprobada. Crea tu cuenta con este link: ${url}`;
+    window.open('https://wa.me/' + waPhone + '?text=' + encodeURIComponent(msg), '_blank');
   });
   function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }
   $('#covEvent').onchange = renderCovPreview;
@@ -1273,14 +1339,42 @@ $('#bibSearch').onclick = searchBib;
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
 $('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
+// Si la URL trae ?invite=... (link de invitación aprobado por Orlan):
+// se verifica y se prepara el registro como fotógrafo con ese token.
+// Si el link ya no vale, se avisa y el registro normal sigue funcionando.
+async function checkInvite() {
+  inviteToken = new URLSearchParams(location.search).get('invite') || '';
+  if (!inviteToken) return;
+  const banner = $('#inviteBanner');
+  try {
+    const r = await api('/api/invite-status?token=' + encodeURIComponent(inviteToken));
+    if (r.valid) {
+      mode = 'register';
+      $('#authTitle').textContent = 'Crear cuenta';
+      $('#authSubmit').textContent = 'Crear mi cuenta';
+      $('#authToggle').textContent = '¿Ya tienes cuenta? Iniciar sesión';
+      $('#authName').style.display = '';
+      $('#authRole').style.display = '';
+      $('#authRole').value = 'photographer';
+      if (banner) banner.innerHTML = `<p class="ok">Invitación de OnlyClick para ${esc(r.name)}: crea tu cuenta para unirte como fotógrafo.</p>`;
+    } else {
+      inviteToken = '';
+      if (banner) banner.innerHTML = '<p class="error">Este link de invitación ya no es válido. Llena el formulario de fotógrafo en el inicio.</p>';
+    }
+  } catch (_) { /* sin conexión: el registro normal sigue funcionando */ }
+  showView('account');
+}
+
 $('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; $('#authToggle').textContent = mode === 'login' ? '¿No tienes cuenta? Crear cuenta' : '¿Ya tienes cuenta? Iniciar sesión'; $('#authName').style.display = mode === 'register' ? '' : 'none'; $('#authRole').style.display = mode === 'register' ? '' : 'none'; };
 $('#authSubmit').onclick = async () => {
   const body = { email: $('#authEmail').value, password: $('#authPass').value };
   try {
     let r;
-    if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
+    if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; if (inviteToken) body.inviteToken = inviteToken; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
     else r = await api('/api/auth-login', { method: 'POST', body: JSON.stringify(body) });
     saveToken(r.token); await refreshAuth();
+    // El link de invitación ya se usó: se quita de la URL.
+    if (inviteToken) { inviteToken = ''; try { history.replaceState({}, '', location.pathname); } catch (_) {} }
     // El autocompletado de Chrome a veces deja el correo en el buscador
     // de dorsal al entrar: si parece correo, se limpia.
     const bibEl = $('#bibInput'); if (bibEl && bibEl.value.includes('@')) bibEl.value = '';
@@ -1325,3 +1419,4 @@ loadHome();
 handlePayReturn();
 updateCartFab();
 if (resetToken) showView('account');
+checkInvite();
