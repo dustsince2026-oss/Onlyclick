@@ -48,6 +48,17 @@ function showPanelTab(tab) {
 // funcionan ahí (se quedan en "Descargando"). Se avisa con un banner y
 // se ofrece abrir la foto en una pestaña nueva.
 function isInAppBrowser() { return /FBAN|FBAV|FB_IAB|Instagram/i.test(navigator.userAgent || ''); }
+
+// Botón "Abrir en Chrome" del banner: abrir esta misma página en el
+// navegador. Android: intent:// con package=com.android.chrome;
+// iPhone: esquema googlechrome:// (abre Chrome si está instalado).
+function openInBrowser() {
+  const u = location.href.replace(/^https?:\/\//, '');
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(ua)) window.open('googlechrome://' + u, '_blank');
+  else if (/Android/i.test(ua)) window.open('intent://' + u + '#Intent;scheme=https;package=com.android.chrome;end', '_blank');
+  else window.open(location.href, '_blank');
+}
 function goPanelSection(tab, secId) {
   showPanelTab(tab);
   if (!secId) return;
