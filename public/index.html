@@ -83,6 +83,7 @@
   /* ---------- Navegación inferior fija (móvil) ---------- */
   #bottomNav { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(11,11,14,.97); border-top: 2px solid #d4af37; display: flex; z-index: 40; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
   #bottomNav button { flex: 1; background: none; border: none; color: #d8d8dc; font-size: 14px; font-weight: 600; padding: 10px 4px; margin: 0; border-radius: 8px; }
+  #bottomNav button + button { border-left: 1px solid rgba(212,175,55,.4); border-radius: 0; }
   #bottomNav button.active { color: #d4af37; font-weight: 700; }
   @media (min-width: 720px) { #bottomNav { display: none; } }
   /* ---------- Lightbox ---------- */
