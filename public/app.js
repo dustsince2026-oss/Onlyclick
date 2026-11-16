@@ -92,10 +92,20 @@ async function savePhoto(photo, freeMode, priceMxn) {
         return;
       } else throw new Error('No se pudo crear el pago con Clip.');
     }
+    // Descargar con fetch (lleva la sesión) y blob: en Android el
+    // gestor de descargas re-pide la URL sin la cookie de sesión y el
+    // servidor contesta 401 en fotos de pago, por eso la descarga
+    // fallaba con "No se pudieron realizar 2 descargas". El blob vive
+    // en la página, así que no hay segunda petición sin sesión.
+    const res = await fetch(`/api/photo?id=${photo.id}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('No se pudo descargar la foto (' + res.status + ').');
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = `/api/photo?id=${photo.id}`;
+    a.href = blobUrl;
     a.download = `onlyclick-foto-${photo.id}.jpg`;
     document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
     btns.forEach(b => { b.textContent = '✓ Guardar iniciada — busca la foto en Descargas'; });
     if (freeMode && currentTipClabe) showTipModal(currentTipClabe, currentTipName);
     setTimeout(() => loadEventDetail(currentEvent), 1500);
@@ -116,9 +126,16 @@ async function handlePayReturn() {
   history.replaceState({}, '', location.pathname);
   if (paid === '1' && eventId && photoId) {
     alert('¡Pago confirmado! Descargando tu foto…');
-    const a = document.createElement('a');
-    a.href = `/api/photo?id=${photoId}`; a.download = `onlyclick-foto-${photoId}.jpg`;
-    document.body.appendChild(a); a.click(); a.remove();
+    try {
+      const res = await fetch(`/api/photo?id=${photoId}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('descarga ' + res.status);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl; a.download = `onlyclick-foto-${photoId}.jpg`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    } catch (e) { alert('El pago quedó registrado, pero la descarga falló. Abre la foto en el evento y dale "Guardar".'); }
     showView('events'); loadEventDetail(eventId);
     return;
   }
