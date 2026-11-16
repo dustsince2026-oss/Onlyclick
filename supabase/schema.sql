@@ -11,7 +11,7 @@ create table if not exists users (
   email text not null unique,
   password_hash text not null,
   role text not null check (role in ('photographer', 'athlete')),
-    tip_clabe text not null default '',
+  tip_clabe text not null default '',
   created_at timestamptz not null default now()
 );
 
@@ -22,9 +22,35 @@ create table if not exists events (
   sport text not null default 'Carrera',
   event_date text not null default '',
   location text not null default '',
-  free_mode boolean not null default true,   cover_path text not null default '',
+  free_mode boolean not null default true,
+  price_mxn numeric not null default 20,
+  cover_path text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- Precio por foto del evento (MXN). En bases ya creadas, correr el ALTER
+-- de abajo. Si es 0 o falta, el checkout usa $20.
+alter table events add column if not exists price_mxn numeric not null default 20;
+
+-- Pagos con Clip: un renglón por intento de cobro (link creado).
+-- status: pending | completed | cancelled | expired. La descarga real
+-- vive en downloads (con amount > 0); esta tabla es el rastro del pago.
+create table if not exists payments (
+  id bigint generated always as identity primary key,
+  clip_payment_request_id text not null unique,
+  external_reference text not null default '',
+  user_id bigint not null references users(id),
+  photo_id bigint not null references photos(id) on delete cascade,
+  event_id bigint not null references events(id) on delete cascade,
+  amount numeric not null,
+  currency text not null default 'MXN',
+  status text not null default 'pending',
+  receipt_no text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_payments_clip on payments(clip_payment_request_id);
+create index if not exists idx_payments_user_photo on payments(user_id, photo_id);
 
 create table if not exists photos (
   id bigint generated always as identity primary key,
