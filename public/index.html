@@ -2,7 +2,11 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"> <link rel="icon" type="image/png" href="/favicon.png"> <link rel="apple-touch-icon" href="/apple-touch-icon.png"> <link rel="manifest" href="/manifest.json"> <meta name="theme-color" content="#0f1220">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f1220">
 <title>OnlyClick — Encuentra tus fotos por dorsal</title>
 <style>
   * { box-sizing: border-box; }
@@ -53,20 +57,20 @@
     </select>
     <p class="muted" id="photoTakenNote"></p>
     <button id="authSubmit">Entrar</button>
-    <button class="secondary" id="authToggle">¿No tienes cuenta? Crear cuenta</button> 
-       <button class="secondary" id="authForgot">¿Olvidaste tu contraseña?</button> 
-       <div id="forgotBox" style="display:none"> 
-              <p class="muted">Te mandamos un enlace a tu correo para poner una nueva contraseña.</p> 
-              <input id="forgotEmail" type="email" placeholder="Tu correo"> 
-              <button id="forgotSend">Enviar enlace</button> 
-              <p class="muted" id="forgotStatus"></p> 
-           </div> 
-       <div id="resetBox" style="display:none"> 
-              <p class="muted">Escribe tu nueva contraseña.</p> 
-              <input id="resetPass" type="password" placeholder="Nueva contraseña (mín. 6 caracteres)"> 
-              <button id="resetSend">Guardar nueva contraseña</button> 
-              <p class="muted" id="resetStatus"></p> 
-           </div>
+    <button class="secondary" id="authToggle">¿No tienes cuenta? Crear cuenta</button>
+    <button class="secondary" id="authForgot">¿Olvidaste tu contraseña?</button>
+    <div id="forgotBox" style="display:none">
+      <p class="muted">Te mandamos un enlace a tu correo para poner una nueva contraseña.</p>
+      <input id="forgotEmail" type="email" placeholder="Tu correo">
+      <button id="forgotSend">Enviar enlace</button>
+      <p class="muted" id="forgotStatus"></p>
+    </div>
+    <div id="resetBox" style="display:none">
+      <p class="muted">Escribe tu nueva contraseña.</p>
+      <input id="resetPass" type="password" placeholder="Nueva contraseña (mín. 6 caracteres)">
+      <button id="resetSend">Guardar nueva contraseña</button>
+      <p class="muted" id="resetStatus"></p>
+    </div>
   </div>
 
   <div id="app" class="hidden">
@@ -103,7 +107,12 @@
 </main>
 
 <div id="lightbox">
-  <img id="lbImg" alt="Foto ampliada">
+  <div style="position:relative;display:inline-block;max-width:100%">
+    <img id="lbImg" alt="Foto ampliada">
+    <div id="lbWm" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;pointer-events:none;overflow:hidden">
+      <span style="transform:rotate(-30deg);font-size:28px;font-weight:800;color:rgba(255,255,255,.45);letter-spacing:2px;white-space:nowrap">ONLYCLICK • VISTA PREVIA</span>
+    </div>
+  </div>
   <div class="actions">
     <p class="muted" id="lbInfo"></p>
     <button id="lbSave">Guardar gratis</button>
