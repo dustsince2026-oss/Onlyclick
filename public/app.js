@@ -44,6 +44,10 @@ function showPanelTab(tab) {
 // Botones rápidos del panel: cambia a la pestaña y baja a la sección
 // pedida (si la hay). El scroll se protege por si el entorno no lo
 // tiene (p. ej. pruebas con jsdom).
+// Navegador dentro de Facebook/Instagram: las descargas con blob no
+// funcionan ahí (se quedan en "Descargando"). Se avisa con un banner y
+// se ofrece abrir la foto en una pestaña nueva.
+function isInAppBrowser() { return /FBAN|FBAV|FB_IAB|Instagram/i.test(navigator.userAgent || ''); }
 function goPanelSection(tab, secId) {
   showPanelTab(tab);
   if (!secId) return;
@@ -382,7 +386,7 @@ async function savePhoto(photo, freeMode, priceMxn) {
     a.download = `onlyclick-foto-${photo.id}.jpg`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-    btns.forEach(b => { b.textContent = '✓ Guardar iniciada — busca la foto en Descargas'; });
+    btns.forEach(b => { b.textContent = isInAppBrowser() ? 'Revisa Descargas — si no está, usa "Abrir la foto"' : '✓ Guardar iniciada — busca la foto en Descargas'; });
     if (freeMode && currentTipClabe) showTipModal(currentTipClabe, currentTipName);
     removeFromCart(photo.id); // si estaba en el carrito, ya es tuya
     setTimeout(() => loadEventDetail(currentEvent), 1500);
@@ -648,6 +652,11 @@ function bindPhotos(photos) {
     $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}`;
     $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
     $('#lbSave').dataset.save = p.id;
+    // En el navegador de Facebook/Instagram: botón para abrir la foto
+    // en una pestaña nueva (ahí se puede guardar con pulsación larga).
+    const lbOpen = $('#lbOpen');
+    lbOpen.style.display = isInAppBrowser() ? '' : 'none';
+    lbOpen.onclick = () => { const u = '/api/photo?id=' + p.id + '&inline=1' + (token ? '&token=' + encodeURIComponent(token) : ''); window.open(u, '_blank'); };
     // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
     const lbCart = $('#lbCart');
     lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
@@ -1446,3 +1455,4 @@ handlePayReturn();
 updateCartFab();
 if (resetToken) showView('account');
 checkInvite();
+if (isInAppBrowser()) { const b = $('#inAppBanner'); if (b) b.style.display = ''; }

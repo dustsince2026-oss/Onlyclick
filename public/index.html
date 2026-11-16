@@ -104,6 +104,10 @@
 </style>
 </head>
 <body>
+<div id="inAppBanner" style="display:none;border:1px solid #d4af37;border-radius:10px;padding:12px;margin:10px;text-align:left;background:#17171c">
+  <p class="muted" style="margin:0 0 10px">Estás viendo OnlyClick dentro de Facebook o Instagram. Ahí las descargas se atoran: toca ⋮ arriba a la derecha y elige 'Abrir en Chrome' (o 'Abrir en el navegador') y descarga desde ahí.</p>
+  <button type="button" class="primary" onclick="document.getElementById('inAppBanner').style.display='none'">Entendido</button>
+</div>
 <header>
   <button class="brand" id="brandHome" aria-label="OnlyClick — Inicio">
     <span class="brand-logo"><img src="/icon-192.png" alt="OnlyClick"></span>
@@ -348,6 +352,7 @@
   <div class="actions">
     <p class="muted" id="lbInfo"></p>
     <button id="lbSave" class="primary">Guardar gratis</button>
+    <button class="secondary" id="lbOpen" style="display:none">Abrir la foto (si no se descarga)</button>
     <button class="secondary" id="lbCart">Agregar al carrito</button>
     <button class="secondary" id="lbClose">Cerrar</button>
   </div>
