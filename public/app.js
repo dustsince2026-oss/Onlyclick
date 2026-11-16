@@ -82,15 +82,19 @@ async function savePhoto(photo, freeMode, priceMxn) {
   const btns = document.querySelectorAll(`[data-save="${photo.id}"]`);
   btns.forEach(b => { b.disabled = true; b.textContent = 'Guardando…'; });
   try {
-    if (freeMode) await api('/api/claim', { method: 'POST', body: JSON.stringify({ photoIds: [photo.id] }) });
-    else if (!photo.owned) {
-      const r = await api('/api/checkout-create', { method: 'POST', body: JSON.stringify({ photoId: photo.id }) });
-      if (r.paid) { /* ya era tuya: seguir a descargar */ }
-      else if (r.checkoutUrl) {
-        btns.forEach(b => { b.textContent = 'Abriendo pago seguro…'; });
-        location.href = r.checkoutUrl;
-        return;
-      } else throw new Error('No se pudo crear el pago con Clip.');
+    // Si ya es tuya (comprada o guardada antes), no se reclama ni se
+    // cobra de nuevo: directo a descargar.
+    if (!photo.owned) {
+      if (freeMode) await api('/api/claim', { method: 'POST', body: JSON.stringify({ photoIds: [photo.id] }) });
+      else {
+        const r = await api('/api/checkout-create', { method: 'POST', body: JSON.stringify({ photoId: photo.id }) });
+        if (r.paid) { /* ya era tuya: seguir a descargar */ }
+        else if (r.checkoutUrl) {
+          btns.forEach(b => { b.textContent = 'Abriendo pago seguro…'; });
+          location.href = r.checkoutUrl;
+          return;
+        } else throw new Error('No se pudo crear el pago con Clip.');
+      }
     }
     // Descargar con fetch + blob, mandando el token de sesión como
     // Authorization Bearer (la sesión vive en localStorage, no en
@@ -161,9 +165,18 @@ async function pollPayment(photoId) {
       const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoId }) });
       if (s.paid) {
         alert('¡Pago confirmado! Descargando tu foto…');
-        const a = document.createElement('a');
-        a.href = `/api/photo?id=${photoId}`; a.download = `onlyclick-foto-${photoId}.jpg`;
-        document.body.appendChild(a); a.click(); a.remove();
+        try {
+          const dlHeaders = {};
+          if (token) dlHeaders.Authorization = 'Bearer ' + token;
+          const res = await fetch(`/api/photo?id=${photoId}`, { headers: dlHeaders });
+          if (!res.ok) throw new Error('descarga ' + res.status);
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl; a.download = `onlyclick-foto-${photoId}.jpg`;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+        } catch (e) { alert('El pago quedó registrado, pero la descarga falló. Abre la foto en el evento y dale "Guardar".'); }
         return;
       }
       if (s.status === 'cancelled' || s.status === 'expired') return;
@@ -266,7 +279,6 @@ async function loadMyPhotos() {
   currentTipClabe = '';
   currentTipName = '';
   const r = await api('/api/my-photos');
-  r.photos.forEach(p => { p.freeMode = true; });
   $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos);
 }
