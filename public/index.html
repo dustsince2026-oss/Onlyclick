@@ -139,8 +139,35 @@
     <div class="card" style="text-align:center">
       <h3>¿Estás organizando un evento deportivo?</h3>
       <p>Ofrece a tus competidores fotografía profesional con búsqueda de fotos por dorsal con inteligencia artificial: encuentran sus fotos en segundos, fácil y gratis. Tú encárgate de tu evento, nosotros de las fotos.</p>
-      <button class="primary" onclick="window.open('https://wa.me/526444531015?text=Hola%2C%20me%20interesa%20el%20servicio%20de%20fotograf%C3%ADa%20para%20mi%20evento%20deportivo.', '_blank')">Contáctanos</button>
+      <form id="orgForm" style="text-align:left" onsubmit="return sendOrganizerForm(event)">
+        <input id="orgName" placeholder="Tu nombre" autocomplete="name" required>
+        <input id="orgEvent" placeholder="Nombre del evento" required>
+        <input id="orgDate" type="date" required>
+        <input id="orgCity" placeholder="Ciudad / lugar">
+        <input id="orgCount" type="number" inputmode="numeric" min="1" placeholder="¿Cuántos competidores aprox.?">
+        <textarea id="orgMsg" placeholder="Mensaje (opcional)" rows="2"></textarea>
+        <button class="primary" type="submit" style="width:100%">Enviar por WhatsApp</button>
+      </form>
+      <p id="orgSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
     </div>
+    <script>
+    // Formulario para organizadores: arma el mensaje y lo abre en WhatsApp
+    // de Orlan, ya escrito. El organizador solo le da Enviar en WhatsApp.
+    function sendOrganizerForm(e) {
+      e.preventDefault();
+      const v = id => (document.getElementById(id).value || '').trim();
+      const name = v('orgName'), ev = v('orgEvent'), date = v('orgDate'), city = v('orgCity'), count = v('orgCount'), msg = v('orgMsg');
+      if (!name || !ev || !date) return false;
+      let text = 'Hola, soy ' + name + '. Organizo el evento ' + ev + ' el ' + date;
+      if (city) text += ' en ' + city;
+      if (count) text += '. Somos aprox. ' + count + ' competidores';
+      text += '. Me interesa el servicio de fotografía con búsqueda por dorsal con IA.';
+      if (msg) text += ' ' + msg;
+      window.open('https://wa.me/526444531015?text=' + encodeURIComponent(text), '_blank');
+      document.getElementById('orgSent').style.display = '';
+      return false;
+    }
+    </script>
   </section>
 
   <!-- EVENTOS -->
