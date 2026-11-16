@@ -92,12 +92,16 @@ async function savePhoto(photo, freeMode, priceMxn) {
         return;
       } else throw new Error('No se pudo crear el pago con Clip.');
     }
-    // Descargar con fetch (lleva la sesión) y blob: en Android el
-    // gestor de descargas re-pide la URL sin la cookie de sesión y el
-    // servidor contesta 401 en fotos de pago, por eso la descarga
-    // fallaba con "No se pudieron realizar 2 descargas". El blob vive
-    // en la página, así que no hay segunda petición sin sesión.
-    const res = await fetch(`/api/photo?id=${photo.id}`, { credentials: 'same-origin' });
+    // Descargar con fetch + blob, mandando el token de sesión como
+    // Authorization Bearer (la sesión vive en localStorage, no en
+    // cookie): el <a download> directo y un fetch sin el header no
+    // mandan el token y el servidor contesta 401 en fotos de pago.
+    // En Android además el gestor de descargas re-pide la URL sin
+    // sesión. El blob vive en la página, así que no hay segunda
+    // petición sin sesión.
+    const dlHeaders = {};
+    if (token) dlHeaders.Authorization = 'Bearer ' + token;
+    const res = await fetch(`/api/photo?id=${photo.id}`, { headers: dlHeaders });
     if (!res.ok) throw new Error('No se pudo descargar la foto (' + res.status + ').');
     const blob = await res.blob();
     const blobUrl = URL.createObjectURL(blob);
@@ -127,7 +131,9 @@ async function handlePayReturn() {
   if (paid === '1' && eventId && photoId) {
     alert('¡Pago confirmado! Descargando tu foto…');
     try {
-      const res = await fetch(`/api/photo?id=${photoId}`, { credentials: 'same-origin' });
+      const dlHeaders = {};
+      if (token) dlHeaders.Authorization = 'Bearer ' + token;
+      const res = await fetch(`/api/photo?id=${photoId}`, { headers: dlHeaders });
       if (!res.ok) throw new Error('descarga ' + res.status);
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
