@@ -827,8 +827,9 @@ async function notifySale(store, newlyPaid) {
     byPhotographer.get(ownerId).push({ payment: p, photo, event: ev });
   }
   if (!byPhotographer.size) return;
-  const owner = (await store.listPhotographers()).find(u => u.isOwner) || null;
-  const ownerEmail = owner ? owner.email : (process.env.GMAIL_USER || '').trim();
+  // El aviso va SOLO al fotógrafo que vendió. Si vende Orlan, él es el
+  // fotógrafo y recibe este mismo correo; si vende otro, a Orlan no le
+  // llega nada (lo ve en su panel).
   const buyer = newlyPaid[0] ? await store.findUserById(newlyPaid[0].userId) : null;
   const buyerFirst = buyer && buyer.name ? String(buyer.name).split(' ')[0] : '';
   for (const [photographerId, items] of byPhotographer) {
@@ -846,14 +847,6 @@ async function notifySale(store, newlyPaid) {
       subject: `¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick! $${total.toFixed(2)} MXN`,
       text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (después de la comisión de Clip y el 10% de OnlyClick). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
     });
-    // Copia al dueño cuando la foto es de otro fotógrafo (él paga después).
-    if (owner && owner.id !== photographerId && ownerEmail) {
-      await sendSaleEmail({
-        to: ownerEmail,
-        subject: `Venta en OnlyClick: ${displayNameFor(ph)} vendió $${total.toFixed(2)} MXN`,
-        text: `Hola,\n\n${displayNameFor(ph)} vendió ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick${buyerFirst ? ` (la compró ${buyerFirst})` : ''}:\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — su parte: $${share.toFixed(2)} MXN. El dinero ya cayó en tu cuenta de Clip; recuérdale pagarle en máximo 72 horas.`,
-      });
-    }
   }
 }
 
