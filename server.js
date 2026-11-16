@@ -24,6 +24,8 @@ const ROUTES = {
   'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
   'track-view': 'track-view', 'stats': 'stats',
   'approve-photographer': 'approve-photographer', 'list-photographers': 'list-photographers',
+  'submit-application': 'submit-application', 'list-applications': 'list-applications',
+  'review-application': 'review-application', 'invite-status': 'invite-status',
   'set-payout-clabe': 'set-payout-clabe', 'payouts-summary': 'payouts-summary',
   'payouts-mark-paid': 'payouts-mark-paid', 'payouts-history': 'payouts-history',
   'my-earnings': 'my-earnings',
