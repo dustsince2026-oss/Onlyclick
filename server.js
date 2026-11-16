@@ -26,6 +26,8 @@ const ROUTES = {
   'approve-photographer': 'approve-photographer', 'list-photographers': 'list-photographers',
   'submit-application': 'submit-application', 'list-applications': 'list-applications',
   'review-application': 'review-application', 'invite-status': 'invite-status',
+  'create-announcement': 'create-announcement', 'list-announcements': 'list-announcements',
+  'mark-announcements-read': 'mark-announcements-read',
   'set-payout-clabe': 'set-payout-clabe', 'payouts-summary': 'payouts-summary',
   'payouts-mark-paid': 'payouts-mark-paid', 'payouts-history': 'payouts-history',
   'my-earnings': 'my-earnings',
