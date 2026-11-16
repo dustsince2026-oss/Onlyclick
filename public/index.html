@@ -16,8 +16,8 @@
   /* ---------- Header: logo a la izquierda, solo el avatar a la derecha ---------- */
   header { background: rgba(11,11,14,.97); border-bottom: 1px solid #26262c; padding: 10px 16px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 40; }
   .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; background: none; border: none; padding: 0; margin: 0; width: auto; cursor: pointer; }
-  .brand-logo { width: 40px; height: 40px; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid rgba(212,175,55,.55); flex: none; display: block; }
-  .brand-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .brand-logo { height: 56px; width: auto; flex: none; display: block; }
+  .brand-logo img { height: 100%; width: auto; object-fit: contain; display: block; }
   .brand-name { font-size: 19px; font-weight: 800; letter-spacing: 1px; white-space: nowrap; }
   .brand-name b { color: #d4af37; font-weight: 800; }
   .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; position: relative; }
@@ -113,7 +113,7 @@
 </div>
 <header>
   <button class="brand" id="brandHome" aria-label="OnlyClick — Inicio">
-    <span class="brand-logo"><img src="/icon-192.png" alt="OnlyClick"></span>
+    <span class="brand-logo"><img src="/logo.png" alt="OnlyClick"></span>
     <span class="brand-name">ONLY <b>CLICK</b></span>
   </button>
   <div class="header-right">
