@@ -22,7 +22,7 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 // ---------------- Adaptador de archivo local ----------------
 function loadDb() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (_) {
-    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], payouts: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1, payout: 1 } };
+    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], payouts: [], announcements: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1, payout: 1, announcement: 1 } };
   }
 }
 function saveDb(db) {
@@ -130,6 +130,15 @@ const fileStore = {
   async getApplicationById(id) { return (loadDb().applications || []).find(x => x.id === Number(id)) || null; },
   async getApplicationByToken(token) { return (loadDb().applications || []).find(x => x.inviteToken === String(token)) || null; },
   async listApplications() { return (loadDb().applications || []).slice().sort((a, b) => b.id - a.id); },
+  // ---- Notificaciones: avisos del dueño a los fotógrafos ----
+  async createAnnouncement(a) {
+    const db = loadDb();
+    if (!db.announcements) db.announcements = [];
+    if (!db.seq.announcement) db.seq.announcement = 1;
+    const row = { id: nextId(db, 'announcement'), title: a.title, body: a.body, createdBy: a.createdBy || null, createdAt: new Date().toISOString() };
+    db.announcements.push(row); saveDb(db); return row;
+  },
+  async listAnnouncements() { return (loadDb().announcements || []).slice().sort((a, b) => b.id - a.id); },
   async updateApplication(id, patch) { const db = loadDb(); const a = (db.applications || []).find(x => x.id === Number(id)); if (!a) return null; Object.assign(a, patch); saveDb(db); return a; },
   // Liga la solicitud al fotógrafo recién creado, solo si nadie la usó
   // antes (photographerId sigue null). Devuelve la fila o null si ya
@@ -204,13 +213,14 @@ function supabase() {
   return supabaseClient;
 }
 
-function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', createdAt: r.created_at } : null; }
+function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', createdAt: r.created_at } : null; }
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
+function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
 function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
@@ -269,6 +279,7 @@ const supabaseStore = {
     if (patch.isOwner !== undefined) p.is_owner = !!patch.isOwner;
     if (patch.payoutClabe !== undefined) p.payout_clabe = patch.payoutClabe;
     if (patch.displayName !== undefined) p.display_name = patch.displayName;
+    if (patch.lastAnnouncementsSeenAt !== undefined) p.last_announcements_seen_at = patch.lastAnnouncementsSeenAt;
     if (patch.tipClabe !== undefined) p.tip_clabe = patch.tipClabe;
     const { data, error } = await supabase().from('users').update(p).eq('id', id).select().single();
     if (error) throw new Error(error.message);
@@ -376,6 +387,17 @@ const supabaseStore = {
   async getApplicationById(id) { const { data } = await supabase().from('photographer_applications').select().eq('id', id).maybeSingle(); return mapApplication(data); },
   async getApplicationByToken(token) { const { data } = await supabase().from('photographer_applications').select().eq('invite_token', token).maybeSingle(); return mapApplication(data); },
   async listApplications() { const { data } = await supabase().from('photographer_applications').select().order('id', { ascending: false }); return (data || []).map(mapApplication); },
+  // ---- Notificaciones: avisos del dueño a los fotógrafos ----
+  // Si la tabla aún no existe en vivo (falta correr el SQL), la lectura
+  // devuelve vacío y la vista muestra "No hay avisos todavía".
+  async createAnnouncement(a) { const { data, error } = await supabase().from('announcements').insert({ title: a.title, body: a.body, created_by: a.createdBy || null }).select().single(); if (error) throw new Error(error.message); return mapAnnouncement(data); },
+  async listAnnouncements() {
+    try {
+      const { data, error } = await supabase().from('announcements').select().order('id', { ascending: false });
+      if (error) return [];
+      return (data || []).map(mapAnnouncement);
+    } catch (_) { return []; }
+  },
   async updateApplication(id, patch) {
     const p = {};
     if (patch.status !== undefined) p.status = patch.status;

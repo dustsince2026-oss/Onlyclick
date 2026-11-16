@@ -1216,6 +1216,38 @@ function looksLikeUrl(s) {
   try { const u = new URL(String(s || '')); return u.protocol === 'http:' || u.protocol === 'https:'; } catch (_) { return false; }
 }
 
+// ---- Notificaciones: avisos del dueño a todos los fotógrafos ----
+// Solo el dueño publica; solo fotógrafos aprobados (dueño incluido) leen.
+// El autor nunca se muestra con nombre personal en la vista: solo título,
+// mensaje y fecha.
+async function createAnnouncement(store, user, body) {
+  requireOwner(user);
+  const title = String(body.title || '').trim();
+  const bodyText = String(body.body || '').trim();
+  if (!title) throw err(400, 'El aviso necesita un título.');
+  if (title.length > 80) throw err(400, 'El título no puede tener más de 80 caracteres.');
+  if (!bodyText) throw err(400, 'El aviso necesita un mensaje.');
+  if (bodyText.length > 1000) throw err(400, 'El mensaje no puede tener más de 1000 caracteres.');
+  const a = await store.createAnnouncement({ title, body: bodyText, createdBy: user.id });
+  return { status: 201, data: { announcement: { id: a.id, title: a.title, body: a.body, createdAt: a.createdAt } } };
+}
+
+async function listAnnouncements(store, user) {
+  requirePhotographer(user);
+  const all = await store.listAnnouncements();
+  // No leídos = avisos creados después de la última vez que el usuario
+  // abrió las notificaciones. Si nunca las abrió, todos son no leídos.
+  const seenAt = user.lastAnnouncementsSeenAt ? new Date(user.lastAnnouncementsSeenAt).getTime() : 0;
+  const unread = all.filter(a => new Date(a.createdAt).getTime() > seenAt).length;
+  return { status: 200, data: { announcements: all.map(a => ({ id: a.id, title: a.title, body: a.body, createdAt: a.createdAt })), unreadCount: unread } };
+}
+
+async function markAnnouncementsRead(store, user) {
+  requirePhotographer(user);
+  await store.updateUser(user.id, { lastAnnouncementsSeenAt: new Date().toISOString() });
+  return { status: 200, data: { ok: true } };
+}
+
 // POST /api/submit-application — cualquiera manda su solicitud desde
 // el inicio. Queda 'pending' hasta que Orlan la revise.
 async function submitApplication(store, body) {
@@ -1552,6 +1584,9 @@ async function dispatch(route, req) {
     case 'set-event-price': return setEventPrice(store, user, b);
     case 'approve-photographer': return approvePhotographer(store, user, b);
     case 'list-photographers': return listPhotographers(store, user);
+    case 'create-announcement': return createAnnouncement(store, user, b);
+    case 'list-announcements': return listAnnouncements(store, user);
+    case 'mark-announcements-read': return markAnnouncementsRead(store, user);
     case 'submit-application': return submitApplication(store, b);
     case 'list-applications': return listApplications(store, user);
     case 'review-application': return reviewApplication(store, user, b);
