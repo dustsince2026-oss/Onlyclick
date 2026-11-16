@@ -1356,6 +1356,7 @@ async function checkInvite() {
       $('#authName').style.display = '';
       $('#authRole').style.display = '';
       $('#authRole').value = 'photographer';
+      updatePhotogNotice();
       if (banner) banner.innerHTML = `<p class="ok">Invitación de OnlyClick para ${esc(r.name)}: crea tu cuenta para unirte como fotógrafo.</p>`;
     } else {
       inviteToken = '';
@@ -1365,7 +1366,14 @@ async function checkInvite() {
   showView('account');
 }
 
-$('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; $('#authToggle').textContent = mode === 'login' ? '¿No tienes cuenta? Crear cuenta' : '¿Ya tienes cuenta? Iniciar sesión'; $('#authName').style.display = mode === 'register' ? '' : 'none'; $('#authRole').style.display = mode === 'register' ? '' : 'none'; };
+// Aviso al registrarse como fotógrafo sin invitación: primero el formulario del inicio.
+function updatePhotogNotice() {
+  var n = $('#photogNotice'); if (!n) return;
+  var show = mode === 'register' && $('#authRole').value === 'photographer' && !inviteToken;
+  n.style.display = show ? '' : 'none';
+}
+$('#authRole').onchange = updatePhotogNotice;
+$('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; $('#authToggle').textContent = mode === 'login' ? '¿No tienes cuenta? Crear cuenta' : '¿Ya tienes cuenta? Iniciar sesión'; $('#authName').style.display = mode === 'register' ? '' : 'none'; $('#authRole').style.display = mode === 'register' ? '' : 'none'; updatePhotogNotice(); };
 $('#authSubmit').onclick = async () => {
   const body = { email: $('#authEmail').value, password: $('#authPass').value };
   try {
