@@ -29,6 +29,9 @@ const ROUTES = {
   'set-payout-clabe': 'set-payout-clabe', 'payouts-summary': 'payouts-summary',
   'payouts-mark-paid': 'payouts-mark-paid', 'payouts-history': 'payouts-history',
   'my-earnings': 'my-earnings',
+  'join-event': 'join-event', 'leave-event': 'leave-event',
+  'event-participants': 'event-participants',
+  'set-display-name': 'set-display-name', 'set-my-event-price': 'set-my-event-price',
   // NOTA: la ruta simulada 'purchase' se eliminó a propósito: con Clip
   // real, cualquiera podría llamar /api/purchase y descargar sin pagar.
   // El cobro real es POST /api/checkout-create.
