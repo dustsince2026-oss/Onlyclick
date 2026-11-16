@@ -41,6 +41,16 @@ function showPanelTab(tab) {
   document.querySelectorAll('#photoPanel [data-panel-tabbtn]').forEach(b => b.classList.toggle('primary', b.dataset.panelTabbtn === tab));
 }
 
+// Botones rápidos del panel: cambia a la pestaña y baja a la sección
+// pedida (si la hay). El scroll se protege por si el entorno no lo
+// tiene (p. ej. pruebas con jsdom).
+function goPanelSection(tab, secId) {
+  showPanelTab(tab);
+  if (!secId) return;
+  var el = document.getElementById(secId);
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // Dibuja los botones de página (‹ Anterior, números, Siguiente › y
 // "Página X de Y") debajo de una lista. Si hay más de 7 páginas se
 // muestran la primera, la última y las cercanas a la actual, con "…" en
@@ -858,9 +868,17 @@ async function loadPhotographer() {
   const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión Orlan (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">Orlan te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y Orlan se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
   box.innerHTML = `
     ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
+    <!-- Accesos rápidos: lo más usado del panel, a la vista desde que se abre -->
+    <div class="row" style="gap:8px;margin-bottom:12px">
+      <button class="primary" style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secCrearEvento')">Crear evento</button>
+      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secSubirFotos')">Subir fotos</button>
+      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secMisEventos')">Mis eventos</button>
+      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('ventas')">Fotos vendidas</button>
+      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('estadisticas')">Estadísticas</button>
+    </div>
     <div class="row" style="gap:6px;margin-bottom:12px">${panelTabs.map(t => `<button data-panel-tabbtn="${t[0]}" style="flex:0 0 auto;min-width:0">${t[1]}</button>`).join('')}</div>
     <section data-tabpanel="gestion">
-    <h3>Crear evento</h3>
+    <h3 id="secCrearEvento">Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
     <button id="evCreate" class="primary">Crear evento</button>
@@ -872,7 +890,7 @@ async function loadPhotographer() {
     <p class="muted">Cuando vendas fotos, Orlan te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
     <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
     <p id="payStatus" class="muted"></p>
-    <h3>Subir fotos</h3>
+    <h3 id="secSubirFotos">Subir fotos</h3>
     <select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
@@ -886,7 +904,7 @@ async function loadPhotographer() {
     <div id="covPreview"></div>
     <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
-    <h3>Mis eventos</h3>
+    <h3 id="secMisEventos">Mis eventos</h3>
     <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
     <div data-pg-controls="events"></div>
     <div id="revList"></div>
