@@ -22,6 +22,7 @@ const ROUTES = {
   'my-photos': 'my-photos', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
   'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
+  'track-view': 'track-view', 'stats': 'stats',
   // NOTA: la ruta simulada 'purchase' se eliminó a propósito: con Clip
   // real, cualquiera podría llamar /api/purchase y descargar sin pagar.
   // El cobro real es POST /api/checkout-create.
