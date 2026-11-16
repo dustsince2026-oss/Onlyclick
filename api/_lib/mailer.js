@@ -26,4 +26,16 @@ async function sendResetEmail(to, name, link) {
   });
 }
 
-module.exports = { sendResetEmail };
+async function sendSaleEmail({ to, subject, text, html }) {
+  const transporter = getTransporter();
+  const from = (process.env.GMAIL_USER || '').trim();
+  await transporter.sendMail({
+    from: `"OnlyClick" <${from}>`,
+    to,
+    subject,
+    text,
+    html: html || text.replace(/\n/g, '<br>'),
+  });
+}
+
+module.exports = { sendResetEmail, sendSaleEmail };

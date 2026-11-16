@@ -7,8 +7,10 @@
 const crypto = require('crypto');
 const { getStore } = require('./store');
 const { hashPassword, verifyPassword, signToken, verifyToken, signResetToken, verifyResetToken, publicUser } = require('./auth');
-const { sendResetEmail } = require('./mailer');
-const { createCheckoutLink, getCheckout } = require('./clip');
+const { sendResetEmail, sendSaleEmail } = require('./mailer');
+// Clip se usa por objeto de módulo (clip.getCheckout) y no desestructurado,
+// para que los tests puedan cambiar el simulado a mitad de la corrida.
+const clip = require('./clip');
 
 function err(status, message) { const e = new Error(message); e.status = status; return e; }
 function normBib(b) { return String(b == null ? '' : b).trim(); }
@@ -807,13 +809,68 @@ async function markPaymentPaid(store, payment, clipData) {
 // carrito = una fila por foto). Es el único lugar donde se decide si algo
 // está pagado: ni el webhook ni la redirección del navegador son prueba
 // de pago por sí solos. Se consulta a Clip UNA sola vez por checkout.
+// Aviso por correo cuando se VENDE una foto (solo ventas con pago, nunca
+// descargas gratis: esas no crean filas de pago y nunca llegan aquí).
+// Se manda UNA vez por pedido: solo por las fotos que en ESTA llamada
+// pasaron a pagadas (markPaymentPaid dice already=true si la descarga ya
+// existía, y entonces no se vuelve a avisar aunque Clip reintente el
+// webhook o el comprador re-consulte el estado). Si el correo falla o
+// tarda, el webhook no se rompe: se espera máximo 4 s y se sigue.
+async function notifySale(store, newlyPaid) {
+  const byPhotographer = new Map();
+  for (const p of newlyPaid) {
+    const photo = await store.getPhoto(p.photoId);
+    const ev = photo ? await store.getEvent(photo.eventId || p.eventId) : await store.getEvent(p.eventId);
+    const ownerId = photoOwnerId(photo, ev);
+    if (ownerId == null) continue;
+    if (!byPhotographer.has(ownerId)) byPhotographer.set(ownerId, []);
+    byPhotographer.get(ownerId).push({ payment: p, photo, event: ev });
+  }
+  if (!byPhotographer.size) return;
+  const owner = (await store.listPhotographers()).find(u => u.isOwner) || null;
+  const ownerEmail = owner ? owner.email : (process.env.GMAIL_USER || '').trim();
+  const buyer = newlyPaid[0] ? await store.findUserById(newlyPaid[0].userId) : null;
+  const buyerFirst = buyer && buyer.name ? String(buyer.name).split(' ')[0] : '';
+  for (const [photographerId, items] of byPhotographer) {
+    const ph = await store.findUserById(photographerId);
+    if (!ph || !ph.email) continue;
+    const total = items.reduce((s, it) => s + Number(it.payment.amount || 0), 0);
+    const share = items.reduce((s, it) => s + splitSale(it.payment.amount).photographerShare, 0);
+    const lines = items.map(it => {
+      const bib = (it.photo && it.photo.bibs && it.photo.bibs[0]) || '';
+      return `• ${it.event ? it.event.name : 'Evento'} — foto${bib ? ' dorsal ' + bib : ''} — $${Number(it.payment.amount).toFixed(2)} MXN`;
+    }).join('\n');
+    const n = items.length;
+    await sendSaleEmail({
+      to: ph.email,
+      subject: `¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick! $${total.toFixed(2)} MXN`,
+      text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (después de la comisión de Clip y el 10% de OnlyClick). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
+    });
+    // Copia al dueño cuando la foto es de otro fotógrafo (él paga después).
+    if (owner && owner.id !== photographerId && ownerEmail) {
+      await sendSaleEmail({
+        to: ownerEmail,
+        subject: `Venta en OnlyClick: ${displayNameFor(ph)} vendió $${total.toFixed(2)} MXN`,
+        text: `Hola,\n\n${displayNameFor(ph)} vendió ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick${buyerFirst ? ` (la compró ${buyerFirst})` : ''}:\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — su parte: $${share.toFixed(2)} MXN. El dinero ya cayó en tu cuenta de Clip; recuérdale pagarle en máximo 72 horas.`,
+      });
+    }
+  }
+}
+
 async function refreshPaymentsByClipId(store, clipId) {
   const payments = await store.getPaymentsByClipId(clipId);
   if (!payments.length) return { clip: null, payments, paid: false };
-  const cur = await getCheckout(clipId);
+  const cur = await clip.getCheckout(clipId);
   const status = clipStatusToPayment(cur.status);
   if (status === 'completed') {
-    for (const p of payments) await markPaymentPaid(store, p, cur);
+    const newlyPaid = [];
+    for (const p of payments) {
+      const r = await markPaymentPaid(store, p, cur);
+      if (!r.already) newlyPaid.push(p);
+    }
+    if (newlyPaid.length) {
+      try { await Promise.race([notifySale(store, newlyPaid), new Promise(r => setTimeout(r, 4000))]); } catch (_) { /* el aviso nunca rompe el pago */ }
+    }
     return { clip: cur, payments: await store.getPaymentsByClipId(clipId), paid: true };
   }
   for (const p of payments) {
@@ -847,7 +904,7 @@ async function createCheckout(store, user, body) {
   const pending = await store.getLatestPaymentByUserPhoto(user.id, photo.id);
   if (pending && pending.status === 'pending' && pending.clipPaymentRequestId) {
     try {
-      const cur = await getCheckout(pending.clipPaymentRequestId);
+      const cur = await clip.getCheckout(pending.clipPaymentRequestId);
       if (cur && (cur.status === 'CHECKOUT_CREATED' || cur.status === 'CHECKOUT_PENDING')) {
         return { status: 200, data: { checkoutUrl: cur.payment_request_url, paymentRequestId: cur.payment_request_id, amount: pending.amount } };
       }
@@ -856,7 +913,7 @@ async function createCheckout(store, user, body) {
   }
   const ref = makeExternalRef(photo.id, user.id);
   const base = publicBase();
-  const created = await createCheckoutLink({
+  const created = await clip.createCheckoutLink({
     amount: price,
     currency: 'MXN',
     purchase_description: ('Foto OnlyClick — ' + ev.name + ' — ' + displayNameFor(await store.findUserById(photoOwnerId(photo, ev))) + ' — dorsal ' + ((photo.bibs || []).join(', ') || 'sin dorsal')).slice(0, 255),
@@ -914,7 +971,7 @@ async function createCartCheckout(store, user, body) {
   if (totals.total > CART_MAX_TOTAL) throw err(400, 'El total ($' + totals.total + ' MXN) supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos carritos.');
   const base = publicBase();
   const firstRef = makeCartRef(user.id, 0);
-  const created = await createCheckoutLink({
+  const created = await clip.createCheckoutLink({
     amount: totals.total,
     currency: 'MXN',
     purchase_description: ('OnlyClick: ' + toPay.length + (toPay.length === 1 ? ' foto' : ' fotos')).slice(0, 255),
