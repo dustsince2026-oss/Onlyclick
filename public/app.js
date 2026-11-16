@@ -718,7 +718,7 @@ function eventCard(e) {
   return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
     ${e.coverPath ? `<img class="event-cover" src="/api/cover?eventId=${e.id}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
     <div class="event-body">
-      <strong>${esc(e.name)}</strong> ${e.isOfficial ? '<span class="badge official">✓ Oficial OnlyClick</span>' : ''}
+      <strong>${esc(e.name)}</strong> ${e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : ''}
       ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
       ${e.isShared ? `<span class="badge">Evento compartido · ${e.participantsCount || 2} fotógrafos</span>` : ''}
       <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
@@ -784,7 +784,7 @@ async function loadEventDetail(eventId, push) {
   r.photos.forEach(p => { p.freeMode = r.event.freeMode; });
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
-    ${r.isOfficial ? '<p><span class="badge official">✓ Oficial OnlyClick</span></p>' : ''}
+    ${r.isOfficial ? '<p><span class="badge official">✓ Álbum oficial Only Click</span></p>' : ''}
     ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
     ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
     ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id ? (r.isParticipant
