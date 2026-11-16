@@ -345,6 +345,10 @@ async function loadEvents() {
 
 async function loadEventDetail(eventId, push) {
   currentEvent = eventId;
+  // El detalle vive dentro de la vista de eventos (oculta desde el inicio):
+  // sin cambiar a esa vista, el detalle se dibujaba escondido y el clic
+  // parecía no hacer nada.
+  showView('events');
   if (push) pushNav({ view: 'events', event: eventId });
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
