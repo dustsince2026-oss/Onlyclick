@@ -60,10 +60,27 @@ async function register(store, body) {
   const role = body.role === 'photographer' ? 'photographer' : 'athlete';
   if (!name || !email.includes('@') || password.length < 6) throw err(400, 'Faltan datos: nombre, correo válido y contraseña de al menos 6 caracteres.');
   if (await store.findUserByEmail(email)) throw err(400, 'Ese correo ya tiene cuenta. Inicia sesión.');
+  // Registro con link de invitación: solo para fotógrafos. El link se
+  // valida ANTES de crear la cuenta; si no vale, no se crea nada.
+  let inviteApp = null;
+  const inviteToken = String(body.inviteToken || '').trim();
+  if (role === 'photographer' && inviteToken) {
+    inviteApp = await store.getApplicationByToken(inviteToken);
+    if (!inviteIsValid(inviteApp)) throw err(400, 'El link de invitación no es válido, ya venció o ya fue usado. Pide uno nuevo o llena el formulario de fotógrafo en el inicio.');
+  }
   // Varios fotógrafos: cualquiera puede registrarse como fotógrafo, pero
-  // entra PENDIENTE (approved=false) hasta que Orlan lo apruebe. Los
-  // deportistas no necesitan aprobación.
-  const user = await store.createUser({ name, email, passwordHash: hashPassword(password), role, approved: role === 'photographer' ? false : true, isOwner: false, payoutClabe: '' });
+  // entra PENDIENTE (approved=false) hasta que Orlan lo apruebe, SALVO
+  // que venga con un link de invitación válido: ahí entra aprobado y
+  // su cuenta queda ligada a su solicitud. Los deportistas no necesitan
+  // aprobación.
+  const approved = role === 'photographer' ? !!inviteApp : true;
+  const user = await store.createUser({ name, email, passwordHash: hashPassword(password), role, approved, isOwner: false, payoutClabe: '' });
+  if (inviteApp) {
+    // Si otro registro ganó la carrera y ya ligó el link, la cuenta
+    // recién creada vuelve a pendiente (Orlan la puede aprobar a mano).
+    const linked = await store.linkApplication(inviteToken, user.id);
+    if (!linked) await store.updateUser(user.id, { approved: false });
+  }
   return { status: 201, data: { user: publicUser(user), token: signToken(user.id) } };
 }
 
@@ -963,13 +980,113 @@ async function listPhotographers(store, user) {
   const events = await store.listEvents();
   const downloads = await store.listAllDownloads();
   const evOwner = new Map(events.map(e => [e.id, e.photographerId]));
+  // Fotógrafos que llegaron por solicitud aprobada (tienen su solicitud
+  // ligada). Los demás se registraron directo: "Sin solicitud". Si la
+  // tabla de solicitudes aún no existe (falta correr el SQL), no se
+  // rompe el panel: todos salen sin solicitud.
+  let linked = new Set();
+  try { linked = new Set((await store.listApplications()).map(a => a.photographerId).filter(id => id != null)); } catch (_) { linked = new Set(); }
   const rows = photographers.map(ph => {
     let eventCount = 0, totalSold = 0;
     for (const e of events) if (e.photographerId === ph.id) eventCount++;
     for (const d of downloads) if (evOwner.get(d.eventId) === ph.id) totalSold += Number(d.amount || 0);
-    return { id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', eventCount, totalSold: Math.round(totalSold * 100) / 100 };
+    return { id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', eventCount, totalSold: Math.round(totalSold * 100) / 100, hasApplication: linked.has(ph.id) };
   });
   return { status: 200, data: { photographers: rows } };
+}
+
+// ---- Solicitudes de fotógrafos: invitaciones ----
+// El link de invitación vale 7 días. El token es un HMAC-SHA256 con
+// AUTH_SECRET (mismo secreto que los tokens de sesión y de restablecer
+// contraseña) sobre 'invite:<id de solicitud>:<azar>'; el azar hace que
+// cada token sea único y no adivinable. La validez real vive en la base
+// (status 'approved', sin vencer, sin usar), no en el token mismo.
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function makeInviteToken(applicationId) {
+  const secret = process.env.AUTH_SECRET || 'dev-secret-change-me';
+  const rand = crypto.randomBytes(16).toString('hex');
+  return crypto.createHmac('sha256', secret).update(`invite:${applicationId}:${rand}`).digest('hex');
+}
+function inviteIsValid(app, nowMs) {
+  if (!app) return false;
+  if (app.status !== 'approved') return false;
+  if (!app.inviteToken) return false;
+  if (app.photographerId != null) return false;
+  if (!app.inviteExpiresAt) return false;
+  return new Date(app.inviteExpiresAt).getTime() > (nowMs || Date.now());
+}
+function inviteUrlFor(token) {
+  const base = (process.env.PUBLIC_URL || 'https://onlyclick-zeta.vercel.app').replace(/\/$/, '');
+  return `${base}/?invite=${token}`;
+}
+function looksLikeUrl(s) {
+  try { const u = new URL(String(s || '')); return u.protocol === 'http:' || u.protocol === 'https:'; } catch (_) { return false; }
+}
+
+// POST /api/submit-application — cualquiera manda su solicitud desde
+// el inicio. Queda 'pending' hasta que Orlan la revise.
+async function submitApplication(store, body) {
+  const name = String(body.name || '').trim();
+  const city = String(body.city || '').trim();
+  const phone = String(body.phone || '').trim();
+  const events = String(body.events || '').trim();
+  const sampleLink = String(body.sampleLink || '').trim();
+  const missing = [];
+  if (!name) missing.push('Nombre completo');
+  if (!city) missing.push('Ciudad y estado');
+  if (!phone) missing.push('WhatsApp / teléfono');
+  if (!events) missing.push('Eventos cubiertos');
+  if (!sampleLink) missing.push('Link a tu trabajo');
+  if (missing.length) throw err(400, 'Faltan campos obligatorios: ' + missing.join(', ') + '.');
+  if (!looksLikeUrl(sampleLink)) throw err(400, 'El link a tu trabajo debe ser una dirección web válida (que empiece con http:// o https://).');
+  const app = await store.createApplication({
+    name, city, phone, events,
+    camera: String(body.camera || '').trim(),
+    sampleLink,
+    specialty: String(body.specialty || '').trim(),
+    dorsalExp: String(body.dorsalExp || '').trim(),
+    availability: String(body.availability || '').trim(),
+    clabe: String(body.clabe || '').trim(),
+    message: String(body.message || '').trim(),
+  });
+  return { status: 201, data: { ok: true, id: app.id } };
+}
+
+// GET /api/list-applications — solo el dueño, las más nuevas primero.
+async function listApplications(store, user) {
+  requireOwner(user);
+  return { status: 200, data: { applications: await store.listApplications() } };
+}
+
+// POST /api/review-application { id, decision: 'approved'|'rejected' }
+// — solo el dueño. Una solicitud revisada ya no se puede volver a
+// revisar. Al aprobar se genera el link de invitación (7 días).
+async function reviewApplication(store, user, body) {
+  requireOwner(user);
+  const app = await store.getApplicationById(Number(body.id));
+  if (!app) throw err(404, 'Solicitud no encontrada.');
+  const decision = String(body.decision || '');
+  if (decision !== 'approved' && decision !== 'rejected') throw err(400, 'Decisión no válida.');
+  if (app.status !== 'pending') throw err(400, 'Esta solicitud ya fue revisada.');
+  if (decision === 'rejected') {
+    await store.updateApplication(app.id, { status: 'rejected' });
+    return { status: 200, data: { ok: true } };
+  }
+  const token = makeInviteToken(app.id);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+  await store.updateApplication(app.id, { status: 'approved', inviteToken: token, inviteExpiresAt: expiresAt });
+  return { status: 200, data: { ok: true, inviteUrl: inviteUrlFor(token), phone: app.phone } };
+}
+
+// GET /api/invite-status?token=... — público. Dice si el link sirve
+// para crear la cuenta (aprobado, sin vencer, sin usar). No revela
+// nada de solicitudes que no valen.
+async function inviteStatus(store, query) {
+  const token = String((query && query.token) || '');
+  if (!token) return { status: 200, data: { valid: false } };
+  const app = await store.getApplicationByToken(token);
+  if (!inviteIsValid(app)) return { status: 200, data: { valid: false } };
+  return { status: 200, data: { valid: true, name: app.name } };
 }
 
 // CLABE a donde Orlan le manda su parte al fotógrafo. La pone el propio
@@ -1118,6 +1235,10 @@ async function dispatch(route, req) {
     case 'set-event-price': return setEventPrice(store, user, b);
     case 'approve-photographer': return approvePhotographer(store, user, b);
     case 'list-photographers': return listPhotographers(store, user);
+    case 'submit-application': return submitApplication(store, b);
+    case 'list-applications': return listApplications(store, user);
+    case 'review-application': return reviewApplication(store, user, b);
+    case 'invite-status': return inviteStatus(store, req.query);
     case 'set-payout-clabe': return setPayoutClabe(store, user, b);
     case 'payouts-summary': return payoutsSummary(store, user);
     case 'payouts-mark-paid': return markPayoutPaid(store, user, b);
@@ -1128,4 +1249,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS };

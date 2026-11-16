@@ -95,6 +95,30 @@ const fileStore = {
     if (n) saveDb(db);
     return n;
   },
+  // ---- Solicitudes de fotógrafos ----
+  // La solicitud nace 'pending'. inviteToken/inviteExpiresAt se llenan
+  // al aprobarla; photographerId cuando el fotógrafo crea su cuenta
+  // con el link de invitación.
+  async createApplication(a) {
+    const db = loadDb();
+    if (!db.applications) db.applications = [];
+    if (!db.seq.application) db.seq.application = 1;
+    const row = { id: nextId(db, 'application'), status: 'pending', inviteToken: null, inviteExpiresAt: null, photographerId: null, createdAt: new Date().toISOString(), ...a };
+    db.applications.push(row); saveDb(db); return row;
+  },
+  async getApplicationById(id) { return (loadDb().applications || []).find(x => x.id === Number(id)) || null; },
+  async getApplicationByToken(token) { return (loadDb().applications || []).find(x => x.inviteToken === String(token)) || null; },
+  async listApplications() { return (loadDb().applications || []).slice().sort((a, b) => b.id - a.id); },
+  async updateApplication(id, patch) { const db = loadDb(); const a = (db.applications || []).find(x => x.id === Number(id)); if (!a) return null; Object.assign(a, patch); saveDb(db); return a; },
+  // Liga la solicitud al fotógrafo recién creado, solo si nadie la usó
+  // antes (photographerId sigue null). Devuelve la fila o null si ya
+  // estaba ligada (carrera entre dos registros con el mismo link).
+  async linkApplication(token, photographerId) {
+    const db = loadDb();
+    const a = (db.applications || []).find(x => x.inviteToken === String(token));
+    if (!a || a.photographerId != null) return null;
+    a.photographerId = Number(photographerId); saveDb(db); return a;
+  },
   // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
   // Una vista por visitante por foto / evento / dorsal por día (UTC).
   async recordView(v) {
@@ -165,6 +189,7 @@ function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.f
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
+function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
 function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
@@ -273,6 +298,28 @@ const supabaseStore = {
     const { data, error } = await supabase().from('downloads').update({ payout_id: payoutId }).in('id', list).is('payout_id', null).select('id');
     if (error) throw new Error(error.message);
     return (data || []).length;
+  },
+  // ---- Solicitudes de fotógrafos ----
+  async createApplication(a) { const { data, error } = await supabase().from('photographer_applications').insert({ name: a.name, city: a.city, phone: a.phone, events: a.events, camera: a.camera || '', sample_link: a.sampleLink, specialty: a.specialty || '', dorsal_exp: a.dorsalExp || '', availability: a.availability || '', clabe: a.clabe || '', message: a.message || '' }).select().single(); if (error) throw new Error(error.message); return mapApplication(data); },
+  async getApplicationById(id) { const { data } = await supabase().from('photographer_applications').select().eq('id', id).maybeSingle(); return mapApplication(data); },
+  async getApplicationByToken(token) { const { data } = await supabase().from('photographer_applications').select().eq('invite_token', token).maybeSingle(); return mapApplication(data); },
+  async listApplications() { const { data } = await supabase().from('photographer_applications').select().order('id', { ascending: false }); return (data || []).map(mapApplication); },
+  async updateApplication(id, patch) {
+    const p = {};
+    if (patch.status !== undefined) p.status = patch.status;
+    if (patch.inviteToken !== undefined) p.invite_token = patch.inviteToken;
+    if (patch.inviteExpiresAt !== undefined) p.invite_expires_at = patch.inviteExpiresAt;
+    if (patch.photographerId !== undefined) p.photographer_id = patch.photographerId;
+    const { data, error } = await supabase().from('photographer_applications').update(p).eq('id', id).select().single();
+    if (error) throw new Error(error.message);
+    return mapApplication(data);
+  },
+  // Atómico en Postgres: solo liga si sigue libre (photographer_id null).
+  // Devuelve la fila o null si el link ya fue usado.
+  async linkApplication(token, photographerId) {
+    const { data, error } = await supabase().from('photographer_applications').update({ photographer_id: photographerId }).eq('invite_token', token).is('photographer_id', null).select().single();
+    if (error) return null;
+    return mapApplication(data);
   },
   // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
   // Una vista por visitante por foto / evento / dorsal por día (UTC).
