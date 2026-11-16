@@ -22,7 +22,7 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 // ---------------- Adaptador de archivo local ----------------
 function loadDb() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (_) {
-    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1 } };
+    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], payouts: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1, payout: 1 } };
   }
 }
 function saveDb(db) {
@@ -39,6 +39,10 @@ const fileStore = {
   async findUserById(id) { return loadDb().users.find(u => u.id === Number(id)) || null; },
   async updateUserPassword(id, passwordHash) { const db = loadDb(); const u = db.users.find(x => x.id === Number(id)); if (!u) return null; u.passwordHash = passwordHash; saveDb(db); return u; },
   async setTipClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.tipClabe = clabe; saveDb(db); return u; },
+  async setPayoutClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.payoutClabe = clabe; saveDb(db); return u; },
+  // Todos los fotógrafos (dueño incluido) con sus datos de aprobación.
+  async listPhotographers() { return loadDb().users.filter(u => u.role === 'photographer').sort((a, b) => a.id - b.id); },
+  async updateUser(id, patch) { const db = loadDb(); const u = db.users.find(x => x.id === Number(id)); if (!u) return null; Object.assign(u, patch); saveDb(db); return u; },
   async listEvents() { return loadDb().events.slice().sort((a, b) => b.id - a.id).map(e => ({ ...e, photoCount: loadDb().photos.filter(p => p.eventId === e.id).length })); },
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, priceMxn: 20, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
@@ -69,6 +73,28 @@ const fileStore = {
   async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
   async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId)); },
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
+  // ---- Pagos a fotógrafos ----
+  // Un payout = un pago que Orlan YA envió. Sus descargas quedan ligadas
+  // con payout_id y salen del saldo pendiente.
+  async createPayout(p) {
+    const db = loadDb();
+    if (!db.payouts) db.payouts = [];
+    if (!db.seq.payout) db.seq.payout = 1;
+    const row = { id: nextId(db, 'payout'), status: 'pending', paidAt: null, createdAt: new Date().toISOString(), ...p };
+    db.payouts.push(row); saveDb(db); return row;
+  },
+  async listPayouts() { return (loadDb().payouts || []).slice().sort((a, b) => b.id - a.id); },
+  async listPayoutsByPhotographer(photographerId) { return (loadDb().payouts || []).filter(p => p.photographerId === Number(photographerId)).sort((a, b) => b.id - a.id); },
+  async updateDownloadsPayout(ids, payoutId) {
+    const db = loadDb();
+    const set = new Set((ids || []).map(Number));
+    let n = 0;
+    // Solo las que aún no están liquidadas: si dos clics llegan juntos,
+    // el segundo no le roba las descargas al primer pago.
+    for (const d of db.downloads) if (set.has(Number(d.id)) && d.payoutId == null) { d.payoutId = payoutId; n++; }
+    if (n) saveDb(db);
+    return n;
+  },
   // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
   // Una vista por visitante por foto / evento / dorsal por día (UTC).
   async recordView(v) {
@@ -133,21 +159,34 @@ function supabase() {
   return supabaseClient;
 }
 
-function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', createdAt: r.created_at } : null; }
+function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), storagePath: r.storage_path, thumbPath: r.thumb_path || '', createdAt: r.created_at } : null; }
-function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), createdAt: r.created_at } : null; }
+function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, createdAt: r.created_at } : null; }
+function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
   kind: 'supabase',
   async photographerExists() { const { count } = await supabase().from('users').select('id', { count: 'exact', head: true }).eq('role', 'photographer'); return (count || 0) > 0; },
-  async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
+  async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role, is_owner: !!u.isOwner, approved: u.approved !== false, payout_clabe: u.payoutClabe || '' }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async findUserByEmail(email) { const { data } = await supabase().from('users').select().ilike('email', email).maybeSingle(); return mapUser(data); },
   async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); },
   async updateUserPassword(id, passwordHash) { const { data, error } = await supabase().from('users').update({ password_hash: passwordHash }).eq('id', id).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async setTipClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ tip_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
+  async setPayoutClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ payout_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
+  async listPhotographers() { const { data } = await supabase().from('users').select().eq('role', 'photographer').order('id'); return (data || []).map(mapUser); },
+  async updateUser(id, patch) {
+    const p = {};
+    if (patch.approved !== undefined) p.approved = !!patch.approved;
+    if (patch.isOwner !== undefined) p.is_owner = !!patch.isOwner;
+    if (patch.payoutClabe !== undefined) p.payout_clabe = patch.payoutClabe;
+    if (patch.tipClabe !== undefined) p.tip_clabe = patch.tipClabe;
+    const { data, error } = await supabase().from('users').update(p).eq('id', id).select().single();
+    if (error) throw new Error(error.message);
+    return mapUser(data);
+  },
   async listEvents() {
     const { data } = await supabase().from('events').select().order('id', { ascending: false });
     const out = [];
@@ -223,6 +262,18 @@ const supabaseStore = {
   async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
   async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
   async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
+  // ---- Pagos a fotógrafos ----
+  async createPayout(p) { const { data, error } = await supabase().from('payouts').insert({ photographer_id: p.photographerId, amount_mxn: p.amountMxn, orlan_fee_mxn: p.orlanFeeMxn, clip_fee_mxn: p.clipFeeMxn, status: p.status || 'pending', paid_at: p.paidAt || null }).select().single(); if (error) throw new Error(error.message); return mapPayout(data); },
+  async listPayouts() { const { data } = await supabase().from('payouts').select().order('id', { ascending: false }); return (data || []).map(mapPayout); },
+  async listPayoutsByPhotographer(photographerId) { const { data } = await supabase().from('payouts').select().eq('photographer_id', photographerId).order('id', { ascending: false }); return (data || []).map(mapPayout); },
+  async updateDownloadsPayout(ids, payoutId) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return 0;
+    // Solo las que aún no están liquidadas (ver fileStore).
+    const { data, error } = await supabase().from('downloads').update({ payout_id: payoutId }).in('id', list).is('payout_id', null).select('id');
+    if (error) throw new Error(error.message);
+    return (data || []).length;
+  },
   // ---- Estadísticas: vistas (foto / evento / búsqueda) ----
   // Una vista por visitante por foto / evento / dorsal por día (UTC).
   async recordView(v) {

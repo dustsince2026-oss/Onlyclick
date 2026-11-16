@@ -77,7 +77,11 @@ function tokenFromReq(req) {
 
 function publicUser(u) {
   if (!u) return null;
-  return { id: u.id, name: u.name, email: u.email, role: u.role };
+  // isOwner: Orlan, dueño de la página (ve todo y aprueba fotógrafos).
+  // approved: false = fotógrafo nuevo pendiente de aprobación (puede
+  // entrar pero no crear eventos). tipClabe/payoutClabe son del propio
+  // usuario: propinas de descargas gratis y pagos de sus ventas.
+  return { id: u.id, name: u.name, email: u.email, role: u.role, isOwner: !!u.isOwner, approved: u.approved !== false, tipClabe: u.tipClabe || '', payoutClabe: u.payoutClabe || '' };
 }
 
 module.exports = { hashPassword, verifyPassword, signToken, verifyToken, signResetToken, verifyResetToken, tokenFromReq, publicUser };
