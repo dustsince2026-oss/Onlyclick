@@ -163,7 +163,7 @@ async function listPurchases(store, user) {
   for (const d of downloads) {
     const p = await store.getPhoto(d.photoId); if (!p) continue;
     const ev = await store.getEvent(d.eventId);
-    photos.push({ ...p, eventName: ev ? ev.name : '', amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
+    photos.push({ ...p, eventName: ev ? ev.name : '', freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
   }
   return { status: 200, data: { photos } };
 }
