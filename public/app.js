@@ -182,7 +182,7 @@ async function refreshAuth() {
   try {
     const s = await api('/api/auth-status');
     me = s.user;
-    $('#photoTakenNote').textContent = s.photographerTaken ? 'La cuenta de fotógrafo ya está ocupada.' : 'Todavía no hay cuenta de fotógrafo: la primera que se cree será la única.';
+    $('#photoTakenNote').textContent = 'Si te registras como fotógrafo, Orlan debe aprobar tu cuenta antes de que puedas crear eventos.';
     const sessionEl = $('#session');
     if (me && !forceResetView) {
       $('#auth').classList.add('hidden');
@@ -612,6 +612,7 @@ function eventCard(e) {
     ${e.coverPath ? `<img class="event-cover" src="/api/cover?eventId=${e.id}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
     <div class="event-body">
       <strong>${esc(e.name)}</strong>
+      ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
       <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
       <span class="event-meta">${e.photoCount || 0} fotos · ${priceTxt}</span>
       <span class="event-cta">Ver fotos →</span>
@@ -673,6 +674,7 @@ async function loadEventDetail(eventId, push) {
   r.photos.forEach(p => { p.freeMode = r.event.freeMode; p.priceMxn = r.event.priceMxn; });
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
+    ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
@@ -705,13 +707,42 @@ async function loadMyPhotos() {
   bindPhotos(r.photos);
 }
 
+// Dinero en MXN con 2 decimales.
+function fmtMxn(n) { return '$' + Number(n || 0).toFixed(2) + ' MXN'; }
+
 async function loadPhotographer() {
   const box = $('#photoPanel');
   if (!me || me.role !== 'photographer') { box.innerHTML = '<p>Solo la cuenta de fotógrafo ve este panel.</p>'; return; }
   const events = (await api('/api/events')).events;
+  // Cada fotógrafo ve solo SUS eventos en el panel; el dueño ve todos.
+  const myEvents = me.isOwner ? events : events.filter(e => e.photographerId === me.id);
+  const approved = me.isOwner || me.approved !== false;
   const sales = await api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }));
   const stats = await api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }));
+  const earnings = await api('/api/my-earnings').catch(() => null);
+  const payouts = me.isOwner ? await api('/api/payouts-summary').catch(() => null) : null;
+  const payoutHistory = me.isOwner ? await api('/api/payouts-history').catch(() => ({ payouts: [] })) : null;
+  const photographers = me.isOwner ? await api('/api/list-photographers').catch(() => ({ photographers: [] })) : null;
+  // Cuenta pendiente de aprobación: no puede crear eventos ni vender
+  // todavía. Sí puede dejar su CLABE de pagos y ver sus ganancias (en
+  // ceros hasta que venda).
+  if (!approved) {
+    box.innerHTML = `
+    <p class="error">Tu cuenta de fotógrafo está pendiente de aprobación por Orlan. En cuanto te apruebe podrás crear eventos y subir fotos.</p>
+    <h3>CLABE para recibir tus pagos</h3>
+    <p class="muted">Cuando vendas fotos, Orlan te manda tu parte a esta CLABE cada 72 horas. Son 18 dígitos.</p>
+    <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
+    <p id="payStatus" class="muted"></p>
+    <h3>Mis ganancias</h3>
+    ${earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Mi parte pendiente: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}</p>` : '<p class="muted">Sin datos todavía.</p>'}`;
+    $('#paySave').onclick = async () => {
+      try { const r = await api('/api/set-payout-clabe', { method: 'POST', body: JSON.stringify({ clabe: $('#payClabe').value }) }); me.payoutClabe = r.payoutClabe || ''; $('#payStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#payStatus').textContent = e.message; }
+    };
+    return;
+  }
+  const dueCount = payouts ? (payouts.photographers || []).filter(p => p.isDue && p.pendingBalance > 0).length : 0;
   box.innerHTML = `
+    ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa "Pagos a fotógrafos" abajo.</p>` : ''}
     <h3>Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
@@ -720,8 +751,12 @@ async function loadPhotographer() {
     <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
     <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave" class="primary">Guardar CLABE</button></div>
     <p id="tipStatus" class="muted"></p>
+    <h3>CLABE para recibir tus pagos</h3>
+    <p class="muted">Cuando vendas fotos, Orlan te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
+    <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
+    <p id="payStatus" class="muted"></p>
     <h3>Subir fotos</h3>
-    <select id="upEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
+    <select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
     <input id="upFiles" type="file" accept="image/*" multiple>
     <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
     <div id="upList"></div>
@@ -730,17 +765,35 @@ async function loadPhotographer() {
     <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
     <h3>Portada del evento</h3>
     <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p>
-    <div class="row"><select id="covEvent">${events.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
+    <div class="row"><select id="covEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
     <div id="covPreview"></div>
     <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
     <h3>Mis eventos</h3>
-    ${events.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
+    ${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     <h3>Descargas y ventas</h3>
     <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos por ventas: $${sales.revenue} MXN</p>
     ${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}
+    <h3>Mis ganancias</h3>
+    ${earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión Orlan (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">Orlan te paga tu parte cada 72 horas a la CLABE de arriba. Clip quita 4.18% primero y Orlan se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>'}
+    ${me.isOwner && payouts ? `<h3>Pagos a fotógrafos</h3>
+    <p class="muted">Todo el dinero cae en tu cuenta de Clip. Cada 72 horas desde la primera venta sin pagar, el pago se vence y sale en rojo. Mándale el dinero a su CLABE y luego marca "Pagado".</p>
+    <p>Totales — Vendido: ${fmtMxn(payouts.totals.totalSold)} · Clip: ${fmtMxn(payouts.totals.clipFee)} · Tu comisión (10%): ${fmtMxn(payouts.totals.orlanFee)} · Para fotógrafos: ${fmtMxn(payouts.totals.photographerShare)} · Pendiente por pagar: ${fmtMxn(payouts.totals.pendingBalance)}</p>
+    ${(payouts.photographers || []).length ? (payouts.photographers || []).map(p => `
+    <div class="card">
+      <p><strong>${esc(p.name)}</strong> ${p.approved ? '' : '<span class="error">(pendiente de aprobación)</span>'} · ${esc(p.email)}</p>
+      <p class="muted">Vendido: ${fmtMxn(p.totalSold)} · Clip: ${fmtMxn(p.clipFee)} · Tu comisión: ${fmtMxn(p.orlanFee)} · Su parte: ${fmtMxn(p.photographerShare)}</p>
+      <p><strong>Pendiente por pagarle: ${fmtMxn(p.pendingBalance)}</strong> ${p.pendingSince ? (p.isDue ? `<span class="error">● PAGO VENCIDO — vence desde ${String(p.dueAt || '').slice(0, 10)}</span>` : `<span class="muted">Próximo pago en ${p.hoursUntilDue} h</span>`) : '<span class="muted">Sin ventas pendientes.</span>'}</p>
+      <p class="muted">CLABE para pagarle: ${p.payoutClabe ? `<strong>${esc(p.payoutClabe)}</strong> <button data-copyclabe="${esc(p.payoutClabe)}">Copiar CLABE</button>` : '<span class="error">El fotógrafo aún no pone su CLABE.</span>'}</p>
+      ${p.lastPayout ? `<p class="muted">Último pago: ${fmtMxn(p.lastPayout.amountMxn)} el ${String(p.lastPayout.paidAt || '').slice(0, 10)}</p>` : ''}
+      <button data-pay="${p.photographerId}" class="primary" ${p.pendingBalance > 0 ? '' : 'disabled'}>Marcar como pagado</button>
+    </div>`).join('') : '<p class="muted">Todavía no hay otros fotógrafos.</p>'}
+    ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<p><strong>Historial de pagos enviados</strong></p>` + payoutHistory.payouts.map(h => `<p class="muted">${esc(h.photographerName)} · ${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</p>`).join('') : ''}
+    <h3>Fotógrafos</h3>
+    <p class="muted">Aprueba a los fotógrafos nuevos para que puedan crear eventos y vender. Solo tú ves esta lista.</p>
+    ${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}` : ''}
     <h3>Estadísticas</h3>
     ${(stats.totals.photoViews || stats.totals.eventViews || stats.totals.totalDownloads)
       ? `<p>Vistas de fotos: ${stats.totals.photoViews} · Visitantes únicos: ${stats.totals.uniqueViewers} · Visitas a eventos: ${stats.totals.eventViews} · Descargas: ${stats.totals.totalDownloads} · Ingresos: $${stats.totals.revenue} MXN</p>
@@ -756,6 +809,36 @@ async function loadPhotographer() {
   $('#tipSave').onclick = async () => {
     try { const r = await api('/api/set-tip', { method: 'POST', body: JSON.stringify({ clabe: $('#tipClabe').value }) }); me.tipClabe = r.tipClabe || ''; $('#tipStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#tipStatus').textContent = e.message; }
   };
+  // CLABE para recibir los pagos de las ventas (la pone el fotógrafo).
+  const paySaveBtn = $('#paySave');
+  if (paySaveBtn) paySaveBtn.onclick = async () => {
+    try { const r = await api('/api/set-payout-clabe', { method: 'POST', body: JSON.stringify({ clabe: $('#payClabe').value }) }); me.payoutClabe = r.payoutClabe || ''; $('#payStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#payStatus').textContent = e.message; }
+  };
+  // Dueño: copiar la CLABE del fotógrafo para pagarle.
+  document.querySelectorAll('[data-copyclabe]').forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copyclabe); b.textContent = 'Copiado ✓'; setTimeout(() => { b.textContent = 'Copiar CLABE'; }, 2000); }
+    catch (_) { alert('No se pudo copiar, cópiala a mano: ' + b.dataset.copyclabe); }
+  });
+  // Dueño: ya le mandó el dinero al fotógrafo — liquida su saldo.
+  document.querySelectorAll('[data-pay]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.pay);
+    const row = payouts && (payouts.photographers || []).find(p => p.photographerId === id);
+    const amount = row ? fmtMxn(row.pendingBalance) : '';
+    if (!confirm(`¿Ya le mandaste ${amount || 'el saldo pendiente'} a ${row ? row.name : 'este fotógrafo'}? Esto marca su saldo como pagado.`)) return;
+    b.disabled = true;
+    try { const r = await api('/api/payouts-mark-paid', { method: 'POST', body: JSON.stringify({ photographerId: id }) }); alert('Pago registrado: ' + fmtMxn(r.payout.amountMxn) + ' a ' + (r.payout.name || '') + ' (' + (r.downloadsSettled || 0) + ' venta(s)).'); loadPhotographer(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+  // Dueño: aprobar o quitar la aprobación de un fotógrafo.
+  document.querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => {
+    try { await api('/api/approve-photographer', { method: 'POST', body: JSON.stringify({ userId: Number(b.dataset.approve), approve: true }) }); alert('Fotógrafo aprobado. Ya puede crear eventos.'); loadPhotographer(); }
+    catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-reject]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Quitarle la aprobación a este fotógrafo? Ya no podrá crear eventos ni subir fotos, pero sus eventos y ventas se quedan.')) return;
+    try { await api('/api/approve-photographer', { method: 'POST', body: JSON.stringify({ userId: Number(b.dataset.reject), approve: false }) }); alert('Aprobación quitada.'); loadPhotographer(); }
+    catch (e) { alert(e.message); }
+  });
   function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }
   $('#covEvent').onchange = renderCovPreview;
   renderCovPreview();
