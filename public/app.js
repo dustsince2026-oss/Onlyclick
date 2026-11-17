@@ -974,7 +974,7 @@ async function loadEventDetail(eventId, push) {
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
-    <div class="row"><button id="evSelfieBtn" class="secondary">📷 Buscar por selfie en este evento</button></div>
+    <div class="row"><button id="evSelfieBtn" class="secondary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#d4af37" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="10.5" r="3.2"/><path d="M10.6 10.3h.01M13.4 10.3h.01"/><path d="M10.6 12.3c.4.5.9.7 1.4.7s1-.2 1.4-.7"/><path d="M5.5 19.5c.8-2.3 3.4-3.5 6.5-3.5s5.7 1.2 6.5 3.5"/></svg>Busca tu foto por selfie en este evento</button></div>
     <p id="evFaceStatus" class="muted"></p>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
