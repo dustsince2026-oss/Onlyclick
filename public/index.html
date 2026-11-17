@@ -39,8 +39,7 @@
   button { font-size: 16px; padding: 11px 14px; border-radius: 10px; border: 1px solid #3a3a41; background: #26262c; color: #fff; font-weight: 700; cursor: pointer; }
   button.primary { background: linear-gradient(180deg, #e3c15a, #c9a227); color: #141414; border: none; }
   button.secondary, button.ghost { background: #26262c; border: 1px solid #3a3a41; color: #fff; }
-  #selfieSearch, #evSelfieBtn, #bibSearch, #evBibBtn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-  #selfieSearch svg, #evSelfieBtn svg, #bibSearch svg, #evBibBtn svg { flex: none; }
+  #modalBibBtn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
   button:disabled { opacity: .5; cursor: default; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .row > * { flex: 1; min-width: 140px; }
@@ -71,10 +70,7 @@
   .hero-content { padding: 28px 18px 22px; background: linear-gradient(rgba(11,11,14,.45), rgba(11,11,14,.82)); }
   .hero-content h2 { font-size: 28px; line-height: 1.15; margin: 0 0 8px; }
   .hero-sub { color: #d8d8d2; font-size: 16px; margin: 0 0 18px; }
-  .hero-search { display: flex; gap: 8px; }
-  .hero-search input { flex: 1; margin: 0; padding: 14px; font-size: 17px; min-width: 0; }
-  .hero-search button { margin: 0; padding: 14px 20px; white-space: nowrap; width: auto; }
-  .hero-note { color: #a7a7ad; font-size: 13px; margin: 10px 0 0; }
+  /* Solo queda el botón grande: la búsqueda vive dentro del modal. */
   #searchResults { margin-top: 16px; }
   /* ---------- Cómo funciona ---------- */
   .steps { display: grid; grid-template-columns: 1fr; gap: 12px; }
@@ -148,12 +144,6 @@
         <h2 id="heroTitle">Encuentra tus fotos</h2>
         <p id="heroSub" class="hero-sub"></p>
         <div class="row" style="margin-bottom:10px"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
-        <div class="hero-search">
-          <input id="bibInput" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal" autocapitalize="off" autocorrect="off" placeholder="# de dorsal">
-          <button id="bibSearch" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Buscar</button>
-        </div>
-        <p class="hero-note">¿No recuerdas tu dorsal? Busca con tu selfie — solo se usa para esta búsqueda y no se guarda.</p>
-        <div class="row" style="margin-top:10px"><button id="selfieSearch" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="10.5" r="3.2"/><path d="M10.6 10.3h.01M13.4 10.3h.01"/><path d="M10.6 12.3c.4.5.9.7 1.4.7s1-.2 1.4-.7"/><path d="M5.5 19.5c.8-2.3 3.4-3.5 6.5-3.5s5.7 1.2 6.5 3.5"/></svg>Busca tu foto por selfie</button></div>
         <div id="searchResults"></div>
       </div>
     </div>
@@ -162,7 +152,7 @@
     <div class="card">
       <h3>Cómo funciona</h3>
       <div class="steps">
-        <div class="step"><span class="step-num">1</span><strong>Busca tu dorsal o tu selfie</strong><p>Escribe el número que llevas en la foto, o toca "Busca tu foto por selfie" y sube una foto tuya.</p></div>
+        <div class="step"><span class="step-num">1</span><strong>Busca tu dorsal o tu selfie</strong><p>Toca "Buscar por selfie o dorsal" y elige: sube una selfie o escribe tu número de dorsal.</p></div>
         <div class="step"><span class="step-num">2</span><strong>Encuentra tus fotos</strong><p>Te mostramos solo las fotos donde sales tú.</p></div>
         <div class="step"><span class="step-num">3</span><strong>Descarga o compra</strong><p>Gratis en eventos gratis, o paga seguro con Clip: tarjeta o efectivo en OXXO.</p></div>
       </div>
@@ -406,6 +396,11 @@
     <h3>¿Cómo quieres buscar tus fotos?</h3>
     <p class="muted">Elige un método para encontrar tus fotos en el evento.</p>
     <div id="searchModalCards"></div>
+    <div id="searchModalBib" style="display:none">
+      <div class="row"><input id="modalBibInput" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-modal" autocapitalize="off" autocorrect="off" placeholder="# de dorsal" style="flex:1"><button id="modalBibBtn" class="primary">Buscar</button></div>
+      <p class="muted">Escribe tu número de dorsal, sin correo.</p>
+      <button class="secondary" id="modalBibBack" style="width:100%">Atrás</button>
+    </div>
     <p class="muted" id="searchModalEvent"></p>
     <button class="secondary" id="searchModalClose" style="width:100%">Cerrar</button>
   </div>
