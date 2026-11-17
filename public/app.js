@@ -919,7 +919,21 @@ function appInviteHtml(a) {
 async function loadPhotographer() {
   const box = $('#photoPanel');
   if (!me || me.role !== 'photographer') { box.innerHTML = '<p>Solo la cuenta de fotógrafo ve este panel.</p>'; return; }
-  const events = (await api('/api/events')).events;
+  // Todas las peticiones del panel salen A LA VEZ: antes iban una por
+  // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
+  // Ahora el tiempo total es más o menos el de la petición más lenta.
+  box.innerHTML = '<p class="muted">Cargando panel…</p>';
+  const [eventsRes, sales, stats, earnings, payouts, payoutHistory, photographers, applications] = await Promise.all([
+    api('/api/events'),
+    api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 })),
+    api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] })),
+    api('/api/my-earnings').catch(() => null),
+    me.isOwner ? api('/api/payouts-summary').catch(() => null) : Promise.resolve(null),
+    me.isOwner ? api('/api/payouts-history').catch(() => ({ payouts: [] })) : Promise.resolve({ payouts: [] }),
+    me.isOwner ? api('/api/list-photographers').catch(() => ({ photographers: [] })) : Promise.resolve({ photographers: [] }),
+    me.isOwner ? api('/api/list-applications').catch(() => ({ applications: [] })) : Promise.resolve({ applications: [] }),
+  ]);
+  const events = eventsRes.events;
   // Cada fotógrafo ve solo SUS eventos en el panel; el dueño ve todos.
   const myEvents = me.isOwner ? events : events.filter(e => e.photographerId === me.id);
   // Eventos compartidos en los que participo (no los creé): también puedo
@@ -931,13 +945,6 @@ async function loadPhotographer() {
   // se permite guardarla para cuando cree uno gratis.
   const tipEvents = [...myEvents, ...joinedEvents];
   const tipBlocked = tipEvents.length > 0 && !tipEvents.some(e => e.freeMode);
-  const sales = await api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }));
-  const stats = await api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }));
-  const earnings = await api('/api/my-earnings').catch(() => null);
-  const payouts = me.isOwner ? await api('/api/payouts-summary').catch(() => null) : null;
-  const payoutHistory = me.isOwner ? await api('/api/payouts-history').catch(() => ({ payouts: [] })) : null;
-  const photographers = me.isOwner ? await api('/api/list-photographers').catch(() => ({ photographers: [] })) : null;
-  const applications = me.isOwner ? await api('/api/list-applications').catch(() => ({ applications: [] })) : null;
   // Cuenta pendiente de aprobación: no puede crear eventos ni vender
   // todavía. Sí puede dejar su CLABE de pagos y ver sus ganancias (en
   // ceros hasta que venda).
