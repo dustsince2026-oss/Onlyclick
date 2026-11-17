@@ -159,7 +159,7 @@
         <p id="heroSub" class="hero-sub">La inteligencia artificial de OnlyClick busca por ti: sube una selfie o escribe tu dorsal y te mostramos solo las fotos donde sales, sin revisar una por una.</p>
         <div class="row" style="margin-bottom:10px"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
         <div class="row" style="margin-bottom:10px"><button class="hero-explore" id="exploreEventsBtn" type="button">Explorar eventos &rarr;</button></div>
-        <div class="hero-photo-card" onclick="togglePhotographerSection()">
+        <div class="hero-photo-card" onclick="goToPhotographerForm()">
           <div style="flex:1">
             <p class="hero-photo-kicker">PARA FOTÓGRAFOS</p>
             <p class="hero-photo-text">Publica tus eventos y vende tus fotos</p>
@@ -176,9 +176,12 @@
     <!-- PAQUETE: mostrar cuando Orlan defina el precio — p. ej. "Todas tus fotos $Y MXN" junto al precio por foto de cada evento. No mostrar precio inventado. -->
 
     <div class="card" style="text-align:center">
-      <h3>¿Estás organizando un evento deportivo?</h3>
-      <p>Ofrece a tus competidores fotografía profesional con búsqueda de fotos por dorsal con inteligencia artificial: encuentran sus fotos en segundos, fácil y gratis. Tú encárgate de tu evento, nosotros de las fotos.</p>
-      <form id="orgForm" style="text-align:left" onsubmit="return sendOrganizerForm(event)">
+      <div id="orgCardHead" onclick="toggleOrganizerForm()" style="cursor:pointer">
+        <h3>¿Estás organizando un evento deportivo?</h3>
+        <p>Ofrece a tus competidores fotografía profesional con búsqueda de fotos por dorsal con inteligencia artificial: encuentran sus fotos en segundos, fácil y gratis. Tú encárgate de tu evento, nosotros de las fotos.</p>
+        <p id="orgToggleHint" class="muted" style="margin:0">Toca para abrir el formulario ↓</p>
+      </div>
+      <form id="orgForm" style="text-align:left;display:none" onsubmit="return sendOrganizerForm(event)">
         <input id="orgName" placeholder="Tu nombre" autocomplete="name" required>
         <input id="orgEvent" placeholder="Nombre del evento" required>
         <input id="orgDate" type="date" required>
@@ -190,6 +193,15 @@
       <p id="orgSent" class="muted" style="display:none">Se abrió WhatsApp con tu mensaje listo, solo dale Enviar.</p>
     </div>
     <script>
+    // El formulario de organizadores empieza cerrado: se abre al picar
+    // el encabezado de la tarjeta (no al cargar la página).
+    function toggleOrganizerForm() {
+      var f = document.getElementById('orgForm');
+      var open = f.style.display === 'none';
+      f.style.display = open ? '' : 'none';
+      var hint = document.getElementById('orgToggleHint');
+      if (hint) hint.textContent = open ? 'Toca para cerrar ↑' : 'Toca para abrir el formulario ↓';
+    }
     // Formulario para organizadores: arma el mensaje y lo abre en WhatsApp
     // de Orlan, ya escrito. El organizador solo le da Enviar en WhatsApp.
     function sendOrganizerForm(e) {
@@ -278,12 +290,6 @@
       return false;
     }
     </script>
-
-    <div class="card" style="text-align:center">
-      <h3>¿Listo para encontrar tus fotos?</h3>
-      <p>Busca por selfie, por tu número de dorsal o recorre el álbum completo del evento.</p>
-      <button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button>
-    </div>
   </section>
 
   <!-- EVENTOS -->
