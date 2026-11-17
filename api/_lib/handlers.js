@@ -388,25 +388,37 @@ async function listPurchases(store, user) {
 async function listSales(store, user) {
   requirePhotographer(user);
   const downloads = await store.listAllDownloads();
+  // ANTES: por cada descarga se pedía la foto, el evento y el comprador
+  // uno por uno (3 consultas por fila; con 178 descargas eran ~534
+  // consultas seguidas y la pestaña de ventas tardaba muchísimo).
+  // AHORA: todo se trae en bloque — una lista de eventos, las fotos de
+  // cada evento distinto una sola vez, y los compradores distintos en
+  // paralelo — y el resto se resuelve en memoria.
+  const eventIds = [...new Set(downloads.map(d => d.eventId).filter(id => Number.isInteger(id)))];
+  const [events, ...photoLists] = await Promise.all([store.listEvents(), ...eventIds.map(id => store.listPhotos(id))]);
+  const photos = new Map();
+  for (const list of photoLists) for (const ph of list || []) photos.set(ph.id, ph);
+  const eventById = new Map((events || []).map(e => [e.id, e]));
   // Cada fotógrafo ve SOLO las descargas de SUS FOTOS (en eventos
   // compartidos, las fotos de los demás no son suyas); el dueño ve todas.
   let mine = downloads;
   if (!user.isOwner) {
-    mine = [];
-    for (const d of downloads) {
-      const p = await store.getPhoto(d.photoId);
-      if (!p) continue;
-      const ev = await store.getEvent(p.eventId);
-      if (photoOwnerId(p, ev) === user.id) mine.push(d);
-    }
+    mine = downloads.filter(d => {
+      const ph = photos.get(d.photoId);
+      if (!ph) return false;
+      return photoOwnerId(ph, eventById.get(ph.eventId)) === user.id;
+    });
   }
+  const buyerIds = [...new Set(mine.map(d => d.userId).filter(id => Number.isInteger(id)))];
+  const buyers = await Promise.all(buyerIds.map(id => store.findUserById(id).catch(() => null)));
+  const buyerById = new Map(buyers.filter(Boolean).map(u => [u.id, u]));
   const rows = [];
   let revenue = 0, freeCount = 0;
   for (const d of mine) {
-    const p = await store.getPhoto(d.photoId); const ev = await store.getEvent(d.eventId);
-    const buyer = await store.findUserById(d.userId);
+    const ph = photos.get(d.photoId); const ev = eventById.get(d.eventId);
+    const buyer = buyerById.get(d.userId);
     revenue += Number(d.amount || 0); if (!d.amount) freeCount += 1;
-    rows.push({ id: d.id, photoId: d.photoId, eventName: ev ? ev.name : '', bibs: p ? p.bibs : [], buyerName: buyer ? buyer.name : '', amount: d.amount, createdAt: d.createdAt });
+    rows.push({ id: d.id, photoId: d.photoId, eventName: ev ? ev.name : '', bibs: ph ? ph.bibs : [], buyerName: buyer ? buyer.name : '', amount: d.amount, createdAt: d.createdAt });
   }
   return { status: 200, data: { sales: rows, totalDownloads: rows.length, freeDownloads: freeCount, revenue } };
 }
