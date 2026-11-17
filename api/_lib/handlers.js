@@ -157,7 +157,53 @@ async function resetPassword(store, body) {
   return { status: 200, data: { ok: true } };
 }
 
+// Fecha en que caduca un álbum: fecha del evento + 60 días. Sin fecha
+// válida no caduca.
+function eventExpiresAt(ev) {
+  const t = ev && ev.eventDate ? new Date(String(ev.eventDate)).getTime() : NaN;
+  if (!Number.isFinite(t)) return null;
+  return new Date(t + EVENT_EXPIRY_DAYS * 24 * 3600 * 1000).toISOString();
+}
+function daysUntil(dateIso) {
+  if (!dateIso) return null;
+  return Math.ceil((new Date(dateIso).getTime() - Date.now()) / (24 * 3600 * 1000));
+}
+// Borra los álbumes ya caducados (fotos, archivos y portada). Se corre al
+// listar eventos, al abrir uno y al listar Mis fotos / notificaciones:
+// la primera visita después de la fecha dispara la limpieza. Un fallo al
+// borrar un álbum no rompe la lista.
+async function expireOldEvents(store) {
+  const now = Date.now();
+  for (const e of await store.listEvents()) {
+    const exp = eventExpiresAt(e);
+    if (exp && new Date(exp).getTime() <= now) {
+      try { await store.deleteEvent(e.id); } catch (_) {}
+    }
+  }
+}
+// Álbumes del usuario que caducan en 15 días o menos: los que creó, en
+// los que participa o de los que descargó fotos. Ordenados por días.
+async function expiringEventsFor(store, user) {
+  const events = await store.listEvents();
+  const downloads = await store.listDownloadsByUser(user.id);
+  const myEventIds = new Set(downloads.map(d => d.eventId));
+  const joined = new Set(await store.listJoinedEventIds(user.id).catch(() => []));
+  const out = [];
+  for (const e of events) {
+    const mine = e.photographerId === user.id || joined.has(e.id) || myEventIds.has(e.id);
+    if (!mine) continue;
+    const exp = eventExpiresAt(e);
+    if (!exp) continue;
+    const days = daysUntil(exp);
+    if (days == null || days <= 0 || days > EXPIRY_WARN_DAYS) continue;
+    out.push({ eventId: e.id, eventName: e.name, daysLeft: days, expiresAt: exp, warnFrom: new Date(new Date(exp).getTime() - EXPIRY_WARN_DAYS * 24 * 3600 * 1000).getTime() });
+  }
+  out.sort((a, b) => a.daysLeft - b.daysLeft);
+  return out;
+}
+
 async function listEvents(store, user) {
+  await expireOldEvents(store);
   const events = await store.listEvents();
   // Nombre del fotógrafo de cada evento (se muestra en la tarjeta y en
   // el detalle: "Fotos de <nombre>"). La búsqueda y el inicio son
@@ -172,6 +218,7 @@ async function listEvents(store, user) {
     const isCreator = user ? e.photographerId === user.id : false;
     out.push({
       ...e,
+      expiresAt: eventExpiresAt(e),
       photographerName: names.get(e.photographerId) || '',
       // Sin filas (tabla aún sin correr el SQL): el creador es el único
       // participante y el evento no es compartido.
@@ -184,7 +231,8 @@ async function listEvents(store, user) {
       myPrice: myPart ? Number(myPart.priceMxn) : (isCreator ? eventPrice(e) : undefined),
     });
   }
-  return { status: 200, data: { events: out } };
+  // Por si el borrado de un caducado falló, que no salga en la lista.
+  return { status: 200, data: { events: out.filter(e => !e.expiresAt || new Date(e.expiresAt).getTime() > Date.now()) } };
 }
 
 async function createEvent(store, user, body) {
@@ -204,8 +252,15 @@ async function createEvent(store, user, body) {
 }
 
 async function getEvent(store, user, eventId) {
+  await expireOldEvents(store);
   const ev = await store.getEvent(eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // Álbum caducado: se borra y ya no se puede abrir.
+  const exp = eventExpiresAt(ev);
+  if (exp && new Date(exp).getTime() <= Date.now()) {
+    try { await store.deleteEvent(ev.id); } catch (_) {}
+    throw err(404, 'Este álbum ya caducó.');
+  }
   const photos = await store.listPhotos(eventId);
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
@@ -317,6 +372,7 @@ async function claimPhotos(store, user, body, paid) {
 
 async function listPurchases(store, user) {
   requireUser(user);
+  await expireOldEvents(store);
   const downloads = await store.listDownloadsByUser(user.id);
   const photos = [];
   for (const d of downloads) {
@@ -324,7 +380,7 @@ async function listPurchases(store, user) {
     const ev = await store.getEvent(d.eventId);
     const pid = photoOwnerId(p, ev);
     const u = pid != null ? await store.findUserById(pid) : null;
-    photos.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev ? ev.name : '', freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
+    photos.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev ? ev.name : '', expiresAt: ev ? eventExpiresAt(ev) : null, freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
   }
   return { status: 200, data: { photos } };
 }
@@ -739,6 +795,11 @@ function eventPrice(ev) {
 const PACKAGE_SIZE = 10;
 const PACKAGE_DISCOUNT = 0.25;
 const CART_MAX_TOTAL = 5000; // límite de Clip por transacción (MXN)
+// Caducidad de álbumes (Orlan, 2026-11-16): un evento se borra solo 60
+// días después de su fecha, para no guardar álbumes viejos que ya nadie
+// mueve. El aviso sale cuando faltan 15 días o menos.
+const EVENT_EXPIRY_DAYS = 60;
+const EXPIRY_WARN_DAYS = 15;
 const CART_MAX_ITEMS = 100; // máximo de fotos por carrito
 const SINGLE_TIERS = [
   { from: 1, to: 3, discount: 0 },
@@ -1260,17 +1321,25 @@ async function createAnnouncement(store, user, body) {
 }
 
 async function listAnnouncements(store, user) {
-  requirePhotographer(user);
-  const all = await store.listAnnouncements();
+  requireUser(user);
+  await expireOldEvents(store);
+  // Los avisos del dueño son solo para fotógrafos; los atletas no los ven.
+  const isPhotog = user.role === 'photographer' && user.approved !== false;
+  const all = isPhotog ? await store.listAnnouncements() : [];
   // No leídos = avisos creados después de la última vez que el usuario
   // abrió las notificaciones. Si nunca las abrió, todos son no leídos.
   const seenAt = user.lastAnnouncementsSeenAt ? new Date(user.lastAnnouncementsSeenAt).getTime() : 0;
   const unread = all.filter(a => new Date(a.createdAt).getTime() > seenAt).length;
-  return { status: 200, data: { announcements: all.map(a => ({ id: a.id, title: a.title, body: a.body, createdAt: a.createdAt })), unreadCount: unread } };
+  // Avisos de caducidad para TODOS (atletas incluidos): álbumes del
+  // usuario que desaparecen en 15 días o menos. Un aviso es nuevo si
+  // entró en la ventana de 15 días después de la última visita.
+  const expiring = await expiringEventsFor(store, user);
+  const unreadExpiring = expiring.filter(w => w.warnFrom > seenAt).length;
+  return { status: 200, data: { announcements: all.map(a => ({ id: a.id, title: a.title, body: a.body, createdAt: a.createdAt })), expiring: expiring.map(({ warnFrom, ...w }) => w), unreadCount: unread + unreadExpiring } };
 }
 
 async function markAnnouncementsRead(store, user) {
-  requirePhotographer(user);
+  requireUser(user);
   await store.updateUser(user.id, { lastAnnouncementsSeenAt: new Date().toISOString() });
   return { status: 200, data: { ok: true } };
 }
