@@ -327,6 +327,66 @@ async function uploadPhoto(store, user, body) {
   return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined, thumbPath: undefined } } };
 }
 
+// ---- Miniaturas de galería para fotos viejas (backfill) ----
+// Las fotos subidas antes del 2026-11-15 no tienen miniatura: la galería
+// pide /api/photo?thumb=1 y el servidor cae a la foto completa (~300 KB),
+// y eso es lo que se comió la cuota de egress de Supabase (5.93/5 GB en
+// el ciclo 12 nov-12 dic 2026; gracia hasta el 17 dic, luego 402).
+// Este endpoint (SOLO el dueño) genera la miniatura de 400px (~30-50 KB)
+// de las fotos que aún no tienen, en lotes pequeños para no pasar el
+// límite de 10 s de Vercel. Idempotente y reanudable: salta las fotos que
+// ya tienen miniatura y devuelve nextCursor para seguir; si se cierra la
+// página, lo ya guardado queda y al darle otra vez continúa.
+// El original NUNCA se toca: la vista ampliada, la descarga y la compra
+// siguen usando la foto completa; la marca de agua no cambia.
+const BACKFILL_BATCH_DEFAULT = 6;
+const BACKFILL_BATCH_MAX = 10;
+
+async function backfillThumbs(store, user, body) {
+  requireOwner(user);
+  const { makeThumb, thumbsAvailable } = require('./thumbs');
+  if (!thumbsAvailable()) throw err(500, 'Falta jpeg-js en el servidor para generar miniaturas.');
+  const hasEventId = body.eventId != null && body.eventId !== '';
+  const eventId = hasEventId ? Number(body.eventId) : null;
+  if (hasEventId && !Number.isFinite(eventId)) throw err(400, 'eventId no válido.');
+  const limit = Math.min(BACKFILL_BATCH_MAX, Math.max(1, Number(body.limit) || BACKFILL_BATCH_DEFAULT));
+  const cursor = Number(body.cursor) || 0; // último id procesado (exclusivo)
+  let photos;
+  if (eventId != null) {
+    const ev = await store.getEvent(eventId);
+    if (!ev) throw err(404, 'Evento no encontrado.');
+    photos = await store.listPhotos(eventId);
+  } else {
+    const events = await store.listEvents();
+    photos = [];
+    for (const ev of events) photos.push(...(await store.listPhotos(ev.id)));
+  }
+  // Solo las que aún no tienen miniatura, en orden de id, después del cursor.
+  const missing = photos.filter(p => !p.thumbPath).sort((a, b) => a.id - b.id).filter(p => p.id > cursor);
+  const totalMissing = missing.length;
+  const batch = missing.slice(0, limit);
+  const created = [];
+  const skipped = [];
+  const failed = [];
+  await Promise.all(batch.map(async (p) => {
+    try {
+      const mime = String(p.mimeType || '');
+      if (mime.toLowerCase() !== 'image/jpeg' && mime.toLowerCase() !== 'image/jpg') { skipped.push({ id: p.id, reason: 'no-jpeg' }); return; }
+      const bytes = await store.readPhotoBytes(p);
+      const thumb = makeThumb(bytes, mime);
+      if (!thumb) { skipped.push({ id: p.id, reason: 'sin-miniatura' }); return; }
+      const thumbPath = await store.saveThumbBuffer(p.id, thumb.buffer);
+      await store.setPhotoThumb(p.id, thumbPath);
+      created.push(p.id);
+    } catch (e) {
+      failed.push({ id: p.id, reason: e && e.message ? String(e.message).slice(0, 120) : 'error' });
+    }
+  }));
+  const lastId = batch.length ? batch[batch.length - 1].id : cursor;
+  const remaining = Math.max(0, totalMissing - batch.length);
+  return { status: 200, data: { ok: true, eventId, processed: batch.length, created: created.length, skipped: skipped.length, failed, nextCursor: remaining > 0 ? lastId : null, done: remaining === 0, remaining } };
+}
+
 async function searchBib(store, query) {
   const bib = normBib(query.bib);
   if (!bib) throw err(400, 'Escribe un dorsal.');
@@ -1782,6 +1842,7 @@ async function dispatch(route, req) {
     case 'create-event': return createEvent(store, user, b);
     case 'get-event': return getEvent(store, user, req.query.eventId);
     case 'upload-photo': return uploadPhoto(store, user, b);
+    case 'backfill-thumbs': return backfillThumbs(store, user, b);
     case 'search': return searchBib(store, req.query);
     case 'claim': return claimPhotos(store, user, b, false);
     // Compra simulada DESACTIVADA: con Clip real, /api/purchase dejaba
