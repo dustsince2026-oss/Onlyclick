@@ -935,8 +935,8 @@ function openSearchModal(pref) {
   $('#searchModalEvent').textContent = ev.id ? 'Evento: ' + (ev.name || '') : 'Aún no hay eventos publicados.';
   showModalCards();
   cards.innerHTML = `
-    <button class="method-card rec" data-method="selfie"><strong>Por selfie<span class="rec-tag">RECOMENDADO</span></strong><p>Sube una foto de tu cara y te encontramos en todas las fotos, en segundos.</p><p class="muted" style="margin-top:4px">Tu selfie nunca se guarda, solo se usa para buscar tus fotos.</p></button>
-    <button class="method-card" data-method="bib"><strong>Por dorsal</strong><p>Escribe tu número de dorsal.</p></button>
+    <button class="method-card" data-method="selfie"><strong>Por selfie</strong><p>Sube una foto de tu cara y te encontramos en todas las fotos.</p><p class="muted" style="margin-top:4px">Tu selfie nunca se guarda, solo se usa para buscar tus fotos.</p></button>
+    <button class="method-card rec" data-method="bib"><strong>Por dorsal<span class="rec-tag">RECOMENDADO</span></strong><p>Escribe tu número de dorsal: es lo más rápido.</p></button>
     <button class="method-card" data-method="all"><strong>Ver todas las fotos</strong><p>Recorre el álbum completo del evento.</p></button>`;
   cards.querySelectorAll('[data-method]').forEach(b => b.onclick = () => {
     const m = b.dataset.method;
