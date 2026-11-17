@@ -9,6 +9,7 @@ let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
 let inviteToken = ''; // ?invite=... del link de invitación aprobado
 let currentEvent = null;
+let currentEventName = ''; // nombre del evento abierto (para el modal de búsqueda y compartir)
 let currentTipClabe = '';
 let currentTipName = '';
 let currentPhotos = [];
@@ -17,6 +18,7 @@ let latestEventName = '';
 let lightboxPhoto = null;
 let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
+let payReturnHandled = false; // regreso desde Clip ya procesado (no abrir links profundos encima)
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
 let currentView = 'home';
 let suppressPush = false;
@@ -214,23 +216,26 @@ function showToast(msg) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2200);
 }
-function addToCart(photo) {
+function addToCart(photo, silent) {
   const freeMode = photo.freeMode !== false;
-  if (freeMode || photo.owned) return;
-  if (cartHas(photo.id)) { showView('cart'); return; } // ya está: ir al carrito
+  if (freeMode || photo.owned) return false;
+  if (cartHas(photo.id)) { if (!silent) showView('cart'); return false; } // ya está: ir al carrito
   cart.push({ id: photo.id, eventId: photo.eventId, eventName: photo.eventName || '', priceMxn: Number(photo.priceMxn || photo.price || 0), bibs: (photo.bibs || []).slice() });
   saveCart();
   document.querySelectorAll(`[data-cart="${photo.id}"]`).forEach(b => { b.textContent = 'En el carrito ✓'; b.disabled = true; });
   const lb = $('#lbCart');
   if (lb && Number(lb.dataset.cart) === photo.id) { lb.textContent = 'En el carrito ✓'; lb.disabled = true; }
-  showToast('Foto agregada al carrito (' + cart.length + ').');
+  if (!silent) showToast('Foto agregada al carrito (' + cart.length + ').');
+  return true;
 }
 function removeFromCart(id) {
   cart = cart.filter(x => x.id !== Number(id));
   saveCart();
   document.querySelectorAll(`[data-cart="${id}"]`).forEach(b => { b.textContent = 'Agregar al carrito'; b.disabled = false; });
   const lb = $('#lbCart');
-  if (lb && Number(lb.dataset.cart) === Number(id)) { lb.textContent = 'Agregar al carrito'; lb.disabled = false; }
+  // En la vista ampliada el botón lleva el precio ("Agregar al carrito ·
+  // $20 MXN"): al quitarla se restaura con su precio, no en blanco.
+  if (lb && Number(lb.dataset.cart) === Number(id)) { lb.textContent = (lightboxPhoto && lightboxPhoto.id === Number(id) && lightboxPriceMxn) ? 'Agregar al carrito · $' + lightboxPriceMxn + ' MXN' : 'Agregar al carrito'; lb.disabled = false; }
 }
 function clearCart() { cart = []; saveCart(); }
 
@@ -472,12 +477,107 @@ async function savePhoto(photo, freeMode, priceMxn) {
   }
 }
 
+// ---- Compartir: carrito y foto suelta (idea de ZebraSnap) ----
+// El carrito se comparte con un link (?carrito=id,id,...): quien lo abre
+// ve las fotos en solo lectura y puede agregarlas a SU carrito para
+// comprarlas. Los precios se recalculan en vivo en el servidor (el link
+// solo lleva ids, nunca precios). Si una foto ya no existe, se avisa y
+// se muestran las demás. El link caduca junto con el álbum: si el evento
+// ya pasó sus 60 días, esas fotos se reportan como caducadas (decisión de
+// Orlan 2026-11-17) y el link ya no muestra nada de ese álbum. Una foto
+// suelta se comparte con
+// /?event=..&photo=.. y se abre en la vista ampliada; desde ahí el amigo
+// busca las suyas por dorsal o selfie. Las fotos de eventos gratis se
+// comparten igual, solo para verlas (para guardarlas hay que entrar).
+async function shareLink(url, text) {
+  // Compartir nativo del teléfono; si se cancela, no hacer nada más.
+  // Si no hay compartir nativo, copiar el link; si tampoco se puede,
+  // abrir WhatsApp con el texto ya escrito.
+  try {
+    if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url }); return 'shared'; }
+    throw new Error('no-share');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return 'cancelled';
+    try { await navigator.clipboard.writeText(url); return 'copied'; }
+    catch (_) { window.open('https://wa.me/?text=' + encodeURIComponent(text + ' ' + url), '_blank'); return 'whatsapp'; }
+  }
+}
+function shareCart() {
+  if (!cart.length) return;
+  const url = location.origin + '/?carrito=' + cart.map(x => x.id).join(',');
+  const st = $('#cartShareStatus');
+  shareLink(url, 'Te comparto mis fotos de OnlyClick').then(r => {
+    if (!st) return;
+    if (r === 'copied') st.textContent = 'Link copiado: ' + url;
+    else if (r === 'whatsapp') st.textContent = 'Se abrió WhatsApp con el link listo.';
+    else if (r === 'shared') st.textContent = 'Carrito compartido.';
+  });
+}
+function sharePhoto(p) {
+  const eventId = p.eventId || currentEvent || '';
+  const url = location.origin + '/?event=' + eventId + '&photo=' + p.id;
+  shareLink(url, 'Mira mi foto en OnlyClick').then(r => {
+    if (r === 'copied') showToast('Link de la foto copiado.');
+    else if (r === 'whatsapp') showToast('Se abrió WhatsApp con el link listo.');
+  });
+}
+async function handleSharedCart(ids) {
+  showView('home');
+  const box = $('#sharedBox');
+  if (!box) return;
+  box.innerHTML = '<div class="card"><p>Cargando las fotos que te compartieron…</p></div>';
+  try {
+    const r = await api('/api/shared-cart?ids=' + ids.map(encodeURIComponent).join(','));
+    const missing = r.missing || [];
+    const expired = r.expired || [];
+    currentPhotos = r.photos;
+    const paid = r.photos.filter(p => p.freeMode === false && !p.owned);
+    const free = r.photos.filter(p => p.freeMode !== false);
+    box.innerHTML = `<div class="card"><h3>Fotos que te compartieron</h3>
+      <p class="muted">${r.photos.length} foto(s) para ti. ${paid.length ? 'Agrégalas a tu carrito y págalas con tarjeta o en OXXO.' : ''}${free.length ? ' Las gratis se guardan desde cada foto.' : ''}${missing.length ? ` ${missing.length} foto(s) ya no están disponibles.` : ''}${expired.length ? ` ${expired.length} foto(s) ya caducaron con su álbum (los álbumes se borran 60 días después del evento).` : ''}</p>
+      ${!r.photos.length && expired.length ? `<p>El álbum de esas fotos ya caducó y se borró, por eso el link ya no muestra nada. Pídele a quien te lo mandó que te comparta fotos de un evento vigente.</p>` : ''}
+      ${paid.length ? `<div class="row"><button id="sharedAddAll" class="primary">Agregar todo a mi carrito</button></div><p id="sharedAddStatus" class="muted"></p>` : ''}
+      <div class="grid" style="margin-top:12px">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos para mostrar.</p>'}</div></div>`;
+    bindPhotos(r.photos);
+    const addAll = $('#sharedAddAll');
+    if (addAll) addAll.onclick = () => {
+      let n = 0;
+      paid.forEach(p => { if (addToCart(p, true)) n++; });
+      const st = $('#sharedAddStatus');
+      if (st) st.textContent = n ? n + ' foto(s) agregadas a tu carrito.' : 'Esas fotos ya estaban en tu carrito.';
+      showToast(n ? n + ' foto(s) en tu carrito.' : 'Ya estaban en tu carrito.');
+    };
+  } catch (e) {
+    box.innerHTML = `<div class="card"><h3>Fotos que te compartieron</h3><p class="error">No se pudieron cargar: ${esc(e.message)}</p></div>`;
+  }
+}
+// Links profundos: ?carrito=.. (carrito compartido) y ?event=..&photo=..
+// (foto compartida). No se procesan si la URL viene de un regreso de
+// pago de Clip (eso lo maneja handlePayReturn).
+async function handleDeepLinks() {
+  const q = new URLSearchParams(location.search);
+  const carrito = q.get('carrito');
+  if (carrito) {
+    const ids = carrito.split(',').map(s => Number(s)).filter(n => Number.isFinite(n) && n > 0);
+    if (ids.length) { await handleSharedCart(ids); return; }
+  }
+  const eventId = Number(q.get('event') || 0), photoId = Number(q.get('photo') || 0);
+  if (eventId && !payReturnHandled) {
+    await loadEventDetail(eventId);
+    if (photoId) {
+      const p = currentPhotos.find(x => x.id === photoId);
+      if (p) openLightbox(p);
+    }
+  }
+}
+
 // ---- Regreso desde Clip (pago) ----
 // Clip redirige a /api/checkout-return, que verifica con Clip y nos
 // devuelve aquí con ?event=&photo=&paid=1 | pay=pending | pay=failed.
 async function handlePayReturn() {
   const q = new URLSearchParams(location.search);
   const paid = q.get('paid'), pay = q.get('pay');
+  if (paid || pay) payReturnHandled = true;
   const eventId = Number(q.get('event') || 0), photoId = Number(q.get('photo') || 0);
   // Regreso de un carrito: ?view=cart&pid=<payment_request_id>&paid=1 | pay=...
   const view = q.get('view'), pid = q.get('pid');
@@ -507,7 +607,7 @@ async function handlePayReturn() {
     return;
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso (puede ser efectivo en OXXO o confirmación pendiente). En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
+    alert('Tu pago está en proceso. Si elegiste efectivo en OXXO, paga con tu referencia de Clip en cualquier OXXO (tienes 7 días). En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
     if (eventId && photoId) pollPayment(photoId);
     return;
   }
@@ -581,7 +681,9 @@ function renderCartView() {
     `<div class="card"><p>Subtotal: $${t.subtotal} MXN</p><p>Descuento: -$${t.discount} MXN</p><p><strong>Total a pagar: $${t.total} MXN</strong></p>
     ${t.total > CART_MAX_TOTAL ? `<p class="error">El total supera el límite de $${CART_MAX_TOTAL} MXN por pago de Clip. Quita fotos o divide tu compra en dos.</p>` : ''}
     <div class="row"><button id="cartPay" class="primary" ${t.total > CART_MAX_TOTAL ? 'disabled' : ''}>Pagar todo · $${t.total} MXN</button><button id="cartClear" class="secondary">Vaciar carrito</button></div>
-    <p class="muted">Pagas una sola vez con Clip (tarjeta o efectivo). Tus fotos quedan en "Mis fotos".</p></div>`;
+    <div class="row"><button id="cartShare" class="secondary">Compartir carrito</button></div>
+    <p id="cartShareStatus" class="muted"></p>
+    <p class="muted">Pagas una sola vez con Clip: tarjeta o efectivo en OXXO. Si pagas en OXXO, Clip te da una referencia y tienes 7 días para pagar; en cuanto pagues, tus fotos aparecen en "Mis fotos".</p></div>`;
   box.querySelectorAll('[data-rmcart]').forEach(b => b.onclick = () => { removeFromCart(Number(b.dataset.rmcart)); renderCartView(); });
   box.querySelectorAll('[data-rmpackage]').forEach(b => b.onclick = () => {
     const pkg = t.packages[Number(b.dataset.rmpackage)];
@@ -592,6 +694,8 @@ function renderCartView() {
   });
   $('#cartPay').onclick = checkoutCart;
   $('#cartClear').onclick = () => { if (confirm('¿Vaciar el carrito?')) { clearCart(); renderCartView(); } };
+  const cartShareBtn = $('#cartShare');
+  if (cartShareBtn) cartShareBtn.onclick = shareCart;
 }
 
 async function checkoutCart() {
@@ -667,7 +771,7 @@ async function handleCartReturn(pid, paid, pay) {
     }
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso (puede ser efectivo en OXXO o confirmación pendiente). En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
+    alert('Tu pago está en proceso. Si elegiste efectivo en OXXO, paga con tu referencia de Clip en cualquier OXXO (tienes 7 días). En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
     pollCartPayment(pid);
     return;
   }
@@ -701,7 +805,7 @@ function photoCard(p, opts) {
   // "Se borra en N días" y el número baja solo cada día.
   const daysLeft = p.expiresAt ? Math.ceil((new Date(p.expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
   return `<div class="photo">
-    <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">
+    <div class="thumb-wrap"><img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">${freeMode ? '' : `<span class="price-pill">$${price} MXN</span>`}</div>
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
@@ -711,6 +815,67 @@ function photoCard(p, opts) {
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
       ${opts && opts.remove && Number(p.amount || 0) === 0 ? `<button data-remove="${p.id}" class="secondary">Quitar de Mis fotos</button>` : ''}
     </div></div>`;
+}
+
+// Vista ampliada (lightbox): se abre al picar una foto de la cuadrícula
+// o al entrar con un link compartido (/?event=..&photo=..). Aquí vive
+// todo lo de la foto ampliada: qué incluye, detalles (archivo,
+// resolución, tamaño), compartir, y el botón del carrito con su precio.
+function openLightbox(p) {
+  lightboxPhoto = p;
+  trackView('photo', p.id, p.eventId || null);
+  const freeMode = p.freeMode !== false;
+  const price = Number(p.priceMxn || p.price || 0);
+  lightboxFreeMode = freeMode;
+  lightboxPriceMxn = price;
+  $('#lbImg').src = `/api/photo?id=${p.id}&inline=1`;
+  $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
+  $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
+  $('#lbSave').dataset.save = p.id;
+  // En el navegador de Facebook/Instagram: botón para abrir la foto
+  // en una pestaña nueva (ahí se puede guardar con pulsación larga).
+  const lbOpen = $('#lbOpen');
+  lbOpen.style.display = isInAppBrowser() ? '' : 'none';
+  lbOpen.onclick = () => { const u = '/api/photo?id=' + p.id + '&inline=1' + (token ? '&token=' + encodeURIComponent(token) : ''); window.open(u, '_blank'); };
+  // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
+  const lbCart = $('#lbCart');
+  lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
+  lbCart.dataset.cart = p.id;
+  lbCart.disabled = cartHas(p.id);
+  lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito · $' + price + ' MXN';
+  // Lo que incluye + detalles (archivo, dorsal, fotógrafo, evento,
+  // resolución y tamaño cuando se conocen).
+  const inc = $('#lbIncludes');
+  if (inc) inc.innerHTML = `<strong>Lo que incluye</strong><br>✓ Descarga inmediata<br>✓ Alta resolución${freeMode ? '' : '<br>✓ Sin marca de agua'}<br>✓ Uso personal`;
+  const det = $('#lbDetails');
+  if (det) {
+    const detBase = `<strong>Detalles</strong><br>Archivo: ${esc(p.filename || ('onlyclick-foto-' + p.id + '.jpg'))}<br>Dorsal: ${esc((p.bibs || []).join(', ') || 'sin dorsal')}` + (p.photographerName ? `<br>Foto de ${esc(p.photographerName)}` : '') + (p.eventName ? `<br>Evento: ${esc(p.eventName)}` : '');
+    const metaLine = () => {
+      if (p.widthPx && p.heightPx) return `<br>Resolución: ${p.widthPx} × ${p.heightPx} px` + (p.sizeKb ? `<br>Tamaño: ${p.sizeKb >= 1024 ? (p.sizeKb / 1024).toFixed(1) + ' MB' : p.sizeKb + ' KB'}` : '');
+      return '<br>Resolución: —';
+    };
+    det.innerHTML = detBase + metaLine();
+    // Si la foto no trae resolución/tamaño (fotos viejas), se piden una
+    // vez y se rellenan al llegar; si falla, queda el "—".
+    if (!p.widthPx || !p.heightPx || !p.sizeKb) {
+      api('/api/photo-meta?id=' + p.id).then(m => {
+        if (lightboxPhoto !== p) return;
+        if (m.widthPx) p.widthPx = m.widthPx;
+        if (m.heightPx) p.heightPx = m.heightPx;
+        if (m.sizeKb) p.sizeKb = m.sizeKb;
+        det.innerHTML = detBase + metaLine();
+      }).catch(() => {});
+    }
+  }
+  const lbShare = $('#lbShare');
+  if (lbShare) lbShare.onclick = () => sharePhoto(p);
+  // Marca de agua en la vista previa de pago: el servidor ya sirve la
+  // miniatura en vez del original; este texto va encima.
+  $('#lbWm').style.display = (!freeMode && !p.owned) ? 'flex' : 'none';
+  $('#lightbox').style.display = 'flex';
+  lightboxPushed = true;
+  lastBackAtHome = 0;
+  pushNav({ view: currentView, lightbox: p.id });
 }
 
 function bindPhotos(photos) {
@@ -724,36 +889,94 @@ function bindPhotos(photos) {
   });
   document.querySelectorAll('[data-open]').forEach(img => img.onclick = () => {
     const p = photos.find(x => x.id === Number(img.dataset.open));
-    if (!p) return;
-    lightboxPhoto = p;
-    trackView('photo', p.id, p.eventId || null);
-    const freeMode = p.freeMode !== false;
-    const price = Number(p.priceMxn || p.price || 0);
-    lightboxFreeMode = freeMode;
-    lightboxPriceMxn = price;
-    $('#lbImg').src = `/api/photo?id=${p.id}&inline=1`;
-    $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
-    $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
-    $('#lbSave').dataset.save = p.id;
-    // En el navegador de Facebook/Instagram: botón para abrir la foto
-    // en una pestaña nueva (ahí se puede guardar con pulsación larga).
-    const lbOpen = $('#lbOpen');
-    lbOpen.style.display = isInAppBrowser() ? '' : 'none';
-    lbOpen.onclick = () => { const u = '/api/photo?id=' + p.id + '&inline=1' + (token ? '&token=' + encodeURIComponent(token) : ''); window.open(u, '_blank'); };
-    // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
-    const lbCart = $('#lbCart');
-    lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
-    lbCart.dataset.cart = p.id;
-    lbCart.disabled = cartHas(p.id);
-    lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito';
-    // Marca de agua en la vista previa de pago: el servidor ya sirve la
-    // miniatura en vez del original; este texto va encima.
-    $('#lbWm').style.display = (!freeMode && !p.owned) ? 'flex' : 'none';
-    $('#lightbox').style.display = 'flex';
-    lightboxPushed = true;
-    lastBackAtHome = 0;
-    pushNav({ view: currentView, lightbox: p.id });
+    if (p) openLightbox(p);
   });
+}
+
+// ---- Búsqueda: un solo botón, 3 métodos (idea de ZebraSnap) ----
+// Un botón dorado ("Buscar por selfie o dorsal") en el inicio,
+// en el detalle del evento y al final de la página abre este modal con
+// 3 tarjetas grandes. Cada tarjeta entra al flujo que YA existe (no se
+// reconstruye la búsqueda): selfie -> el buscador por selfie, dorsal ->
+// el campo de dorsal, ver todas -> el álbum del evento. Si ya estás en
+// un evento, ese evento viene preseleccionado; si no, el más reciente.
+// (La tercera tarjeta es "Ver todas las fotos": Orlan NO quiso buscar
+// por color de ropa, así que el tercer método es recorrer el álbum.)
+function onEventDetail() { return currentView === 'events' && !!currentEvent && !!((document.getElementById('eventDetail').innerHTML || '').trim()); }
+function searchModalEvent() {
+  if (onEventDetail()) return { id: currentEvent, name: currentEventName || '' };
+  return { id: latestEventId, name: latestEventName || '' };
+}
+function searchTargets() {
+  // Dónde mostrar el avance y los resultados de la búsqueda por selfie:
+  // en el evento si estás ahí, si no en el inicio.
+  if (onEventDetail()) return { statusEl: $('#evFaceStatus'), resultsEl: $('#evGrid'), scope: 'event' };
+  return { statusEl: $('#searchResults'), resultsEl: $('#searchResults'), scope: 'home' };
+}
+function openSearchModal() {
+  const modal = $('#searchModal');
+  if (!modal) return;
+  const ev = searchModalEvent();
+  const cards = $('#searchModalCards');
+  $('#searchModalEvent').textContent = ev.id ? 'Evento: ' + (ev.name || '') : 'Aún no hay eventos publicados.';
+  cards.innerHTML = `
+    <button class="method-card rec" data-method="selfie"><strong>Por selfie<span class="rec-tag">RECOMENDADO</span></strong><p>Sube una foto de tu cara y te encontramos en todas las fotos, en segundos.</p><p class="muted" style="margin-top:4px">Tu selfie nunca se guarda, solo se usa para buscar tus fotos.</p></button>
+    <button class="method-card" data-method="bib"><strong>Por dorsal</strong><p>Escribe tu número de dorsal.</p></button>
+    <button class="method-card" data-method="all"><strong>Ver todas las fotos</strong><p>Recorre el álbum completo del evento.</p></button>`;
+  cards.querySelectorAll('[data-method]').forEach(b => b.onclick = () => {
+    const m = b.dataset.method;
+    closeSearchModal();
+    if (m === 'selfie') {
+      if (!ev.id) { alert('Aún no hay eventos para buscar.'); return; }
+      const t = searchTargets();
+      pickSelfieAndSearch(ev.id, ev.name, t.statusEl, t.resultsEl);
+    } else if (m === 'bib') {
+      const t = searchTargets();
+      const input = t.scope === 'event' ? $('#evBib') : $('#bibInput');
+      if (input) { input.focus(); if (input.scrollIntoView) input.scrollIntoView({ block: 'center' }); }
+    } else if (m === 'all') {
+      if (!ev.id) { showView('events'); return; }
+      loadEventDetail(ev.id, true);
+    }
+  });
+  modal.style.display = 'flex';
+}
+function closeSearchModal() { const m = $('#searchModal'); if (m) m.style.display = 'none'; }
+
+// ---- Sin resultados: 3 salidas en vez de un "no hay fotos" ----
+// Cuando una búsqueda por dorsal o selfie no encuentra nada, se muestra
+// "Todavía no te encontramos" con tres caminos: probar con el dorsal,
+// probar con la selfie, o ver todo (el álbum en el evento, los eventos
+// en el inicio). OnlyClick no tiene panel de filtros: "ajustar filtros"
+// es ver todas las fotos del evento (o todos los eventos).
+function emptySearchHtml(opts) {
+  const what = opts.bib ? 'el dorsal ' + opts.bib : 'tu cara';
+  return `<div class="card"><h3>Todavía no te encontramos</h3>
+  <p class="muted">No hay fotos con ${esc(what)}${opts.eventName ? ' en ' + esc(opts.eventName) : ' en ningún evento'}.</p>
+  <div class="row">
+    <button class="primary" data-empty="bib">Prueba con tu dorsal</button>
+    <button class="primary" data-empty="selfie">Prueba con una selfie</button>
+    <button class="secondary" data-empty="browse">${opts.scope === 'event' ? 'Ver todas las fotos' : 'Ver eventos'}</button>
+  </div></div>`;
+}
+function bindEmptySearch(box, ctx) {
+  box.querySelectorAll('[data-empty]').forEach(b => b.onclick = () => {
+    const kind = b.dataset.empty;
+    if (kind === 'bib') {
+      const input = ctx.scope === 'event' ? document.getElementById('evBib') : document.getElementById('bibInput');
+      if (input) { input.focus(); if (input.scrollIntoView) input.scrollIntoView({ block: 'center' }); }
+    } else if (kind === 'selfie') {
+      if (ctx.eventId) pickSelfieAndSearch(ctx.eventId, ctx.eventName, ctx.statusEl, ctx.resultsEl);
+      else alert('Aún no hay eventos para buscar.');
+    } else if (kind === 'browse') {
+      if (ctx.scope === 'event' && ctx.eventId) loadEventDetail(ctx.eventId);
+      else showView('events');
+    }
+  });
+}
+function emptySearchCtx(eventId, eventName, statusEl, resultsEl) {
+  const scope = (onEventDetail() && currentEvent === eventId) ? 'event' : 'home';
+  return { eventId, eventName, statusEl, resultsEl, scope };
 }
 
 async function searchBib() {
@@ -765,9 +988,13 @@ async function searchBib() {
   try {
     const r = await api('/api/search?bib=' + encodeURIComponent(bib));
     currentPhotos = r.photos;
-    box.innerHTML = r.photos.length
-      ? `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`
-      : `<p>No hay fotos con el dorsal ${esc(bib)} en ningún evento.</p>`;
+    if (r.photos.length) {
+      box.innerHTML = `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`;
+    } else {
+      const ctx = emptySearchCtx(latestEventId, latestEventName, box, box);
+      box.innerHTML = emptySearchHtml({ bib, eventName: latestEventName, scope: ctx.scope });
+      bindEmptySearch(box, ctx);
+    }
     bindPhotos(r.photos);
     trackView('search', null, null, bib);
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -783,6 +1010,17 @@ async function searchBib() {
 // cada llamada y el servidor la usa y la olvida. No hay cobro en Fase 1.
 const FACE_BATCH = 8;
 const FACE_WORKERS = 4;
+
+// Resolución de una imagen ya cargada (para guardar los metadatos de la
+// foto al subirla: la vista ampliada los muestra sin volver a leerla).
+function imageSize(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
 
 // Achica una imagen en el teléfono (el downscale del panel vive dentro
 // de loadPhotographer y aquí no se ve): la selfie se manda en 800px.
@@ -821,9 +1059,13 @@ async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, result
     const list = [...state.matches.values()];
     currentPhotos = list;
     if (!resultsEl) return;
-    resultsEl.innerHTML = list.length
-      ? `<p>${list.length} foto(s) donde sales tú en ${esc(eventName)}:${note ? ' ' + esc(note) : ''}</p><div class="grid">${list.map(p => photoCard(p)).join('')}</div>`
-      : `<p>No encontramos fotos con tu cara en ${esc(eventName)}. Prueba con otra selfie de frente y con buena luz.${note ? ' ' + esc(note) : ''}</p>`;
+    if (list.length) {
+      resultsEl.innerHTML = `<p>${list.length} foto(s) donde sales tú en ${esc(eventName)}:${note ? ' ' + esc(note) : ''}</p><div class="grid">${list.map(p => photoCard(p)).join('')}</div>`;
+    } else {
+      const ctx = emptySearchCtx(eventId, eventName, statusEl, resultsEl);
+      resultsEl.innerHTML = emptySearchHtml({ eventName, scope: ctx.scope }) + '<p class="muted">Tip: prueba con otra selfie de frente y con buena luz.</p>' + (note ? `<p class="muted">${esc(note)}</p>` : '');
+      bindEmptySearch(resultsEl, ctx);
+    }
     bindPhotos(list);
     if (statusEl && statusEl !== resultsEl) statusEl.textContent = '';
   }
@@ -958,6 +1200,7 @@ async function loadEventDetail(eventId, push) {
   if (push) pushNav({ view: 'events', event: eventId });
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
+  currentEventName = r.event.name || '';
   currentTipClabe = r.tipClabe || '';
   currentTipName = r.tipName || '';
   // El precio por foto ya viene del servidor (cada fotógrafo el suyo):
@@ -975,10 +1218,22 @@ async function loadEventDetail(eventId, push) {
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="# de dorsal"><button id="evBibBtn" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Buscar</button></div>
     <div class="row"><button id="evSelfieBtn" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="10.5" r="3.2"/><path d="M10.6 10.3h.01M13.4 10.3h.01"/><path d="M10.6 12.3c.4.5.9.7 1.4.7s1-.2 1.4-.7"/><path d="M5.5 19.5c.8-2.3 3.4-3.5 6.5-3.5s5.7 1.2 6.5 3.5"/></svg>Busca tu foto por selfie en este evento</button></div>
+    <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
+    ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   trackView('event', null, eventId);
+  const notifyBtn = $('#notifyBtn');
+  if (notifyBtn) notifyBtn.onclick = async () => {
+    const email = ($('#notifyEmail').value || '').trim();
+    const st = $('#notifyStatus');
+    if (st) st.textContent = 'Guardando…';
+    try {
+      const res = await api('/api/subscribe-photo-alert', { method: 'POST', body: JSON.stringify({ eventId, email }) });
+      if (st) st.textContent = res.hasPhotos ? 'Este evento ya tiene fotos, búscalas arriba.' : 'Listo. Te avisamos a ' + email + ' en cuanto haya fotos.';
+    } catch (e) { if (st) st.textContent = e.message; }
+  };
   const joinBtn = $('#joinBtn');
   if (joinBtn) joinBtn.onclick = async () => {
     try {
@@ -991,7 +1246,13 @@ async function loadEventDetail(eventId, push) {
     const s = await api('/api/search?bib=' + encodeURIComponent(bib) + '&eventId=' + eventId);
     currentPhotos = s.photos;
     s.photos.forEach(p => { p.freeMode = r.event.freeMode; });
-    $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos con ese dorsal en este evento.</p>';
+    if (s.photos.length) {
+      $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('');
+    } else {
+      const ctx = emptySearchCtx(eventId, r.event.name, $('#evFaceStatus'), $('#evGrid'));
+      $('#evGrid').innerHTML = emptySearchHtml({ bib, eventName: r.event.name, scope: ctx.scope });
+      bindEmptySearch($('#evGrid'), ctx);
+    }
     bindPhotos(s.photos);
     trackView('search', null, eventId, bib);
   };
@@ -1417,13 +1678,19 @@ async function loadPhotographer() {
         // si falla, la subida sigue igual y la galería usa la foto completa.
         const small = await downscale(dataUrl, 1600);
         const b64 = small.split(',')[1];
+        // Metadatos de la foto para la vista ampliada (resolución y
+        // tamaño): se guardan con la foto; si no se pueden leer, la
+        // subida sigue igual y la vista ampliada los calcula después.
+        let widthPx = null, heightPx = null;
+        try { const dims = await imageSize(small); widthPx = dims.w; heightPx = dims.h; } catch (_) {}
+        const sizeKb = Math.max(1, Math.round((b64.length * 3 / 4) / 1024));
         let thumbB64 = '';
         try {
           const thumb = await downscale(dataUrl, 400, 0.8);
           if (thumb && thumb.startsWith('data:image/jpeg') && thumb.length < small.length) thumbB64 = thumb.split(',')[1];
         } catch (_) {}
         const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
-        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: Number($('#upPrice').value || 0) }) });
+        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: Number($('#upPrice').value || 0), widthPx, heightPx, sizeKb }) });
         n++;
       } catch (_) { fails++; }
       $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
@@ -1689,6 +1956,12 @@ window.addEventListener('popstate', (e) => {
 });
 
 document.querySelectorAll('button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
+// Modal de búsqueda: un solo botón en inicio, evento y cierre de página.
+document.addEventListener('click', (e) => { if (e.target.closest('.search-all-btn')) openSearchModal(); });
+const searchModalClose = $('#searchModalClose');
+if (searchModalClose) searchModalClose.onclick = closeSearchModal;
+const searchModalEl = $('#searchModal');
+if (searchModalEl) searchModalEl.addEventListener('click', (e) => { if (e.target === searchModalEl) closeSearchModal(); });
 const notifPublishBtn = $('#notifPublish');
 if (notifPublishBtn) notifPublishBtn.onclick = publishAnnouncement;
 $('#brandHome').onclick = () => showView('home');
@@ -1786,6 +2059,7 @@ if (resetToken) {
 refreshAuth();
 loadHome();
 handlePayReturn();
+handleDeepLinks();
 updateCartFab();
 if (resetToken) showView('account');
 checkInvite();
