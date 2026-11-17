@@ -18,7 +18,7 @@ const ROUTES = {
   'auth-register': 'register', 'auth-login': 'login', 'auth-status': 'auth-status',
   'password-forgot': 'password-forgot', 'password-reset': 'password-reset',
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
-  'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
+  'photo-upload': 'upload-photo', 'backfill-thumbs': 'backfill-thumbs', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
   'my-photos': 'my-photos', 'remove-download': 'remove-download', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
   'face-search': 'face-search',
