@@ -898,7 +898,9 @@ function bindPhotos(photos) {
 // en el detalle del evento y al final de la página abre este modal con
 // 3 tarjetas grandes. Cada tarjeta entra al flujo que YA existe (no se
 // reconstruye la búsqueda): selfie -> el buscador por selfie, dorsal ->
-// el campo de dorsal, ver todas -> el álbum del evento. Si ya estás en
+// un formulario dentro del mismo modal (Orlan 2026-11-17: que NO queden
+// los botones viejos de dorsal/selfie por separado, solo el botón
+// grande), ver todas -> el álbum del evento. Si ya estás en
 // un evento, ese evento viene preseleccionado; si no, el más reciente.
 // (La tercera tarjeta es "Ver todas las fotos": Orlan NO quiso buscar
 // por color de ropa, así que el tercer método es recorrer el álbum.)
@@ -913,32 +915,51 @@ function searchTargets() {
   if (onEventDetail()) return { statusEl: $('#evFaceStatus'), resultsEl: $('#evGrid'), scope: 'event' };
   return { statusEl: $('#searchResults'), resultsEl: $('#searchResults'), scope: 'home' };
 }
-function openSearchModal() {
+function showModalCards() {
+  const cards = $('#searchModalCards'), bib = $('#searchModalBib');
+  if (cards) cards.style.display = '';
+  if (bib) bib.style.display = 'none';
+}
+function showModalBib() {
+  const cards = $('#searchModalCards'), bib = $('#searchModalBib');
+  if (cards) cards.style.display = 'none';
+  if (bib) bib.style.display = '';
+  const input = $('#modalBibInput');
+  if (input) input.focus();
+}
+function openSearchModal(pref) {
   const modal = $('#searchModal');
   if (!modal) return;
   const ev = searchModalEvent();
   const cards = $('#searchModalCards');
   $('#searchModalEvent').textContent = ev.id ? 'Evento: ' + (ev.name || '') : 'Aún no hay eventos publicados.';
+  showModalCards();
   cards.innerHTML = `
     <button class="method-card rec" data-method="selfie"><strong>Por selfie<span class="rec-tag">RECOMENDADO</span></strong><p>Sube una foto de tu cara y te encontramos en todas las fotos, en segundos.</p><p class="muted" style="margin-top:4px">Tu selfie nunca se guarda, solo se usa para buscar tus fotos.</p></button>
     <button class="method-card" data-method="bib"><strong>Por dorsal</strong><p>Escribe tu número de dorsal.</p></button>
     <button class="method-card" data-method="all"><strong>Ver todas las fotos</strong><p>Recorre el álbum completo del evento.</p></button>`;
   cards.querySelectorAll('[data-method]').forEach(b => b.onclick = () => {
     const m = b.dataset.method;
-    closeSearchModal();
     if (m === 'selfie') {
+      closeSearchModal();
       if (!ev.id) { alert('Aún no hay eventos para buscar.'); return; }
       const t = searchTargets();
       pickSelfieAndSearch(ev.id, ev.name, t.statusEl, t.resultsEl);
     } else if (m === 'bib') {
-      const t = searchTargets();
-      const input = t.scope === 'event' ? $('#evBib') : $('#bibInput');
-      if (input) { input.focus(); if (input.scrollIntoView) input.scrollIntoView({ block: 'center' }); }
+      showModalBib();
     } else if (m === 'all') {
+      closeSearchModal();
       if (!ev.id) { showView('events'); return; }
       loadEventDetail(ev.id, true);
     }
   });
+  const bibBtn = $('#modalBibBtn');
+  if (bibBtn) bibBtn.onclick = () => { const v = $('#modalBibInput') ? $('#modalBibInput').value : ''; runBibSearch(v); };
+  const bibInput = $('#modalBibInput');
+  if (bibInput) bibInput.onkeydown = (e) => { if (e.key === 'Enter') runBibSearch(bibInput.value); };
+  const bibBack = $('#modalBibBack');
+  if (bibBack) bibBack.onclick = showModalCards;
+  if (pref === 'bib') showModalBib();
   modal.style.display = 'flex';
 }
 function closeSearchModal() { const m = $('#searchModal'); if (m) m.style.display = 'none'; }
@@ -963,8 +984,9 @@ function bindEmptySearch(box, ctx) {
   box.querySelectorAll('[data-empty]').forEach(b => b.onclick = () => {
     const kind = b.dataset.empty;
     if (kind === 'bib') {
-      const input = ctx.scope === 'event' ? document.getElementById('evBib') : document.getElementById('bibInput');
-      if (input) { input.focus(); if (input.scrollIntoView) input.scrollIntoView({ block: 'center' }); }
+      // Abrir el modal ya en el formulario de dorsal (ya no hay campo
+      // de dorsal fuera del modal).
+      openSearchModal('bib');
     } else if (kind === 'selfie') {
       if (ctx.eventId) pickSelfieAndSearch(ctx.eventId, ctx.eventName, ctx.statusEl, ctx.resultsEl);
       else alert('Aún no hay eventos para buscar.');
@@ -979,24 +1001,32 @@ function emptySearchCtx(eventId, eventName, statusEl, resultsEl) {
   return { eventId, eventName, statusEl, resultsEl, scope };
 }
 
-async function searchBib() {
-  const bib = $('#bibInput').value.trim();
+// Buscar por dorsal desde el formulario del modal. En el inicio busca
+// en todos los eventos; dentro de un evento, solo en ese evento. Los
+// resultados se muestran donde corresponde (inicio o detalle) y el modal
+// se cierra al buscar.
+async function runBibSearch(bib) {
+  bib = String(bib || '').trim();
   if (!bib) return;
-  const box = $('#searchResults');
+  closeSearchModal();
+  const ev = searchModalEvent();
+  const t = searchTargets();
+  const box = t.resultsEl;
+  if (!box) return;
   if (bib.includes('@')) { box.innerHTML = '<p>Escribe solo tu número de dorsal, sin correo.</p>'; return; }
   box.innerHTML = '<p>Buscando…</p>';
   try {
-    const r = await api('/api/search?bib=' + encodeURIComponent(bib));
+    const r = await api('/api/search?bib=' + encodeURIComponent(bib) + (ev.id ? '&eventId=' + ev.id : ''));
     currentPhotos = r.photos;
     if (r.photos.length) {
       box.innerHTML = `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`;
     } else {
-      const ctx = emptySearchCtx(latestEventId, latestEventName, box, box);
-      box.innerHTML = emptySearchHtml({ bib, eventName: latestEventName, scope: ctx.scope });
+      const ctx = emptySearchCtx(ev.id || latestEventId, ev.name || latestEventName, t.statusEl, box);
+      box.innerHTML = emptySearchHtml({ bib, eventName: ev.name || latestEventName, scope: ctx.scope });
       bindEmptySearch(box, ctx);
     }
     bindPhotos(r.photos);
-    trackView('search', null, null, bib);
+    trackView('search', null, ev.id || null, bib);
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
@@ -1216,8 +1246,6 @@ async function loadEventDetail(eventId, push) {
       : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="1" max="5000" value="20" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div><p id="joinStatus" class="muted"></p></div>`) : ''}
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
-    <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="# de dorsal"><button id="evBibBtn" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Buscar</button></div>
-    <div class="row"><button id="evSelfieBtn" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="10.5" r="3.2"/><path d="M10.6 10.3h.01M13.4 10.3h.01"/><path d="M10.6 12.3c.4.5.9.7 1.4.7s1-.2 1.4-.7"/><path d="M5.5 19.5c.8-2.3 3.4-3.5 6.5-3.5s5.7 1.2 6.5 3.5"/></svg>Busca tu foto por selfie en este evento</button></div>
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
     ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
@@ -1241,23 +1269,6 @@ async function loadEventDetail(eventId, push) {
       loadEventDetail(eventId);
     } catch (e) { const st = $('#joinStatus'); if (st) st.textContent = e.message; }
   };
-  $('#evBibBtn').onclick = async () => {
-    const bib = $('#evBib').value.trim(); if (!bib) return;
-    const s = await api('/api/search?bib=' + encodeURIComponent(bib) + '&eventId=' + eventId);
-    currentPhotos = s.photos;
-    s.photos.forEach(p => { p.freeMode = r.event.freeMode; });
-    if (s.photos.length) {
-      $('#evGrid').innerHTML = s.photos.map(p => photoCard(p)).join('');
-    } else {
-      const ctx = emptySearchCtx(eventId, r.event.name, $('#evFaceStatus'), $('#evGrid'));
-      $('#evGrid').innerHTML = emptySearchHtml({ bib, eventName: r.event.name, scope: ctx.scope });
-      bindEmptySearch($('#evGrid'), ctx);
-    }
-    bindPhotos(s.photos);
-    trackView('search', null, eventId, bib);
-  };
-  const evSelfieBtn = $('#evSelfieBtn');
-  if (evSelfieBtn) evSelfieBtn.onclick = () => pickSelfieAndSearch(eventId, r.event.name, $('#evFaceStatus'), $('#evGrid'));
 }
 
 async function loadMyPhotos() {
@@ -1967,10 +1978,6 @@ if (notifPublishBtn) notifPublishBtn.onclick = publishAnnouncement;
 $('#brandHome').onclick = () => showView('home');
 $('#cartFab').onclick = () => showView('cart');
 $('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
-$('#bibSearch').onclick = searchBib;
-const selfieSearchBtn = $('#selfieSearch');
-if (selfieSearchBtn) selfieSearchBtn.onclick = () => pickSelfieAndSearch(latestEventId, latestEventName, $('#searchResults'), $('#searchResults'));
-$('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
 $('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
 // Si la URL trae ?invite=... (link de invitación aprobado por Orlan):
