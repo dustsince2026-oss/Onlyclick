@@ -509,6 +509,16 @@ async function setTip(store, user, body) {
   requirePhotographer(user);
   const clabe = String(body.clabe || '').replace(/[\s-]/g, '');
   if (clabe && !/^\d{18}$/.test(clabe)) throw err(400, 'La CLABE debe tener 18 dígitos.');
+  if (clabe) {
+    // Bloqueo: si TODOS sus álbumes son de pago, la cooperación voluntaria
+    // está desactivada (el mensaje de propina solo sale en fotos gratis).
+    // Sin álbumes todavía, se permite guardarla para cuando cree uno gratis.
+    // Quitar la CLABE (vacía) siempre se permite.
+    const events = await store.listEvents();
+    const joined = new Set(await store.listJoinedEventIds(user.id).catch(() => []));
+    const mine = events.filter(e => e.photographerId === user.id || joined.has(e.id));
+    if (mine.length && !mine.some(e => e.freeMode)) throw err(400, 'La cooperación voluntaria está desactivada porque tus álbumes son de pago.');
+  }
   const updated = await store.setTipClabe(user.id, clabe);
   return { status: 200, data: { tipClabe: updated ? (updated.tipClabe || '') : clabe } };
 }
