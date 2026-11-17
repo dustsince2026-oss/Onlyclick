@@ -89,6 +89,10 @@ const fileStore = {
     const row = { id, eventId: p.eventId, filename: p.filename, mimeType: p.mimeType, bibs: p.bibs || [], price: p.price || 0, photographerId: p.photographerId != null ? Number(p.photographerId) : null, filePath, thumbPath, createdAt: new Date().toISOString() };
     db.photos.push(row); saveDb(db); return row;
   },
+  // Backfill de miniaturas (fotos viejas sin thumbPath): guarda el archivo
+  // de la miniatura y apunta la fila a él. Misma ruta que createPhoto.
+  async saveThumbBuffer(photoId, buffer) { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); const thumbPath = path.join(UPLOAD_DIR, `${Number(photoId)}-thumb.jpg`); fs.writeFileSync(thumbPath, buffer); return thumbPath; },
+  async setPhotoThumb(id, thumbPath) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; p.thumbPath = thumbPath || ''; saveDb(db); return { ...p }; },
   async updatePhoto(id, patch) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; Object.assign(p, patch); saveDb(db); return p; },
   async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
   async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
@@ -363,6 +367,19 @@ const supabaseStore = {
         try { await supabase().storage.from('photos').remove([thumbPath]); } catch (_) {}
       }
     }
+    return mapPhoto(data);
+  },
+  // Backfill de miniaturas (fotos viejas sin thumb_path): sube el archivo
+  // a thumbs/ y apunta la fila a él. Misma ruta que createPhoto.
+  async saveThumbBuffer(photoId, buffer) {
+    const thumbPath = `thumbs/${Number(photoId)}-${crypto.randomBytes(6).toString('hex')}.jpg`;
+    const { error } = await supabase().storage.from('photos').upload(thumbPath, buffer, { contentType: 'image/jpeg', upsert: true });
+    if (error) throw new Error('No se pudo subir la miniatura: ' + error.message);
+    return thumbPath;
+  },
+  async setPhotoThumb(id, thumbPath) {
+    const { data, error } = await supabase().from('photos').update({ thumb_path: thumbPath || '' }).eq('id', Number(id)).select().single();
+    if (error) throw new Error(error.message);
     return mapPhoto(data);
   },
   async updatePhoto(id, patch) {
