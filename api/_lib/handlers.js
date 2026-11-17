@@ -723,6 +723,110 @@ async function readBib(store, user, body) {
   return { status: 200, data: { ok: false, reason: 'ia-error', status: lastErr.status, detail: lastErr.detail } };
 }
 
+// Llama a Gemini con varias imágenes y pide JSON. Prueba los modelos en
+// orden (3.8 -> 3.6 -> 3.5-lite) y solo reintenta con otro modelo si es
+// saturación (503) o límite (429). Igual que readBib, pero genérico para
+// que lo use la búsqueda por selfie (readBib se deja como está).
+async function geminiVisionJson(key, parts) {
+  const MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+  let lastErr = null;
+  for (const model of MODELS) {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const text = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text) || '';
+      return { ok: true, text };
+    }
+    let detail = '';
+    try { const ej = await res.json(); detail = String((ej.error && ej.error.message) || '').slice(0, 120); } catch (_) {}
+    lastErr = { status: res.status, detail };
+    if (res.status !== 503 && res.status !== 429) break;
+  }
+  return { ok: false, status: lastErr.status, detail: lastErr.detail };
+}
+
+// Búsqueda por selfie (Fase 1, reconocimiento facial con Gemini).
+// POST { eventId, selfieBase64, mimeType, offset, limit }.
+// Compara LA SELFIE contra UN LOTE de fotos del evento (máx. 8 por
+// llamada) y devuelve solo las fotos donde aparece la misma persona.
+// El cliente va pidiendo lotes seguidos (offset/limit) hasta terminar el
+// evento, con varias llamadas en paralelo, y muestra el avance. Así
+// ninguna llamada tarda más de ~10 s (límite de Vercel en el plan gratis).
+// La selfie NO se guarda: solo viaja en el cuerpo de cada llamada y el
+// servidor la usa y la olvida. Pública como la búsqueda por dorsal: para
+// descargar una foto de pago sigue haciendo falta sesión y compra.
+// Fotos sin cara visible simplemente no coinciden (no es un error).
+// Sin GEMINI_API_KEY devuelve { ok:false, reason:'no-key' }.
+async function faceSearch(store, user, body) {
+  const key = (process.env.GEMINI_API_KEY || '').replace(/[^\x20-\x7E]/g, '').trim();
+  if (!key) return { status: 200, data: { ok: false, reason: 'no-key' } };
+  const eventId = Number(body.eventId);
+  if (!Number.isInteger(eventId)) throw err(400, 'Falta el evento.');
+  await expireOldEvents(store);
+  const ev = await store.getEvent(eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const exp = eventExpiresAt(ev);
+  if (exp && new Date(exp).getTime() <= Date.now()) throw err(404, 'Este álbum ya caducó.');
+  const selfieBase64 = String(body.selfieBase64 || '');
+  if (!selfieBase64) throw err(400, 'Falta tu selfie.');
+  const selfieBuf = Buffer.from(selfieBase64, 'base64');
+  if (!selfieBuf.length || selfieBuf.length > FACE_SELFIE_MAX_BYTES) throw err(400, 'La selfie está vacía o pesa más de 2 MB.');
+  const selfieMime = String(body.mimeType || 'image/jpeg');
+  if (!selfieMime.startsWith('image/')) throw err(400, 'La selfie no es una imagen.');
+  const offset = Math.max(0, Number(body.offset) || 0);
+  const limit = Math.min(FACE_BATCH_MAX, Math.max(1, Number(body.limit) || FACE_BATCH_MAX));
+  const all = await store.listPhotos(eventId);
+  const total = Math.min(all.length, FACE_SEARCH_MAX_PHOTOS);
+  const batch = all.slice(offset, Math.min(offset + limit, total));
+  // Las fotos se comparan por su miniatura (400px, ~30-50 KB) cuando
+  // existe: gasta menos tokens y es más rápida. Sin miniatura (fotos
+  // viejas) se usa la foto completa. Si no se puede leer una foto, se
+  // salta sin romper el lote.
+  const candidates = (await Promise.all(batch.map(async p => {
+    let bytes = null; let mime = p.mimeType || 'image/jpeg';
+    try { bytes = await store.readThumbBytes(p); if (bytes) mime = 'image/jpeg'; } catch (_) {}
+    if (!bytes) { try { bytes = await store.readPhotoBytes(p); } catch (_) {} }
+    return bytes && bytes.length ? { photo: p, bytes, mime } : null;
+  }))).filter(Boolean);
+  if (!candidates.length) {
+    return { status: 200, data: { ok: true, matches: [], total, checked: batch.length, nextOffset: offset + batch.length, done: offset + batch.length >= total } };
+  }
+  const prompt = 'La primera imagen es una selfie de una persona. Las siguientes ' + candidates.length + ' imágenes son fotos de una carrera, en orden. Dime en cuáles de esas fotos aparece LA MISMA persona de la selfie (mismo rostro). Compara la cara: rasgos, pelo, forma. Si en una foto no se ve ninguna cara clara, o la cara no es la misma persona, NO la incluyas. Responde solo con este JSON: {"matches": [0, 2]} con los índices (0 = la primera foto después de la selfie) de las fotos donde aparece la misma persona. Si ninguna coincide, responde {"matches": []}.';
+  const parts = [{ text: prompt }, { inlineData: { mimeType: selfieMime, data: selfieBuf.toString('base64') } }];
+  for (const c of candidates) parts.push({ inlineData: { mimeType: c.mime, data: c.bytes.toString('base64') } });
+  const r = await geminiVisionJson(key, parts);
+  if (!r.ok) return { status: 200, data: { ok: false, reason: 'ia-error', status: r.status, detail: r.detail } };
+  let idxs = [];
+  try {
+    const parsed = JSON.parse(String(r.text || '').replace(/```json|```/g, '').trim());
+    const raw = parsed && Array.isArray(parsed.matches) ? parsed.matches : [];
+    idxs = [...new Set(raw.map(v => Number(v)).filter(v => Number.isInteger(v) && v >= 0 && v < candidates.length))];
+  } catch (_) {
+    // Si la IA no devolvió JSON limpio, se rescatan los índices que sí
+    // vengan como números en el texto (mismo rescate que readBib).
+    idxs = [...new Set((String(r.text || '').match(/\d+/g) || []).map(v => Number(v)).filter(v => Number.isInteger(v) && v >= 0 && v < candidates.length))];
+  }
+  // Las coincidencias se devuelven con la misma forma que la búsqueda por
+  // dorsal (searchBib): autor, precio por foto, nombre del evento, modo
+  // gratis/pago y si ya es tuya (cuando hay sesión).
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  const partsRows = await store.listParticipants(ev.id).catch(() => []);
+  const priceByPh = new Map(partsRows.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
+  const owned = new Set();
+  if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
+  const matches = idxs.map(i => {
+    const p = candidates[i].photo;
+    const pid = photoOwnerId(p, ev);
+    const u = pid != null ? users.get(pid) : null;
+    return { ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev.name, freeMode: ev.freeMode, priceMxn: (pid != null && priceByPh.has(pid)) ? priceByPh.get(pid) : eventPrice(ev), tipClabe: u ? (u.tipClabe || '') : '', tipName: displayNameFor(u), owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined };
+  });
+  return { status: 200, data: { ok: true, matches, total, checked: batch.length, nextOffset: offset + batch.length, done: offset + batch.length >= total } };
+}
+
 // Devuelve los bytes de la foto para la descarga real.
 // Ruta de mismo origen: /api/photo?id=123 — en Chrome Android esto dispara
 // el gestor de descargas con Content-Disposition: attachment.
@@ -813,6 +917,17 @@ const CART_MAX_TOTAL = 5000; // límite de Clip por transacción (MXN)
 const EVENT_EXPIRY_DAYS = 60;
 const EXPIRY_WARN_DAYS = 15;
 const CART_MAX_ITEMS = 100; // máximo de fotos por carrito
+// ---- Búsqueda por selfie, Fase 1 (Orlan, 2026-11-17) ----
+// La selfie se compara contra las fotos del evento en LOTES pequeños
+// (FACE_BATCH_MAX por llamada a Gemini). El cliente pide los lotes
+// seguidos, varios en paralelo, y muestra el avance. Así ninguna llamada
+// tarda más de ~10 s (límite de Vercel en el plan gratis) y la búsqueda
+// completa de un evento grande tarda ~1-3 min. La selfie NO se guarda:
+// solo viaja en el cuerpo de cada llamada y el servidor la usa y la
+// olvida. Sin cobro en Fase 1 (los rostros pre-calculados son Fase 2).
+const FACE_BATCH_MAX = 8; // fotos del evento por llamada a Gemini
+const FACE_SEARCH_MAX_PHOTOS = 1000; // tope de fotos por búsqueda
+const FACE_SELFIE_MAX_BYTES = 2 * 1024 * 1024; // selfie máx. 2 MB decodificada
 const SINGLE_TIERS = [
   { from: 1, to: 3, discount: 0 },
   { from: 4, to: 5, discount: 0.20 },
@@ -1685,6 +1800,7 @@ async function dispatch(route, req) {
     case 'upload-cover': return uploadCover(store, user, b);
     case 'cover-file': return coverFile(store, user, req.query.eventId);
     case 'read-bib': return readBib(store, user, b);
+    case 'face-search': return faceSearch(store, user, b);
     case 'checkout-create': return createCheckout(store, user, b);
     case 'checkout-create-cart': return createCartCheckout(store, user, b);
     case 'checkout-return': return checkoutReturn(store, req.query);
