@@ -1185,34 +1185,48 @@ function bindEventCards() {
   });
 }
 
-// Inicio (público, sin login): hero con la portada y los datos reales del
-// evento más reciente + tarjetas de eventos recientes.
+// Inicio (público, sin login): tarjetas de eventos recientes + cinta de
+// fotos del evento más reciente. El titular del hero es estático (HTML);
+// el evento más reciente solo se usa para la cinta y como referencia.
 async function loadHome() {
   try {
     const r = await api('/api/events');
     const evs = r.events || [];
-    const hero = $('#hero');
     if (evs.length) {
       const ev = [...evs].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
       latestEventId = ev.id; latestEventName = ev.name;
-      // Título genérico: la búsqueda del hero es global (todos los eventos),
-      // el evento más reciente solo se destaca como referencia.
-      $('#heroTitle').textContent = 'Encuentra tus fotos';
-      $('#heroSub').textContent = 'Evento reciente: ' + ev.name + ' · ' + (ev.photoCount || 0) + ' fotos listas' + (ev.location ? ' · ' + ev.location : '') + (ev.eventDate ? ' · ' + ev.eventDate : '');
-      hero.style.backgroundImage = ev.coverPath
-        ? 'linear-gradient(rgba(11,11,14,.60), rgba(11,11,14,.88)), url("/api/cover?eventId=' + ev.id + '")'
-        : '';
     } else {
       latestEventId = null; latestEventName = '';
-      $('#heroTitle').textContent = 'Encuentra tus fotos';
-      $('#heroSub').textContent = 'Aún no hay eventos publicados.';
-      hero.style.backgroundImage = '';
     }
     $('#homeEvents').innerHTML = evs.length ? evs.map(e => eventCard(e)).join('') : '<p class="muted">Aún no hay eventos publicados.</p>';
     bindEventCards();
+    buildPhotoStrip(evs);
   } catch (e) {
-    $('#heroSub').textContent = 'No se pudieron cargar los eventos.';
+    $('#homeEvents').innerHTML = '<p class="muted">No se pudieron cargar los eventos.</p>';
   }
+}
+
+// Cinta de fotos del inicio: toma fotos repartidas por todo el evento más
+// reciente (principio, medio y final), las revuelve y las hace correr en
+// bucle. Sin recorte: cada foto se muestra con su proporción natural para
+// que no se corte la cabeza. Si no hay fotos, la cinta queda vacía.
+async function buildPhotoStrip(evs) {
+  const box = $('#photoStrip');
+  if (!box) return;
+  try {
+    const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0);
+    if (!withPhotos.length) return;
+    const ev = [...withPhotos].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
+    const r = await api('/api/event-get?eventId=' + ev.id);
+    const photos = r.photos || [];
+    if (!photos.length) return;
+    const n = Math.min(10, photos.length);
+    const picked = [];
+    for (let i = 0; i < n; i++) picked.push(photos[Math.floor(i * photos.length / n)]);
+    for (let i = picked.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = picked[i]; picked[i] = picked[j]; picked[j] = t; }
+    const imgs = picked.map(p => '<img src="/api/photo?id=' + p.id + '&thumb=1&inline=1" alt="Foto del evento" loading="lazy">').join('');
+    box.innerHTML = '<div class="marquee"><div class="marquee-track">' + imgs + imgs + '</div></div>';
+  } catch (e) { /* sin cinta si falla */ }
 }
 
 async function loadEvents() {
@@ -1968,7 +1982,7 @@ window.addEventListener('popstate', (e) => {
 
 document.querySelectorAll('button[data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
 // Modal de búsqueda: un solo botón en inicio, evento y cierre de página.
-document.addEventListener('click', (e) => { if (e.target.closest('.search-all-btn')) openSearchModal(); });
+document.addEventListener('click', (e) => { if (e.target.closest('.search-all-btn')) openSearchModal(); if (e.target.closest('#exploreEventsBtn')) showView('events'); });
 const searchModalClose = $('#searchModalClose');
 if (searchModalClose) searchModalClose.onclick = closeSearchModal;
 const searchModalEl = $('#searchModal');
