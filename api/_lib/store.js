@@ -93,6 +93,9 @@ const fileStore = {
   async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
   async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
   async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId)); },
+  // Quita de "Mis fotos" solo el registro de descarga de ese usuario y esa
+  // foto (la foto del álbum NO se borra). Devuelve cuántos se quitaron.
+  async removeDownloadsByUserPhoto(userId, photoId) { const db = loadDb(); const before = db.downloads.length; db.downloads = db.downloads.filter(d => !(d.userId === Number(userId) && d.photoId === Number(photoId))); const removed = before - db.downloads.length; if (removed) saveDb(db); return removed; },
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
   // ---- Pagos a fotógrafos ----
   // Un payout = un pago que Orlan YA envió. Sus descargas quedan ligadas
@@ -369,6 +372,7 @@ const supabaseStore = {
   async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} } await supabase().from('photos').delete().eq('id', id); },
   async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
   async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
+  async removeDownloadsByUserPhoto(userId, photoId) { const { data } = await supabase().from('downloads').delete().eq('user_id', userId).eq('photo_id', photoId).select('id'); return (data || []).length; },
   async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
   // ---- Pagos a fotógrafos ----
   async createPayout(p) { const { data, error } = await supabase().from('payouts').insert({ photographer_id: p.photographerId, amount_mxn: p.amountMxn, orlan_fee_mxn: p.orlanFeeMxn, clip_fee_mxn: p.clipFeeMxn, status: p.status || 'pending', paid_at: p.paidAt || null }).select().single(); if (error) throw new Error(error.message); return mapPayout(data); },

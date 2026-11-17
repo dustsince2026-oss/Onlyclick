@@ -523,6 +523,23 @@ async function setTip(store, user, body) {
   return { status: 200, data: { tipClabe: updated ? (updated.tipClabe || '') : clabe } };
 }
 
+// Quitar una foto de "Mis fotos": solo borra el registro de descarga de
+// ese usuario y esa foto, así ya no sale en su lista. La foto del álbum
+// NO se borra (sigue en el evento y otros la pueden comprar).
+// Solo se pueden quitar las fotos GRATIS (amount 0): si se borrara el
+// registro de una foto de pago, el comprador perdería el acceso a una
+// foto que ya pagó y tendría que volver a pagarla.
+async function removeDownload(store, user, body) {
+  requireUser(user);
+  const photoId = Number(body.photoId);
+  if (!photoId) throw err(400, 'Falta la foto.');
+  const mine = (await store.listDownloadsByUser(user.id)).filter(d => d.photoId === photoId);
+  if (!mine.length) throw err(404, 'Esa foto no está en tus fotos.');
+  if (mine.some(d => Number(d.amount || 0) > 0)) throw err(400, 'Esa foto es de pago y no se puede quitar de Mis fotos: si se quitara, perderías el acceso a una foto que ya pagaste.');
+  await store.removeDownloadsByUserPhoto(user.id, photoId);
+  return { status: 200, data: { ok: true } };
+}
+
 async function updatePhoto(store, user, body) {
   requirePhotographer(user);
   const p = await store.getPhoto(body.photoId);
@@ -1575,6 +1592,7 @@ async function dispatch(route, req) {
     // descargar sin pagar. El cobro es POST /api/checkout-create.
     case 'purchase': throw err(410, 'El pago ahora es con Clip. Usa el botón "Pagar y descargar".');
     case 'my-photos': return listPurchases(store, user);
+    case 'remove-download': return removeDownload(store, user, b);
     case 'sales': return listSales(store, user);
     case 'track-view': return trackView(store, user, b);
     case 'stats': return listStats(store, user);
