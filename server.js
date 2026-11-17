@@ -21,6 +21,7 @@ const ROUTES = {
   'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
   'my-photos': 'my-photos', 'remove-download': 'remove-download', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
+  'face-search': 'face-search',
   'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
   'track-view': 'track-view', 'stats': 'stats',
   'approve-photographer': 'approve-photographer', 'list-photographers': 'list-photographers',
