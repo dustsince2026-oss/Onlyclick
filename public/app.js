@@ -244,6 +244,61 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
+// sin saturar la conexión ni la llave de IA.
+async function runPool(items, n, fn) {
+  let i = 0;
+  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const item = items[i++]; await fn(item); }
+  });
+  await Promise.all(workers);
+}
+
+// Lee con IA los dorsales de las fotos que no tienen, de 3 en 3, y guarda
+// cada una en cuanto queda. onProgress(done,total,ok,none,err) se llama
+// con el avance; onPhoto(p, res, list, errText) por cada foto ('ok' /
+// 'none' / 'err'). Si se cierra la página, lo ya guardado queda y al
+// darle otra vez continúa con las que faltan. Devuelve el resumen.
+async function batchReadBibs(photos, onProgress, onPhoto) {
+  const targets = (photos || []).filter(p => !(p.bibs || []).length);
+  let done = 0, ok = 0, none = 0, err = 0;
+  const report = () => { if (onProgress) onProgress(done, targets.length, ok, none, err); };
+  report();
+  await runPool(targets, 3, async (p) => {
+    let res = 'err', list = [], errText = '';
+    try {
+      const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: p.id }) });
+      list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
+      if (r2.ok && list.length) {
+        await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: p.id, bibs: list }) });
+        res = 'ok'; ok++;
+      } else if (r2.ok) { res = 'none'; none++; }
+      else { errText = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : ''); err++; }
+    } catch (e) { errText = e.message || 'No se pudo releer'; err++; }
+    if (onPhoto) onPhoto(p, res, list, errText);
+    done++; report();
+  });
+  return { total: targets.length, ok, none, err };
+}
+
+// Al terminar una subida, lee los dorsales sola, en segundo plano.
+// Busca el renglón de estado cada vez porque el panel se vuelve a
+// dibujar al terminar la subida; si el fotógrafo ya se fue de la
+// vista, la lectura sigue igual y lo guardado queda.
+async function autoReadBibsAfterUpload(eventId) {
+  const upStatus = () => document.getElementById('upStatus');
+  try {
+    const r = await api('/api/event-get?eventId=' + eventId);
+    const res = await batchReadBibs(r.photos || [], (done, total, ok, none, err) => {
+      const el = upStatus(); if (el) el.textContent = 'Leyendo dorsales… ' + done + '/' + total + ' · ✓ ' + ok + ' · sin dorsal ' + none + ' · errores ' + err;
+    });
+    const el = upStatus();
+    if (el) el.textContent = res.total ? ('Dorsales listos: ' + res.ok + ' con dorsal, ' + res.none + ' sin dorsal claro, ' + res.err + ' con error.') : 'Todas las fotos ya tenían dorsal.';
+  } catch (e) {
+    const el = upStatus(); if (el) el.textContent = 'No se pudieron leer los dorsales solos; usa "Leer dorsales en lote" en Revisar dorsales.';
+  }
+}
+
 function saveToken(t) { token = t || ''; if (t) localStorage.setItem('onlyclick_token', t); else localStorage.removeItem('onlyclick_token'); }
 
 // Visitante anónimo para estadísticas: un código por navegador, creado
@@ -954,7 +1009,7 @@ async function loadPhotographer() {
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
     <button id="upBtn" class="primary">Subir fotos</button>
-    <p class="muted">Las fotos se suben sin leer el dorsal. Después usa "Leer dorsales en lote" en Revisar dorsales para leerlos con IA.</p>
+    <p class="muted">Al terminar de subirse, los dorsales se leen solos con IA y se guardan. Si alguna queda sin dorsal, usa "Leer dorsales en lote" en Revisar dorsales.</p>
     <h3>Portada del evento</h3>
     <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p>
     <div class="row"><select id="covEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
@@ -1202,18 +1257,9 @@ async function loadPhotographer() {
     upRows = files.map(f => ({ file: f, bibs: '', status: '' }));
     renderUpList();
     if (!files.length) return;
-    $('#upStatus').textContent = 'Sin leer todavía — súbelas y luego usa "Leer dorsales en lote" en Revisar dorsales.';
+    $('#upStatus').textContent = 'Listas para subir — al terminar, los dorsales se leen solos con IA.';
     return;
   };
-  // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
-  // sin saturar la conexión ni la llave de IA.
-  async function runPool(items, n, fn) {
-    let i = 0;
-    const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
-      while (i < items.length) { const item = items[i++]; await fn(item); }
-    });
-    await Promise.all(workers);
-  }
   $('#upBtn').onclick = async () => {
     const files = upRows.length ? upRows : [...$('#upFiles').files].map(f => ({ file: f, bibs: '' }));
     if (!files.length) return alert('Elige al menos una foto.');
@@ -1240,7 +1286,11 @@ async function loadPhotographer() {
       } catch (_) { fails++; }
       $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
     });
-    alert(n + ' foto(s) subida(s).' + (fails ? ' ' + fails + ' fallaron, inténtalas de nuevo.' : '')); loadPhotographer();
+    alert(n + ' foto(s) subida(s).' + (fails ? ' ' + fails + ' fallaron, inténtalas de nuevo.' : ''));
+    loadPhotographer();
+    // Al terminar de subirse, los dorsales se leen solos con IA, en
+    // segundo plano, y se guardan. No se espera: la lectura sigue sola.
+    if (n) autoReadBibsAfterUpload(eventId);
   };
   document.querySelectorAll('[data-free]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.free));
@@ -1286,28 +1336,19 @@ async function loadPhotographer() {
       // al darle otra vez continúa con las que faltan.
       const batchBtn = document.getElementById('batchRead');
       if (batchBtn) batchBtn.onclick = async () => {
-        const targets = (r.photos || []).filter(p => !(p.bibs || []).length);
-        if (!targets.length) { document.getElementById('batchStatus').textContent = 'Todas las fotos ya tienen dorsal.'; return; }
+        if (!(r.photos || []).some(p => !(p.bibs || []).length)) { document.getElementById('batchStatus').textContent = 'Todas las fotos ya tienen dorsal.'; return; }
         batchBtn.disabled = true;
-        let done = 0, ok = 0, none = 0, err = 0;
-        const bStatus = () => { const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Leyendo… ' + done + '/' + targets.length + ' · ✓ ' + ok + ' · sin dorsal ' + none + ' · errores ' + err; };
-        bStatus();
-        await runPool(targets, 3, async (p) => {
+        const bStatus = (done, total, ok, none, err) => { const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Leyendo… ' + done + '/' + total + ' · ✓ ' + ok + ' · sin dorsal ' + none + ' · errores ' + err; };
+        const res = await batchReadBibs(r.photos, bStatus, (p, st2, list, errText) => {
           const st = document.getElementById('revState-' + p.id);
-          try {
-            const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: p.id }) });
-            const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
-            if (r2.ok && list.length) {
-              await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: p.id, bibs: list }) });
-              const inp = document.getElementById('revBib-' + p.id); if (inp) inp.value = list.join(', ');
-              if (st) st.textContent = '✓ IA'; ok++;
-            } else if (r2.ok) { if (st) st.textContent = 'Sin dorsal claro'; none++; }
-            else { if (st) st.textContent = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : ''); err++; }
-          } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; err++; }
-          done++; bStatus();
+          if (st2 === 'ok') {
+            const inp = document.getElementById('revBib-' + p.id); if (inp) inp.value = list.join(', ');
+            if (st) st.textContent = '✓ IA';
+          } else if (st2 === 'none') { if (st) st.textContent = 'Sin dorsal claro'; }
+          else { if (st) st.textContent = errText; }
         });
         batchBtn.disabled = false;
-        const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Terminado: ' + ok + ' con dorsal, ' + none + ' sin dorsal claro, ' + err + ' con error. Si quedaron con error, dale otra vez al botón.';
+        const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Terminado: ' + res.ok + ' con dorsal, ' + res.none + ' sin dorsal claro, ' + res.err + ' con error. Si quedaron con error, dale otra vez al botón.';
       };
       box.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
         const id = Number(rb.dataset.reread);
