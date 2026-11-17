@@ -72,12 +72,6 @@
   .hero-sub { color: #d8d8d2; font-size: 16px; margin: 0 0 18px; }
   /* Solo queda el botón grande: la búsqueda vive dentro del modal. */
   #searchResults { margin-top: 16px; }
-  /* ---------- Cómo funciona ---------- */
-  .steps { display: grid; grid-template-columns: 1fr; gap: 12px; }
-  @media (min-width: 640px) { .steps { grid-template-columns: repeat(3, 1fr); } }
-  .step { background: #141419; border: 1px solid #26262c; border-radius: 12px; padding: 14px; }
-  .step-num { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #d4af37; color: #141414; font-weight: 800; font-size: 16px; margin-bottom: 8px; }
-  .step strong { display: block; margin-bottom: 4px; }
   .step p { margin: 0; color: #a7a7ad; font-size: 14px; }
   /* ---------- Tarjetas de evento ---------- */
   .events-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
@@ -148,15 +142,6 @@
       </div>
     </div>
     <div id="sharedBox"></div>
-
-    <div class="card">
-      <h3>Cómo funciona</h3>
-      <div class="steps">
-        <div class="step"><span class="step-num">1</span><strong>Busca tu dorsal o tu selfie</strong><p>Toca "Buscar por selfie o dorsal" y elige: sube una selfie o escribe tu número de dorsal.</p></div>
-        <div class="step"><span class="step-num">2</span><strong>Encuentra tus fotos</strong><p>Te mostramos solo las fotos donde sales tú.</p></div>
-        <div class="step"><span class="step-num">3</span><strong>Descarga o compra</strong><p>Gratis en eventos gratis, o paga seguro con Clip: tarjeta o efectivo en OXXO.</p></div>
-      </div>
-    </div>
 
     <h3>Eventos recientes</h3>
     <div id="homeEvents" class="events-grid"></div>
