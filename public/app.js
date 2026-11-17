@@ -856,6 +856,11 @@ async function loadPhotographer() {
   // subir mis fotos ahí, a mi precio.
   const joinedEvents = me.isOwner ? [] : events.filter(e => e.photographerId !== me.id && e.joined);
   const approved = me.isOwner || me.approved !== false;
+  // Cooperación voluntaria: bloqueada cuando TODOS sus álbumes son de pago
+  // (el mensaje de propina solo sale en fotos gratis). Sin álbumes todavía,
+  // se permite guardarla para cuando cree uno gratis.
+  const tipEvents = [...myEvents, ...joinedEvents];
+  const tipBlocked = tipEvents.length > 0 && !tipEvents.some(e => e.freeMode);
   const sales = await api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }));
   const stats = await api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }));
   const earnings = await api('/api/my-earnings').catch(() => null);
@@ -935,7 +940,8 @@ async function loadPhotographer() {
     <p id="displayStatus" class="muted"></p>
     <h3>Cooperación voluntaria</h3>
     <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
-    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"><button id="tipSave" class="primary">Guardar CLABE</button></div>
+    ${tipBlocked ? '<p class="muted">Tus álbumes son de pago, así que la cooperación voluntaria está desactivada. Si cambias un álbum a gratis, se activa de nuevo.</p>' : ''}
+    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"${tipBlocked ? ' disabled' : ''}><button id="tipSave" class="primary"${tipBlocked ? ' disabled' : ''}>Guardar CLABE</button></div>
     <p id="tipStatus" class="muted"></p>
     <h3>CLABE para recibir tus pagos</h3>
     <p class="muted">Cuando vendas fotos, ONLYCLICK te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
