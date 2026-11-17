@@ -12,6 +12,8 @@ let currentEvent = null;
 let currentTipClabe = '';
 let currentTipName = '';
 let currentPhotos = [];
+let latestEventId = null; // evento más reciente (el del hero): ahí busca la selfie del inicio
+let latestEventName = '';
 let lightboxPhoto = null;
 let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
@@ -771,6 +773,118 @@ async function searchBib() {
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
+// ---- Búsqueda por selfie, Fase 1 (reconocimiento facial con Gemini) ----
+// La selfie se compara contra las fotos del evento en lotes de 8, con 4
+// llamadas en paralelo a /api/face-search. Cada lote es una llamada
+// corta (el servidor solo lee 8 miniaturas y hace una llamada a Gemini),
+// así ninguna pasa de ~10 s y la búsqueda completa de un evento grande
+// tarda ~1-3 min. El avance y el tiempo estimado se muestran mientras
+// tanto. La selfie NO se sube para guardarse: solo viaja en el cuerpo de
+// cada llamada y el servidor la usa y la olvida. No hay cobro en Fase 1.
+const FACE_BATCH = 8;
+const FACE_WORKERS = 4;
+
+// Achica una imagen en el teléfono (el downscale del panel vive dentro
+// de loadPhotographer y aquí no se ve): la selfie se manda en 800px.
+function downscaleImage(dataUrl, maxW, quality) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, (maxW || 1200) / img.width);
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', quality || 0.85));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function faceTimeLeft(startedAt, checked, total) {
+  if (!checked || !total || checked >= total) return '';
+  const el = (Date.now() - startedAt) / 1000;
+  const left = Math.max(0, Math.round((el / checked) * (total - checked)));
+  if (left < 60) return ' · quedan ~' + left + ' s';
+  return ' · quedan ~' + Math.ceil(left / 60) + ' min';
+}
+
+async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, resultsEl) {
+  const state = { cancelled: false, stopped: '', checked: 0, total: 0, errors: 0, matches: new Map(), startedAt: Date.now() };
+  const selfieBase64 = selfieDataUrl.split(',')[1] || '';
+  function renderStatus() {
+    if (!statusEl) return;
+    statusEl.innerHTML = `Buscando tu cara en ${esc(eventName)}… revisadas ${state.checked} de ${state.total} fotos${faceTimeLeft(state.startedAt, state.checked, state.total)} <button id="faceCancel" class="secondary">Cancelar</button>`;
+    const c = statusEl.querySelector('#faceCancel');
+    if (c) c.onclick = () => { state.cancelled = true; statusEl.textContent = 'Cancelando…'; };
+  }
+  function renderResults(note) {
+    const list = [...state.matches.values()];
+    currentPhotos = list;
+    if (!resultsEl) return;
+    resultsEl.innerHTML = list.length
+      ? `<p>${list.length} foto(s) donde sales tú en ${esc(eventName)}:${note ? ' ' + esc(note) : ''}</p><div class="grid">${list.map(p => photoCard(p)).join('')}</div>`
+      : `<p>No encontramos fotos con tu cara en ${esc(eventName)}. Prueba con otra selfie de frente y con buena luz.${note ? ' ' + esc(note) : ''}</p>`;
+    bindPhotos(list);
+    if (statusEl && statusEl !== resultsEl) statusEl.textContent = '';
+  }
+  async function oneChunk(offset) {
+    if (state.cancelled) return;
+    try {
+      const r = await api('/api/face-search', { method: 'POST', body: JSON.stringify({ eventId, selfieBase64, mimeType: 'image/jpeg', offset, limit: FACE_BATCH }) });
+      if (!r.ok) {
+        // Sin llave de IA o la IA no respondió: no vale la pena seguir.
+        state.errors++;
+        if (r.reason === 'no-key') { state.stopped = 'no-key'; state.cancelled = true; if (statusEl) statusEl.textContent = 'La búsqueda por selfie no está disponible ahorita, prueba con tu dorsal.'; return; }
+        if (r.reason === 'ia-error') { state.stopped = 'ia-error'; state.cancelled = true; if (statusEl) statusEl.textContent = 'La IA no respondió, inténtalo de nuevo en un rato.'; return; }
+        return;
+      }
+      if (state.total === 0) state.total = Number(r.total) || 0;
+      state.checked += Number(r.checked) || 0;
+      for (const p of (r.matches || [])) if (!state.matches.has(p.id)) state.matches.set(p.id, p);
+      renderStatus();
+    } catch (_) { state.errors++; state.checked += FACE_BATCH; renderStatus(); }
+  }
+  if (statusEl) statusEl.textContent = 'Buscando tu cara…';
+  // Primer lote: dice cuántas fotos tiene el evento y calienta la
+  // conexión. Los demás lotes van después, 4 en paralelo.
+  await oneChunk(0);
+  if (!state.cancelled && state.total > FACE_BATCH) {
+    const offsets = [];
+    for (let o = FACE_BATCH; o < state.total; o += FACE_BATCH) offsets.push(o);
+    await runPool(offsets, FACE_WORKERS, oneChunk);
+  }
+  if (state.cancelled) {
+    // Si la IA se detuvo y ya había fotos encontradas, se muestran con
+    // el aviso; si no había ninguna, queda el mensaje de error en statusEl.
+    if (state.stopped && state.matches.size) { renderResults('La IA dejó de responder, se muestran las fotos revisadas hasta ahora.'); return; }
+    if (state.stopped) return;
+    // Si se canceló a la mitad, se muestra lo que sí se alcanzó a revisar.
+    renderResults('Búsqueda cancelada, se muestran las fotos revisadas hasta ahora.');
+    return;
+  }
+  renderResults(state.errors ? 'Algunas fotos no se pudieron revisar, si no aparece tu foto inténtalo de nuevo.' : '');
+}
+
+// Abre el selector de foto del teléfono, achica la selfie y arranca la
+// búsqueda en el evento dado. statusEl muestra el avance, resultsEl las
+// fotos encontradas (pueden ser el mismo elemento, como en el inicio).
+async function pickSelfieAndSearch(eventId, eventName, statusEl, resultsEl) {
+  if (!eventId) { if (statusEl) statusEl.textContent = 'Aún no hay eventos para buscar.'; return; }
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { if (statusEl) statusEl.textContent = 'Ese archivo no es una foto.'; return; }
+    if (statusEl) statusEl.textContent = 'Preparando tu selfie…';
+    const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(file); });
+    let small = await downscaleImage(dataUrl, 800, 0.85);
+    if (small.length > 2.5 * 1024 * 1024) small = await downscaleImage(dataUrl, 500, 0.8);
+    runFaceSearch(eventId, eventName, small, statusEl, resultsEl);
+  };
+  input.click();
+}
+
 // Tarjeta de evento: portada, nombre, fecha, fotos reales y precio real
 // por foto ("Desde $X MXN/foto" o "Descarga gratis"). NUNCA se inventan
 // eventos ni precios: solo se muestran los que devuelve /api/events.
@@ -808,6 +922,7 @@ async function loadHome() {
     const hero = $('#hero');
     if (evs.length) {
       const ev = [...evs].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
+      latestEventId = ev.id; latestEventName = ev.name;
       // Título genérico: la búsqueda del hero es global (todos los eventos),
       // el evento más reciente solo se destaca como referencia.
       $('#heroTitle').textContent = 'Encuentra tus fotos';
@@ -816,6 +931,7 @@ async function loadHome() {
         ? 'linear-gradient(rgba(11,11,14,.60), rgba(11,11,14,.88)), url("/api/cover?eventId=' + ev.id + '")'
         : '';
     } else {
+      latestEventId = null; latestEventName = '';
       $('#heroTitle').textContent = 'Encuentra tus fotos';
       $('#heroSub').textContent = 'Aún no hay eventos publicados.';
       hero.style.backgroundImage = '';
@@ -858,6 +974,8 @@ async function loadEventDetail(eventId, push) {
     ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><input id="evBib" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-evento" autocapitalize="off" autocorrect="off" placeholder="Buscar dorsal en este evento"><button id="evBibBtn" class="primary">Buscar</button></div>
+    <div class="row"><button id="evSelfieBtn" class="secondary">📷 Buscar por selfie en este evento</button></div>
+    <p id="evFaceStatus" class="muted"></p>
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   trackView('event', null, eventId);
@@ -877,6 +995,8 @@ async function loadEventDetail(eventId, push) {
     bindPhotos(s.photos);
     trackView('search', null, eventId, bib);
   };
+  const evSelfieBtn = $('#evSelfieBtn');
+  if (evSelfieBtn) evSelfieBtn.onclick = () => pickSelfieAndSearch(eventId, r.event.name, $('#evFaceStatus'), $('#evGrid'));
 }
 
 async function loadMyPhotos() {
@@ -1551,6 +1671,8 @@ $('#brandHome').onclick = () => showView('home');
 $('#cartFab').onclick = () => showView('cart');
 $('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
 $('#bibSearch').onclick = searchBib;
+const selfieSearchBtn = $('#selfieSearch');
+if (selfieSearchBtn) selfieSearchBtn.onclick = () => pickSelfieAndSearch(latestEventId, latestEventName, $('#searchResults'), $('#searchResults'));
 $('#bibInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBib(); });
 $('#lbClose').onclick = () => closeLightbox();
 $('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
