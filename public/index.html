@@ -47,6 +47,15 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
   .photo { background: #141419; border: 1px solid #26262c; border-radius: 10px; overflow: hidden; }
   .photo img { width: 100%; height: 180px; object-fit: cover; display: block; cursor: pointer; background: #000; }
+  .thumb-wrap { position: relative; }
+  .price-pill { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.78); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 800; font-size: 13px; pointer-events: none; }
+  /* ---------- Modal de búsqueda: 3 métodos en tarjetas grandes ---------- */
+  #searchModal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 60; }
+  .method-card { background: #141419; border: 1px solid #2a2a30; border-radius: 12px; padding: 14px; margin-bottom: 10px; cursor: pointer; text-align: left; width: 100%; }
+  .method-card strong { display: block; font-size: 17px; margin-bottom: 2px; }
+  .method-card p { margin: 0; color: #a7a7ad; font-size: 14px; }
+  .method-card.rec { border-color: #d4af37; }
+  .method-card .rec-tag { display: inline-block; background: #d4af37; color: #141414; font-size: 12px; font-weight: 800; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: middle; }
   .photo .meta { padding: 8px; font-size: 14px; }
   .badge { display: inline-block; background: #2c2c33; border-radius: 6px; padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 13px; }
   .badge.free { background: #1d7a4d; }
@@ -138,6 +147,7 @@
       <div class="hero-content">
         <h2 id="heroTitle">Encuentra tus fotos</h2>
         <p id="heroSub" class="hero-sub"></p>
+        <div class="row" style="margin-bottom:10px"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
         <div class="hero-search">
           <input id="bibInput" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal" autocapitalize="off" autocorrect="off" placeholder="# de dorsal">
           <button id="bibSearch" class="primary"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Buscar</button>
@@ -147,13 +157,14 @@
         <div id="searchResults"></div>
       </div>
     </div>
+    <div id="sharedBox"></div>
 
     <div class="card">
       <h3>Cómo funciona</h3>
       <div class="steps">
         <div class="step"><span class="step-num">1</span><strong>Busca tu dorsal o tu selfie</strong><p>Escribe el número que llevas en la foto, o toca "Busca tu foto por selfie" y sube una foto tuya.</p></div>
         <div class="step"><span class="step-num">2</span><strong>Encuentra tus fotos</strong><p>Te mostramos solo las fotos donde sales tú.</p></div>
-        <div class="step"><span class="step-num">3</span><strong>Descarga o compra</strong><p>Gratis en eventos gratis, o paga seguro con Clip.</p></div>
+        <div class="step"><span class="step-num">3</span><strong>Descarga o compra</strong><p>Gratis en eventos gratis, o paga seguro con Clip: tarjeta o efectivo en OXXO.</p></div>
       </div>
     </div>
 
@@ -264,6 +275,12 @@
       return false;
     }
     </script>
+
+    <div class="card" style="text-align:center">
+      <h3>¿Listo para encontrar tus fotos?</h3>
+      <p>Busca por selfie, por tu número de dorsal o recorre el álbum completo del evento.</p>
+      <button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button>
+    </div>
   </section>
 
   <!-- EVENTOS -->
@@ -377,7 +394,20 @@
     <button id="lbSave" class="primary">Guardar gratis</button>
     <button class="secondary" id="lbOpen" style="display:none">Abrir la foto (si no se descarga)</button>
     <button class="secondary" id="lbCart">Agregar al carrito</button>
+    <div id="lbIncludes" class="card" style="text-align:left;margin:8px 0 0"></div>
+    <div id="lbDetails" class="card" style="text-align:left;margin:8px 0 0"></div>
+    <button class="secondary" id="lbShare">Compartir foto</button>
     <button class="secondary" id="lbClose">Cerrar</button>
+  </div>
+</div>
+
+<div id="searchModal">
+  <div class="card" style="max-width:480px;width:100%;margin:0">
+    <h3>¿Cómo quieres buscar tus fotos?</h3>
+    <p class="muted">Elige un método para encontrar tus fotos en el evento.</p>
+    <div id="searchModalCards"></div>
+    <p class="muted" id="searchModalEvent"></p>
+    <button class="secondary" id="searchModalClose" style="width:100%">Cerrar</button>
   </div>
 </div>
 
