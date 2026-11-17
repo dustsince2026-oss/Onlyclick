@@ -68,7 +68,7 @@ const fileStore = {
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, priceMxn: 20, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
-  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); db.eventPhotographers = (db.eventPhotographers || []).filter(x => x.eventId !== Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
+  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); db.eventPhotographers = (db.eventPhotographers || []).filter(x => x.eventId !== Number(id)); db.photoAlerts = (db.photoAlerts || []).filter(x => x.eventId !== Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },
   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
@@ -86,7 +86,7 @@ const fileStore = {
       thumbPath = path.join(UPLOAD_DIR, `${id}-thumb.jpg`);
       try { fs.writeFileSync(thumbPath, p.thumbBuffer); } catch (_) { thumbPath = ''; }
     }
-    const row = { id, eventId: p.eventId, filename: p.filename, mimeType: p.mimeType, bibs: p.bibs || [], price: p.price || 0, photographerId: p.photographerId != null ? Number(p.photographerId) : null, filePath, thumbPath, createdAt: new Date().toISOString() };
+    const row = { id, eventId: p.eventId, filename: p.filename, mimeType: p.mimeType, bibs: p.bibs || [], price: p.price || 0, photographerId: p.photographerId != null ? Number(p.photographerId) : null, filePath, thumbPath, widthPx: p.widthPx != null ? Number(p.widthPx) : null, heightPx: p.heightPx != null ? Number(p.heightPx) : null, sizeKb: p.sizeKb != null ? Number(p.sizeKb) : null, createdAt: new Date().toISOString() };
     db.photos.push(row); saveDb(db); return row;
   },
   // Backfill de miniaturas (fotos viejas sin thumbPath): guarda el archivo
@@ -146,6 +146,28 @@ const fileStore = {
     db.announcements.push(row); saveDb(db); return row;
   },
   async listAnnouncements() { return (loadDb().announcements || []).slice().sort((a, b) => b.id - a.id); },
+  // ---- Avisos "Avísame cuando haya fotos" ----
+  // Un correo por evento: si ya existe (avisado o no), se devuelve la
+  // misma fila con already=true y no se duplica.
+  async createPhotoAlert(a) {
+    const db = loadDb();
+    if (!db.photoAlerts) db.photoAlerts = [];
+    if (!db.seq.photoAlert) db.seq.photoAlert = 1;
+    const email = String(a.email || '').trim().toLowerCase();
+    const found = db.photoAlerts.find(x => x.eventId === Number(a.eventId) && String(x.email).toLowerCase() === email);
+    if (found) return { ...found, already: true };
+    const row = { id: nextId(db, 'photoAlert'), eventId: Number(a.eventId), email, notifiedAt: null, createdAt: new Date().toISOString() };
+    db.photoAlerts.push(row); saveDb(db); return row;
+  },
+  async listPendingAlerts(eventId) { return (loadDb().photoAlerts || []).filter(x => x.eventId === Number(eventId) && !x.notifiedAt); },
+  async markAlertsNotified(ids) {
+    const db = loadDb();
+    const set = new Set((ids || []).map(Number));
+    let n = 0;
+    for (const a of (db.photoAlerts || [])) if (set.has(Number(a.id)) && !a.notifiedAt) { a.notifiedAt = new Date().toISOString(); n++; }
+    if (n) saveDb(db);
+    return n;
+  },
   async updateApplication(id, patch) { const db = loadDb(); const a = (db.applications || []).find(x => x.id === Number(id)); if (!a) return null; Object.assign(a, patch); saveDb(db); return a; },
   // Liga la solicitud al fotógrafo recién creado, solo si nadie la usó
   // antes (photographerId sigue null). Devuelve la fila o null si ya
@@ -222,7 +244,10 @@ function supabase() {
 
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', createdAt: r.created_at, photoCount } : null; }
-function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', createdAt: r.created_at } : null; }
+function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', widthPx: r.width_px != null ? Number(r.width_px) : null, heightPx: r.height_px != null ? Number(r.height_px) : null, sizeKb: r.size_kb != null ? Number(r.size_kb) : null, createdAt: r.created_at } : null; }
+// Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
+// llena cuando se mandó el aviso (una sola vez por correo y evento).
+function mapPhotoAlert(r) { return r ? { id: r.id, eventId: r.event_id, email: r.email, notifiedAt: r.notified_at || null, createdAt: r.created_at } : null; }
 function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
@@ -332,6 +357,7 @@ const supabaseStore = {
     if (ev && ev.coverPath) paths.push(ev.coverPath);
     for (let i = 0; i < paths.length; i += 100) { await supabase().storage.from('photos').remove(paths.slice(i, i + 100)); }
     await supabase().from('photos').delete().eq('event_id', id);
+    try { await supabase().from('photo_alerts').delete().eq('event_id', id); } catch (_) {}
     try { await supabase().from('event_photographers').delete().eq('event_id', id); } catch (_) {}
     await supabase().from('events').delete().eq('id', id);
     return { photos: photos.length };
@@ -345,12 +371,20 @@ const supabaseStore = {
     if (upErr) throw new Error('No se pudo subir la foto al bucket: ' + upErr.message);
     let ins = { event_id: p.eventId, filename: p.filename, mime_type: p.mimeType, bibs: p.bibs || [], price: p.price || 0, storage_path: storagePath };
     if (p.photographerId != null) ins.photographer_id = p.photographerId;
+    // Metadatos de la foto (resolución y tamaño, para la vista ampliada):
+    // los manda el cliente al subir. Si las columnas aún no existen en
+    // vivo (falta el ALTER), se reintenta sin ellas, igual que con
+    // photographer_id: la foto queda guardada sin metadatos.
+    if (p.widthPx != null) ins.width_px = Number(p.widthPx);
+    if (p.heightPx != null) ins.height_px = Number(p.heightPx);
+    if (p.sizeKb != null) ins.size_kb = Number(p.sizeKb);
     let { data, error } = await supabase().from('photos').insert(ins).select().single();
     // Si la columna photographer_id aún no existe en vivo (falta el
     // ALTER), reintentar sin ella: la foto queda guardada y su dueño se
-    // resuelve por el evento, como antes.
-    if (error && /photographer_id/i.test(error.message || '')) {
-      delete ins.photographer_id;
+    // resuelve por el evento, como antes. Lo mismo con las columnas de
+    // metadatos (width_px / height_px / size_kb).
+    if (error && /photographer_id|width_px|height_px|size_kb/i.test(error.message || '')) {
+      delete ins.photographer_id; delete ins.width_px; delete ins.height_px; delete ins.size_kb;
       ({ data, error } = await supabase().from('photos').insert(ins).select().single());
     }
     if (error) throw new Error(error.message);
@@ -384,6 +418,11 @@ const supabaseStore = {
   },
   async updatePhoto(id, patch) {
     const p = {}; if (patch.bibs !== undefined) p.bibs = patch.bibs; if (patch.price !== undefined) p.price = patch.price;
+    // Metadatos de la vista ampliada (los guarda /api/photo-meta la
+    // primera vez que se calculan, para no volver a leer la foto).
+    if (patch.widthPx !== undefined && patch.widthPx != null) p.width_px = Number(patch.widthPx);
+    if (patch.heightPx !== undefined && patch.heightPx != null) p.height_px = Number(patch.heightPx);
+    if (patch.sizeKb !== undefined && patch.sizeKb != null) p.size_kb = Number(patch.sizeKb);
     const { data } = await supabase().from('photos').update(p).eq('id', id).select().single(); return mapPhoto(data);
   },
   async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} } await supabase().from('photos').delete().eq('id', id); },
@@ -412,6 +451,23 @@ const supabaseStore = {
   // Si la tabla aún no existe en vivo (falta correr el SQL), la lectura
   // devuelve vacío y la vista muestra "No hay avisos todavía".
   async createAnnouncement(a) { const { data, error } = await supabase().from('announcements').insert({ title: a.title, body: a.body, created_by: a.createdBy || null }).select().single(); if (error) throw new Error(error.message); return mapAnnouncement(data); },
+  // ---- Avisos "Avísame cuando haya fotos" ----
+  async createPhotoAlert(a) {
+    const email = String(a.email || '').trim().toLowerCase();
+    const { data: found } = await supabase().from('photo_alerts').select().eq('event_id', Number(a.eventId)).ilike('email', email).maybeSingle();
+    if (found) return { ...mapPhotoAlert(found), already: true };
+    const { data, error } = await supabase().from('photo_alerts').insert({ event_id: Number(a.eventId), email }).select().single();
+    if (error) throw new Error(error.message);
+    return mapPhotoAlert(data);
+  },
+  async listPendingAlerts(eventId) { const { data } = await supabase().from('photo_alerts').select().eq('event_id', Number(eventId)).is('notified_at', null).order('id'); return (data || []).map(mapPhotoAlert); },
+  async markAlertsNotified(ids) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return 0;
+    const { data, error } = await supabase().from('photo_alerts').update({ notified_at: new Date().toISOString() }).in('id', list).is('notified_at', null).select('id');
+    if (error) throw new Error(error.message);
+    return (data || []).length;
+  },
   async listAnnouncements() {
     try {
       const { data, error } = await supabase().from('announcements').select().order('id', { ascending: false });
