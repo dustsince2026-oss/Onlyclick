@@ -1574,4 +1574,7 @@ handlePayReturn();
 updateCartFab();
 if (resetToken) showView('account');
 checkInvite();
+// Si la URL trae ?unirme=1 (link para mandar a un fotógrafo), abrir el
+// inicio con el formulario "Soy fotógrafo, quiero unirme" ya desplegado.
+if (new URLSearchParams(location.search).get('unirme')) goToPhotographerForm();
 if (isInAppBrowser()) { const b = $('#inAppBanner'); if (b) b.style.display = ''; }
