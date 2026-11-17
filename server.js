@@ -19,7 +19,7 @@ const ROUTES = {
   'password-forgot': 'password-forgot', 'password-reset': 'password-reset',
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
   'photo-upload': 'upload-photo', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
-  'my-photos': 'my-photos', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
+  'my-photos': 'my-photos', 'remove-download': 'remove-download', 'sales': 'sales', 'set-free-mode': 'set-free-mode',
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
   'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
   'track-view': 'track-view', 'stats': 'stats',
