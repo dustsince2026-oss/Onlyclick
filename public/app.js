@@ -694,11 +694,16 @@ function photoCard(p, opts) {
   const freeMode = p.freeMode !== false;
   const price = Number(p.priceMxn || p.price || 0);
   const bibs = (p.bibs || []).map(b => `<span class="badge">Dorsal ${esc(b)}</span>`).join('');
+  // Cuenta atrás de caducidad: solo llega en Mis fotos (listPurchases
+  // pone expiresAt). Cuando faltan 15 días o menos, la foto avisa
+  // "Se borra en N días" y el número baja solo cada día.
+  const daysLeft = p.expiresAt ? Math.ceil((new Date(p.expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
   return `<div class="photo">
     <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
+      ${daysLeft != null && daysLeft >= 1 && daysLeft <= 15 ? `<span class="badge warn">Se borra en ${daysLeft} día${daysLeft === 1 ? '' : 's'}</span>` : ''}
       ${p.photographerName ? `<span class="muted">Foto de ${esc(p.photographerName)}</span>` : ''}
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
@@ -1389,9 +1394,9 @@ function showView(v) {
   // Un estado viejo del historial (versión anterior) puede traer una vista
   // que ya no existe ('search', 'photographer'): caer al inicio.
   if (!['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].includes(v)) v = 'home';
-  // Notificaciones es solo para fotógrafos (dueño incluido): cualquiera
-  // más que intente abrirla (URL o clic) cae al inicio.
-  if (v === 'notifications' && !(me && me.role === 'photographer')) v = 'home';
+  // Notificaciones es para cualquier usuario con sesión (atletas
+  // incluidos); sin sesión, caer al inicio.
+  if (v === 'notifications' && !me) v = 'home';
   ['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].forEach(x => {
     const el = $('#view-' + x);
     if (el) el.classList.toggle('hidden', x !== v);
@@ -1406,10 +1411,13 @@ function showView(v) {
   if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
 }
 
-// ---- Notificaciones: avisos del dueño a los fotógrafos ----
-// El botón solo se ve si el usuario es fotógrafo (dueño incluido).
+// ---- Notificaciones: avisos del dueño a los fotógrafos + avisos de
+// caducidad para TODOS (atletas incluidos) ----
+// El botón se ve para cualquier usuario con sesión (antes solo
+// fotógrafos: los atletas no tenían cómo enterarse de que sus fotos
+// iban a desaparecer).
 function updateNotificationsNav() {
-  const show = !!(me && me.role === 'photographer');
+  const show = !!me;
   document.querySelectorAll('button[data-view="notifications"]').forEach(b => { b.style.display = show ? '' : 'none'; });
 }
 function updateNotifBadge(n) {
@@ -1420,10 +1428,10 @@ function updateNotifBadge(n) {
     el.classList.toggle('hidden', !n);
   });
 }
-// Conteo de no leídos al entrar con sesión de fotógrafo. Si el endpoint
-// falla, no se rompe nada: el badge queda oculto.
+// Conteo de no leídos al entrar con sesión (avisos + caducidades). Si
+// el endpoint falla, no se rompe nada: el badge queda oculto.
 async function refreshNotifBadge() {
-  if (!me || me.role !== 'photographer') { updateNotifBadge(0); return; }
+  if (!me) { updateNotifBadge(0); return; }
   try { const r = await api('/api/list-announcements'); updateNotifBadge(r.unreadCount || 0); }
   catch (_) { updateNotifBadge(0); }
 }
@@ -1433,9 +1441,12 @@ async function loadNotifications() {
   try {
     const r = await api('/api/list-announcements');
     const items = r.announcements || [];
-    list.innerHTML = items.length
+    // Avisos de caducidad primero (atletas y fotógrafos): álbumes que
+    // desaparecen en 15 días o menos.
+    const warn = (r.expiring || []).map(w => `<div class="card"><strong>El álbum ${esc(w.eventName)} desaparecerá en ${w.daysLeft} día${w.daysLeft === 1 ? '' : 's'}.</strong><p>Descarga tus fotos antes de que se borre.</p></div>`).join('');
+    list.innerHTML = (warn + (items.length
       ? items.map(x => `<div class="card"><strong>${esc(x.title)}</strong><p>${esc(x.body).replace(/\n/g, '<br>')}</p><p class="muted">${esc(String(x.createdAt || '').slice(0, 10))}</p></div>`).join('')
-      : '<p>No hay avisos todavía.</p>';
+      : '')).trim() || '<p>No hay avisos todavía.</p>';
     if (status) status.textContent = '';
     // Al abrirlas ya se vieron: marcar leídas y limpiar el numerito.
     api('/api/mark-announcements-read', { method: 'POST', body: JSON.stringify({}) }).then(() => updateNotifBadge(0)).catch(() => {});
