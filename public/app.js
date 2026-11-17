@@ -690,7 +690,7 @@ async function pollCartPayment(pid) {
   }
 }
 
-function photoCard(p) {
+function photoCard(p, opts) {
   const freeMode = p.freeMode !== false;
   const price = Number(p.priceMxn || p.price || 0);
   const bibs = (p.bibs || []).map(b => `<span class="badge">Dorsal ${esc(b)}</span>`).join('');
@@ -702,6 +702,7 @@ function photoCard(p) {
       ${p.photographerName ? `<span class="muted">Foto de ${esc(p.photographerName)}</span>` : ''}
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
+      ${opts && opts.remove && Number(p.amount || 0) === 0 ? `<button data-remove="${p.id}" class="secondary">Quitar de Mis fotos</button>` : ''}
     </div></div>`;
 }
 
@@ -884,8 +885,17 @@ async function loadMyPhotos() {
     return;
   }
   const r = await api('/api/my-photos');
-  $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
+  $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, { remove: true })).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos);
+  // Quitar de Mis fotos: solo la saca de TU lista (la foto sigue en el
+  // evento). Solo sale en las gratis: las de pago no se pueden quitar,
+  // porque si se quitara perderías una foto que ya pagaste.
+  document.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.remove);
+    if (!confirm('¿Quitar esta foto de Mis fotos? Solo se quita de tu lista; la foto sigue en el evento.')) return;
+    try { await api('/api/remove-download', { method: 'POST', body: JSON.stringify({ photoId: id }) }); loadMyPhotos(); }
+    catch (e) { alert(e.message); }
+  });
 }
 
 // Dinero en MXN con 2 decimales.
