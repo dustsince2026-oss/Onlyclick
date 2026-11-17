@@ -1465,7 +1465,7 @@ async function loadPhotographer() {
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
     try {
       const r = await api('/api/event-get?eventId=' + ev.id);
-      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
+      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (me && me.isOwner ? ' <button id="backfillThumbs" class="secondary">Generar miniaturas</button> <span id="backfillStatus" class="muted"></span>' : '') + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
           <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" type="search" inputmode="numeric" autocomplete="one-time-code" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
@@ -1491,6 +1491,30 @@ async function loadPhotographer() {
         });
         batchBtn.disabled = false;
         const el = document.getElementById('batchStatus'); if (el) el.textContent = 'Terminado: ' + res.ok + ' con dorsal, ' + res.none + ' sin dorsal claro, ' + res.err + ' con error. Si quedaron con error, dale otra vez al botón.';
+      };
+      // Generar miniaturas (solo el dueño): las fotos viejas no tienen
+      // miniatura y la galería baja la foto completa (~300 KB) por cada
+      // vista — eso se comió la cuota de Supabase. El botón llama al
+      // endpoint en lotes de 6 hasta terminar; si se cierra la página, lo
+      // ya guardado queda y al darle otra vez continúa con las que faltan.
+      // La foto original no se toca: solo se crea la copia chiquita.
+      const bfBtn = document.getElementById('backfillThumbs');
+      if (bfBtn) bfBtn.onclick = async () => {
+        bfBtn.disabled = true;
+        const bfStatus = document.getElementById('backfillStatus');
+        let cursor = 0, done = 0, created = 0, fails = 0, total = 0;
+        try {
+          for (;;) {
+            const r = await api('/api/backfill-thumbs', { method: 'POST', body: JSON.stringify({ eventId: ev.id, limit: 6, cursor }) });
+            created += r.created || 0; fails += (r.failed || []).length; done += r.processed || 0; total = done + (r.remaining || 0);
+            if (bfStatus) bfStatus.textContent = 'Generando miniaturas… ' + done + '/' + total + (fails ? ' · ' + fails + ' fallaron' : '');
+            if (r.done || !r.nextCursor) break;
+            cursor = r.nextCursor;
+          }
+          if (bfStatus) bfStatus.textContent = 'Listo: ' + created + ' miniatura(s) generada(s)' + (fails ? ' · ' + fails + ' fallaron' : '') + '. La galería ya carga fotos chiquitas.';
+        } catch (e) {
+          if (bfStatus) bfStatus.textContent = 'Error: ' + (e && e.message ? e.message : 'no se pudieron generar las miniaturas');
+        } finally { bfBtn.disabled = false; }
       };
       box.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
         const id = Number(rb.dataset.reread);
