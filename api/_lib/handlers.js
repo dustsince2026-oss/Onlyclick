@@ -323,7 +323,17 @@ async function uploadPhoto(store, user, body) {
   }
   // La foto queda a nombre de QUIEN LA SUBE (de la sesión, nunca de lo
   // que mande el cliente): así cada quien cobra sus fotos en el evento.
-  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), photographerId: user.id, fileBuffer, thumbBuffer });
+  // Metadatos de la foto (resolución y tamaño): los manda el cliente al
+  // subir, para la vista ampliada. Si no vienen, la vista ampliada los
+  // calcula sola la primera vez (/api/photo-meta).
+  const widthPx = Number(body.widthPx) || null;
+  const heightPx = Number(body.heightPx) || null;
+  const sizeKb = Number(body.sizeKb) || null;
+  // ¿Es la PRIMERA foto del evento? Si sí, hay atletas esperando el
+  // aviso "Avísame cuando haya fotos": se les avisa una sola vez.
+  const hadPhotos = (await store.listPhotos(ev.id).catch(() => [])).length > 0;
+  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), photographerId: user.id, fileBuffer, thumbBuffer, widthPx, heightPx, sizeKb });
+  if (!hadPhotos) { try { await notifyPhotoAlerts(store, ev.id); } catch (_) { /* el aviso nunca rompe la subida */ } }
   return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined, thumbPath: undefined } } };
 }
 
@@ -385,6 +395,151 @@ async function backfillThumbs(store, user, body) {
   const lastId = batch.length ? batch[batch.length - 1].id : cursor;
   const remaining = Math.max(0, totalMissing - batch.length);
   return { status: 200, data: { ok: true, eventId, processed: batch.length, created: created.length, skipped: skipped.length, failed, nextCursor: remaining > 0 ? lastId : null, done: remaining === 0, remaining } };
+}
+
+// ---- "Avísame cuando haya fotos" + metadatos + carrito compartido ----
+// Ideas de ZebraSnap (aprobadas por Orlan 2026-11-17): en eventos SIN
+// fotos todavía, el atleta deja su correo y recibe UN aviso cuando el
+// fotógrafo sube las primeras fotos. La vista ampliada muestra
+// resolución y tamaño. El carrito y una foto se pueden compartir por
+// link (WhatsApp) para que otra persona los vea y compre.
+
+// POST /api/subscribe-photo-alert { eventId, email } — público, sin
+// sesión. Si el evento YA tiene fotos, no se guarda nada: se devuelve
+// hasPhotos para que el frontend le diga al atleta que ya puede buscar.
+// Un correo por evento (la base lo deduplica); si la tabla aún no
+// existe en vivo (falta correr sql/zebrasnap-ideas.sql), se avisa con
+// 503 en vez de romper.
+async function subscribePhotoAlert(store, body) {
+  const email = String(body.email || '').trim().toLowerCase();
+  const eventId = Number(body.eventId);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw err(400, 'Escribe un correo válido.');
+  if (!eventId) throw err(400, 'Falta el evento.');
+  const ev = await store.getEvent(eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const count = (await store.listPhotos(eventId).catch(() => [])).length;
+  if (count > 0) return { status: 200, data: { ok: true, hasPhotos: true, eventId } };
+  let sub;
+  try { sub = await store.createPhotoAlert({ eventId, email }); }
+  catch (e) {
+    if (/photo_alerts/i.test(e.message || '')) throw err(503, 'El aviso por correo aún no está activado.');
+    throw e;
+  }
+  return { status: 200, data: { ok: true, hasPhotos: false, eventId, already: !!sub.already } };
+}
+
+// Aviso a los atletas que dejaron su correo en un evento sin fotos.
+// Se llama desde uploadPhoto cuando llega la PRIMERA foto del evento.
+// Primero se marcan como avisados (reclamar) y luego se manda el correo:
+// si dos subidas llegan juntas, solo una avisa. Los correos van en
+// paralelo con un tope total de 4 s (igual que los avisos de venta); si
+// el correo falla, no se reintenta y la subida no se rompe. Nunca se
+// avisa a Orlan: solo a los correos que lo pidieron.
+async function notifyPhotoAlerts(store, eventId) {
+  let pending;
+  try { pending = await store.listPendingAlerts(eventId); } catch (_) { return; }
+  if (!pending.length) return;
+  const ids = pending.map(a => a.id);
+  try { await store.markAlertsNotified(ids); } catch (_) { return; }
+  const ev = await store.getEvent(eventId).catch(() => null);
+  const base = publicBase();
+  const eventName = ev ? ev.name : 'tu evento';
+  await Promise.race([
+    Promise.allSettled(pending.map(a => sendEmail({
+      to: a.email,
+      subject: `¡Ya hay fotos de ${eventName} en OnlyClick!`,
+      text: `Hola,\n\n¡Ya publicaron fotos de ${eventName} en OnlyClick! Búscalas por tu dorsal o tu selfie aquí:\n${base}/?event=${eventId}\n\nSi no sales en las fotos, es que el fotógrafo todavía está subiendo más. Vuelve a revisar en un rato.`,
+    }))),
+    new Promise(r => setTimeout(r, 4000)),
+  ]).catch(() => {});
+}
+
+// Resolución y tamaño de una foto, sin decodificarla entera: lee solo la
+// cabecera (JPEG: marcador SOF; PNG: IHDR; GIF: cabecera). Devuelve null
+// si no se puede leer (p. ej. WebP).
+function imageDimensions(buf, mimeType) {
+  try {
+    if (!buf || buf.length < 10) return null;
+    const m = String(mimeType || '').toLowerCase();
+    if (m === 'image/png' && buf.length >= 24 && buf.toString('ascii', 12, 16) === 'IHDR') {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    if (m === 'image/gif' && buf.length >= 10) {
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    }
+    // JPEG: SOI (FFD8) y luego marcadores; SOF0/1/2 traen alto y ancho.
+    if (buf[0] !== 0xFF || buf[1] !== 0xD8) return null;
+    let off = 2;
+    while (off + 4 <= buf.length) {
+      if (buf[off] !== 0xFF) return null;
+      const code = buf[off + 1];
+      if (code === 0xD8 || code === 0x01 || (code >= 0xD0 && code <= 0xD7)) { off += 2; continue; }
+      const len = buf.readUInt16BE(off + 2);
+      if (code === 0xC0 || code === 0xC1 || code === 0xC2) {
+        return { height: buf.readUInt16BE(off + 5), width: buf.readUInt16BE(off + 7) };
+      }
+      off += 2 + len;
+    }
+    return null;
+  } catch (_) { return null; }
+}
+
+// GET /api/photo-meta?id=... — público (solo metadatos, nada sensible).
+// Devuelve nombre de archivo, resolución y tamaño en KB. Si la foto no
+// trae los datos guardados (fotos viejas), se calculan leyendo la foto
+// UNA vez y se guardan para no volver a leerla. Si no se pueden
+// calcular, se devuelven en null y la vista ampliada muestra "—".
+async function photoMeta(store, query) {
+  const id = Number((query && query.id) || 0);
+  if (!id) throw err(400, 'Falta la foto.');
+  const photo = await store.getPhoto(id);
+  if (!photo) throw err(404, 'Foto no encontrada.');
+  let widthPx = photo.widthPx || null;
+  let heightPx = photo.heightPx || null;
+  let sizeKb = photo.sizeKb || null;
+  if (!widthPx || !heightPx || !sizeKb) {
+    try {
+      const bytes = await store.readPhotoBytes(photo);
+      sizeKb = Math.max(1, Math.round(bytes.length / 1024));
+      const dims = imageDimensions(bytes, photo.mimeType);
+      if (dims) { widthPx = dims.width; heightPx = dims.height; }
+      try { await store.updatePhoto(id, { widthPx, heightPx, sizeKb }); } catch (_) { /* sin guardar: se devuelve igual */ }
+    } catch (_) { /* sin metadatos: se devuelven los que haya */ }
+  }
+  return { status: 200, data: { id: photo.id, filename: photo.filename, mimeType: photo.mimeType, widthPx, heightPx, sizeKb } };
+}
+
+// GET /api/shared-cart?ids=1,2,3 — público, sin sesión (el link se manda
+// por WhatsApp a quien sea, tenga cuenta o no). Devuelve las fotos con
+// su precio ACTUAL (se recalcula en vivo, como en el checkout) y los ids
+// que ya no existen o ya no están en un evento (missing). Las fotos de un
+// álbum ya caducado (fecha del evento + 60 días, decisión de Orlan
+// 2026-11-17: el link caduca junto con el álbum) van aparte en `expired`
+// para que el frontend diga que caducó en vez de "ya no existe". El link
+// en sí no lleva fecha: la caducidad se decide al abrirlo, desde la fecha
+// del evento. Máximo 100 ids (límite del carrito).
+async function sharedCart(store, query) {
+  const ids = String((query && query.ids) || '').split(',').map(s => Number(s)).filter(n => Number.isFinite(n) && n > 0);
+  if (!ids.length) throw err(400, 'Faltan las fotos.');
+  const uniq = [...new Set(ids)].slice(0, 100);
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  const photos = [];
+  const missing = [];
+  const expired = [];
+  for (const id of uniq) {
+    const p = await store.getPhoto(id);
+    if (!p) { missing.push(id); continue; }
+    const ev = await store.getEvent(p.eventId);
+    if (!ev) { missing.push(id); continue; }
+    const exp = eventExpiresAt(ev);
+    if (exp && new Date(exp).getTime() <= Date.now()) { expired.push(id); continue; }
+    const parts = await store.listParticipants(ev.id).catch(() => []);
+    const pid = photoOwnerId(p, ev);
+    const u = pid != null ? users.get(pid) : null;
+    const part = pid != null ? parts.find(pt => Number(pt.photographerId) === pid) : null;
+    photos.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev.name, freeMode: ev.freeMode, priceMxn: part ? Number(part.priceMxn) : eventPrice(ev), filePath: undefined, storagePath: undefined, thumbPath: undefined });
+  }
+  return { status: 200, data: { photos, missing, expired } };
 }
 
 async function searchBib(store, query) {
@@ -1154,6 +1309,26 @@ async function refreshPaymentFromClip(store, payment) {
   return { clip: r.clip, payment: mine, paid: r.paid };
 }
 
+// ---- Pago en efectivo en OXXO (Clip Checkout) ----
+// Clip acepta efectivo en OXXO en el mismo link de pago: basta pedir
+// payment_method_types ["card", "cash"] en custom_payment_options (docs:
+// developer.clip.mx ?page=cnp-mxn). El comprador elige "Efectivo" en la
+// página de Clip, recibe su referencia y paga en cualquier OXXO; Clip
+// avisa por webhook y el cobro se confirma igual que con tarjeta (el
+// GET /v2/checkout no dice cómo se pagó, y no hace falta: la entrega es
+// la misma). Comisión igual: 3.6% + IVA. SPEI está desactivado por Clip
+// por ahora ("temporalmente desactivado" en su centro de ayuda), así que
+// no se ofrece.
+// La referencia vive lo que vive el link: se pone expires_at a 7 días
+// (el default de Clip son 72 h) para que el corredor alcance a ir al
+// OXXO. Si Clip rechaza el expires_at, se reintenta sin él: el cobro
+// con tarjeta nunca se rompe por este campo.
+function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(); }
+async function createClipLink(opts) {
+  try { return await clip.createCheckoutLink({ ...opts, custom_payment_options: { payment_method_types: ['card', 'cash'] }, expires_at: clipExpiresAt() }); }
+  catch (e) { if (/expires_at/i.test(e.message || '')) return clip.createCheckoutLink({ ...opts, custom_payment_options: { payment_method_types: ['card', 'cash'] } }); throw e; }
+}
+
 // POST /api/checkout-create { photoId } — crea el link de pago de Clip
 // para una foto de un evento DE PAGO y devuelve la URL del checkout.
 async function createCheckout(store, user, body) {
@@ -1181,7 +1356,7 @@ async function createCheckout(store, user, body) {
   }
   const ref = makeExternalRef(photo.id, user.id);
   const base = publicBase();
-  const created = await clip.createCheckoutLink({
+  const created = await createClipLink({
     amount: price,
     currency: 'MXN',
     purchase_description: ('Foto OnlyClick — ' + ev.name + ' — ' + displayNameFor(await store.findUserById(photoOwnerId(photo, ev))) + ' — dorsal ' + ((photo.bibs || []).join(', ') || 'sin dorsal')).slice(0, 255),
@@ -1239,7 +1414,7 @@ async function createCartCheckout(store, user, body) {
   if (totals.total > CART_MAX_TOTAL) throw err(400, 'El total ($' + totals.total + ' MXN) supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos carritos.');
   const base = publicBase();
   const firstRef = makeCartRef(user.id, 0);
-  const created = await clip.createCheckoutLink({
+  const created = await createClipLink({
     amount: totals.total,
     currency: 'MXN',
     purchase_description: ('OnlyClick: ' + toPay.length + (toPay.length === 1 ? ' foto' : ' fotos')).slice(0, 255),
@@ -1843,6 +2018,9 @@ async function dispatch(route, req) {
     case 'get-event': return getEvent(store, user, req.query.eventId);
     case 'upload-photo': return uploadPhoto(store, user, b);
     case 'backfill-thumbs': return backfillThumbs(store, user, b);
+    case 'subscribe-photo-alert': return subscribePhotoAlert(store, b);
+    case 'photo-meta': return photoMeta(store, req.query);
+    case 'shared-cart': return sharedCart(store, req.query);
     case 'search': return searchBib(store, req.query);
     case 'claim': return claimPhotos(store, user, b, false);
     // Compra simulada DESACTIVADA: con Clip real, /api/purchase dejaba
