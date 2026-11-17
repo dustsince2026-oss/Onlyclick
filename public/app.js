@@ -155,7 +155,7 @@ function loadCart() {
 }
 function saveCart() {
   try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch (_) {}
-  updateCartFab();
+  updateCartBadge();
 }
 function singleDiscountForPosition(pos) {
   for (const t of SINGLE_TIERS) if (pos >= t.from && pos <= t.to) return t.discount;
@@ -202,9 +202,9 @@ function packageUpsell() {
   return { missing, packageTotal };
 }
 function cartHas(id) { return cart.some(x => x.id === Number(id)); }
-function updateCartFab() {
-  const fab = $('#cartFab'), badge = $('#cartCount');
-  if (!fab || !badge) return;
+function updateCartBadge() {
+  const badge = $('#cartCount');
+  if (!badge) return;
   badge.textContent = String(cart.length);
   badge.classList.toggle('hidden', cart.length === 0);
 }
@@ -1990,7 +1990,7 @@ if (searchModalEl) searchModalEl.addEventListener('click', (e) => { if (e.target
 const notifPublishBtn = $('#notifPublish');
 if (notifPublishBtn) notifPublishBtn.onclick = publishAnnouncement;
 $('#brandHome').onclick = () => showView('home');
-$('#cartFab').onclick = () => showView('cart');
+$('#cartTopBtn').onclick = () => showView('cart');
 $('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
 $('#lbClose').onclick = () => closeLightbox();
 $('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
@@ -2081,7 +2081,7 @@ refreshAuth();
 loadHome();
 handlePayReturn();
 handleDeepLinks();
-updateCartFab();
+updateCartBadge();
 if (resetToken) showView('account');
 checkInvite();
 // Si la URL trae ?unirme=1 (link para mandar a un fotógrafo), abrir el
