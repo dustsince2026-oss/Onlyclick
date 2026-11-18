@@ -4,6 +4,14 @@
 // Content-Disposition: attachment. En Chrome Android eso dispara el
 // gestor de descargas real. NO es un blob URL ni navigator.share.
 let token = localStorage.getItem('onlyclick_token') || '';
+// Las etiquetas <img> NO mandan el header Authorization: el token de
+// sesión va en la URL para que el dueño sí vea las fotos y portadas de
+// sus álbumes ocultos (sin token el servidor responde 404 y la foto se
+// ve negra). Sin sesión no se agrega nada: el álbum oculto sigue
+// invisible para los demás.
+function imgToken() { return token ? '&token=' + encodeURIComponent(token) : ''; }
+function photoImgUrl(id, thumb) { return '/api/photo?id=' + id + (thumb ? '&thumb=1' : '') + '&inline=1' + imgToken(); }
+function coverImgUrl(eventId) { return '/api/cover?eventId=' + eventId + imgToken(); }
 let me = null;
 let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
@@ -660,7 +668,7 @@ function renderCartView() {
     const first = byId[pkg.photoIds[0]];
     const bibs = pkg.photoIds.map(id => (byId[id] && (byId[id].bibs || []).join(', ')) || 'sin dorsal').join(', ');
     return `<div class="cart-row cart-package">
-      <img src="/api/photo?id=${pkg.photoIds[0]}&thumb=1&inline=1" alt="" loading="lazy">
+      <img src="${photoImgUrl(pkg.photoIds[0], true)}" alt="" loading="lazy">
       <div class="cart-info"><strong>Paquete de 10 fotos</strong><span class="muted">Dorsales: ${esc(bibs)}${first && first.eventName ? ' · ' + esc(first.eventName) : ''}</span></div>
       <div class="cart-price"><s class="muted">$${pkg.subtotal}</s> <strong>$${pkg.total} MXN</strong> <span class="badge">-25%</span></div>
       <button data-rmpackage="${pi}" class="secondary">Quitar paquete</button>
@@ -669,7 +677,7 @@ function renderCartView() {
   const singleRows = t.lines.map(l => {
     const it = byId[l.id];
     return `<div class="cart-row">
-      <img src="/api/photo?id=${it.id}&thumb=1&inline=1" alt="" loading="lazy">
+      <img src="${photoImgUrl(it.id, true)}" alt="" loading="lazy">
       <div class="cart-info"><strong>Dorsal ${esc((it.bibs || []).join(', ') || 'sin dorsal')}</strong><span class="muted">${esc(it.eventName || '')}</span></div>
       <div class="cart-price">${l.discount ? `<s class="muted">$${l.price}</s> <strong>$${l.lineTotal} MXN</strong> <span class="badge">-${Math.round(l.discount * 100)}%</span>` : `<strong>$${l.lineTotal} MXN</strong>`}</div>
       <button data-rmcart="${it.id}" class="secondary">Quitar</button>
@@ -805,7 +813,7 @@ function photoCard(p, opts) {
   // "Se borra en N días" y el número baja solo cada día.
   const daysLeft = p.expiresAt ? Math.ceil((new Date(p.expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
   return `<div class="photo">
-    <div class="thumb-wrap"><img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">${freeMode ? '' : `<span class="price-pill">$${price} MXN</span>`}</div>
+    <div class="thumb-wrap"><img src="${photoImgUrl(p.id, true)}" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">${freeMode ? '' : `<span class="price-pill">$${price} MXN</span>`}</div>
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
@@ -828,7 +836,7 @@ function openLightbox(p) {
   const price = Number(p.priceMxn || p.price || 0);
   lightboxFreeMode = freeMode;
   lightboxPriceMxn = price;
-  $('#lbImg').src = `/api/photo?id=${p.id}&inline=1`;
+  $('#lbImg').src = photoImgUrl(p.id, false);
   $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
   $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
   $('#lbSave').dataset.save = p.id;
@@ -836,7 +844,7 @@ function openLightbox(p) {
   // en una pestaña nueva (ahí se puede guardar con pulsación larga).
   const lbOpen = $('#lbOpen');
   lbOpen.style.display = isInAppBrowser() ? '' : 'none';
-  lbOpen.onclick = () => { const u = '/api/photo?id=' + p.id + '&inline=1' + (token ? '&token=' + encodeURIComponent(token) : ''); window.open(u, '_blank'); };
+  lbOpen.onclick = () => { window.open(photoImgUrl(p.id, false), '_blank'); };
   // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
   const lbCart = $('#lbCart');
   lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
@@ -1167,9 +1175,9 @@ function eventCard(e) {
   const price = Number(e.priceMxn || 20);
   const priceTxt = e.freeMode ? 'Descarga gratis' : 'Desde $' + price + ' MXN/foto';
   return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
-    ${e.coverPath ? `<img class="event-cover" src="/api/cover?eventId=${e.id}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
+    ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
     <div class="event-body">
-      <strong>${esc(e.name)}</strong> ${e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : ''} ${e.isHidden ? '<span class="badge">Oculto</span>' : ''}
+      <strong>${esc(e.name)}</strong> ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : (e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : '')} ${e.isHidden ? '<span class="badge">Oculto</span>' : ''}
       ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
       ${e.isShared ? `<span class="badge">Evento compartido · ${e.participantsCount || 2} fotógrafos</span>` : ''}
       <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
@@ -1186,8 +1194,8 @@ function bindEventCards() {
 }
 
 // Inicio (público, sin login): tarjetas de eventos recientes + cinta de
-// fotos del evento más reciente. El titular del hero es estático (HTML);
-// el evento más reciente solo se usa para la cinta y como referencia.
+// fotos mezcladas de todos los álbumes visibles. El titular del hero es
+// estático (HTML); el evento más reciente solo se usa como referencia.
 async function loadHome() {
   try {
     const r = await api('/api/events');
@@ -1206,25 +1214,52 @@ async function loadHome() {
   }
 }
 
-// Cinta de fotos del inicio: toma fotos repartidas por todo el evento más
-// reciente (principio, medio y final), las revuelve y las hace correr en
+// Cinta de fotos del inicio: mezcla fotos de TODOS los álbumes visibles
+// (unas del Trijex, otras del último, por ejemplo), repartidas por todo
+// cada álbum (principio, medio y final), las revuelve y las hace correr en
 // bucle. Sin recorte: cada foto se muestra con su proporción natural para
-// que no se corte la cabeza. Si no hay fotos, la cinta queda vacía.
+// que no se corte la cabeza. Los álbumes ocultos NO entran en la cinta:
+// un álbum oculto no debe asomarse en el inicio ni siquiera con sus
+// fotos. Si no hay fotos, la cinta queda vacía.
 async function buildPhotoStrip(evs) {
   const box = $('#photoStrip');
   if (!box) return;
   try {
-    const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0);
+    // Solo álbumes visibles con fotos, los 5 más nuevos (para no hacer
+    // muchas peticiones).
+    const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0 && !e.isHidden);
     if (!withPhotos.length) return;
-    const ev = [...withPhotos].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
-    const r = await api('/api/event-get?eventId=' + ev.id);
-    const photos = r.photos || [];
-    if (!photos.length) return;
-    const n = Math.min(10, photos.length);
+    const newest = [...withPhotos].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || ''))).slice(0, 5);
+    const lists = (await Promise.all(newest.map(ev => api('/api/event-get?eventId=' + ev.id)))).map(r => (r.photos || []).slice()).filter(l => l.length);
+    if (!lists.length) return;
+    // Reparto: 10 fotos como máximo, una por álbum por ronda, para que el
+    // mix se vea (si un álbum tiene pocas fotos, los demás completan).
+    const takes = lists.map(() => 0);
+    let left = 10;
+    while (left > 0) {
+      let added = false;
+      for (let i = 0; i < lists.length && left > 0; i++) {
+        if (takes[i] < lists[i].length) { takes[i]++; left--; added = true; }
+      }
+      if (!added) break;
+    }
+    // Spread-pick dentro de cada álbum + round-robin entre álbumes.
+    const spread = lists.map((photos, i) => {
+      const out = [];
+      for (let k = 0; k < takes[i]; k++) out.push(photos[Math.floor(k * photos.length / takes[i])]);
+      return out;
+    });
     const picked = [];
-    for (let i = 0; i < n; i++) picked.push(photos[Math.floor(i * photos.length / n)]);
+    for (let r = 0; picked.length < 10; r++) {
+      let added = false;
+      for (let i = 0; i < spread.length && picked.length < 10; i++) {
+        if (r < spread[i].length) { picked.push(spread[i][r]); added = true; }
+      }
+      if (!added) break;
+    }
+    if (!picked.length) return;
     for (let i = picked.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = picked[i]; picked[i] = picked[j]; picked[j] = t; }
-    const imgs = picked.map(p => '<img src="/api/photo?id=' + p.id + '&thumb=1&inline=1" alt="Foto del evento" loading="lazy">').join('');
+    const imgs = picked.map(p => '<img src="' + photoImgUrl(p.id, true) + '" alt="Foto del evento" loading="lazy">').join('');
     box.innerHTML = '<div class="marquee"><div class="marquee-track">' + imgs + imgs + '</div></div>';
   } catch (e) { /* sin cinta si falla */ }
 }
@@ -1253,13 +1288,13 @@ async function loadEventDetail(eventId, push) {
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     ${r.event.isHidden ? '<p><span class="badge">Oculto — solo tú lo ves</span></p>' : ''}
-    ${r.isOfficial ? '<p><span class="badge official">✓ Álbum oficial Only Click</span></p>' : ''}
+    ${r.event.isExclusive ? '<p><span class="badge official">Exclusivo OnlyClick</span></p>' : (r.isOfficial ? '<p><span class="badge official">✓ Álbum oficial Only Click</span></p>' : '')}
     ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
     ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
-    ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id ? (r.isParticipant
+    ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id && !r.event.isExclusive ? (r.isParticipant
       ? `<p class="ok">Ya participas en este evento · Tu precio: $${r.myPrice || r.event.priceMxn} MXN por foto</p>`
       : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="1" max="5000" value="20" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div><p id="joinStatus" class="muted"></p></div>`) : ''}
-    ${r.event.coverPath ? `<img src="/api/cover?eventId=${eventId}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
+    ${r.event.coverPath ? `<img src="${coverImgUrl(eventId)}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
@@ -1417,6 +1452,7 @@ async function loadPhotographer() {
     <h3 id="secCrearEvento">Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
     <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
+    ${me.isOwner ? `<label style="display:flex;align-items:flex-start;gap:8px;margin:8px 0"><input id="evExclusive" type="checkbox" style="width:auto;margin:4px 0 0"><span><strong>Álbum exclusivo OnlyClick</strong><br><span class="muted">Solo yo subo fotos, gratis para los participantes. Para cuando un organizador te contrata: él te paga directo y ningún otro fotógrafo puede unirse ni vender en este álbum.</span></span></label>` : ''}
     <button id="evCreate" class="primary">Crear evento</button>
     <h3>Nombre que se muestra en tus fotos</h3>
     <p class="muted">Así sale en cada foto: "Foto de …". Puede ser tu primer nombre, un apodo o el nombre de tu marca o página. Si lo dejas vacío, sale tu primer nombre.</p>
@@ -1446,7 +1482,7 @@ async function loadPhotographer() {
     <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
     <h3 id="secMisEventos">Mis eventos</h3>
-    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> ${me.isOwner ? `<button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
+    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : ''} — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} ${e.isExclusive ? '' : `<button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button>`} ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> ${me.isOwner ? `<button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
     <div data-pg-controls="events"></div>
     ${joinedEvents.length ? `<h3>Eventos en los que participo</h3><p class="muted">Eventos de otros fotógrafos donde subes tus fotos a tu precio. El creador del evento maneja si es gratis o de pago.</p><div data-pg="joined">${joinedEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></p>`).join('')}</div><div data-pg-controls="joined"></div>` : ''}
     <div id="revList"></div>
@@ -1492,13 +1528,13 @@ async function loadPhotographer() {
     <div data-pg="statsevents">${(stats.events || []).map(e => `<p class="muted">${esc(e.name)} — Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</p>`).join('')}</div>
     <div data-pg-controls="statsevents"></div>
     <p><strong>Fotos más vistas</strong></p>
-    ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<p class="muted"><img src="/api/photo?id=${p.photoId}&thumb=1&inline=1" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')} · ${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</p>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
+    ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<p class="muted"><img src="${photoImgUrl(p.photoId, true)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')} · ${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</p>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
     <p><strong>Dorsales más buscados</strong></p>
     ${(stats.topBibs || []).length ? (stats.topBibs || []).map(b => `<p class="muted">Dorsal ${esc(b.bib)} · ${b.searches} búsqueda(s)</p>`).join('') : '<p class="muted">Sin búsquedas todavía.</p>'}`
       : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}
     </section>`;
   $('#evCreate').onclick = async () => {
-    try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+    try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value, isExclusive: !!($('#evExclusive') && $('#evExclusive').checked) }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
   $('#displaySave').onclick = async () => {
     try { const r = await api('/api/set-display-name', { method: 'POST', body: JSON.stringify({ displayName: $('#displayName').value }) }); me.displayName = r.displayName || ''; const shown = me.displayName || (me.name || '').split(' ')[0]; $('#displayStatus').textContent = 'Nombre guardado: tus fotos dirán "Foto de ' + shown + '".'; } catch (e) { $('#displayStatus').textContent = e.message; }
@@ -1567,7 +1603,7 @@ async function loadPhotographer() {
     const msg = `Hola ${a.name}, tu solicitud para ser fotógrafo de OnlyClick fue aprobada. Crea tu cuenta con este link: ${url}`;
     window.open('https://wa.me/' + waPhone + '?text=' + encodeURIComponent(msg), '_blank');
   });
-  function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="/api/cover?eventId=${ev.id}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }
+  function renderCovPreview() { const ev = events.find(e => e.id === Number($('#covEvent').value)); $('#covPreview').innerHTML = ev && ev.coverPath ? `<img src="${coverImgUrl(ev.id)}&t=${Date.now()}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px">` : '<p class="muted">Este evento aún no tiene portada.</p>'; }
   $('#covEvent').onchange = renderCovPreview;
   renderCovPreview();
   $('#covBtn').onclick = async () => {
@@ -1689,11 +1725,25 @@ async function loadPhotographer() {
     $('#upStatus').textContent = 'Listas para subir — al terminar, los dorsales se leen solos con IA.';
     return;
   };
+  // Álbum exclusivo: el precio por foto no aplica (gratis). Al elegir un
+  // álbum exclusivo, el precio se fija en 0 y el campo se deshabilita.
+  $('#upEvent').onchange = () => {
+    const ev = events.find(e => e.id === Number($('#upEvent').value));
+    const excl = !!(ev && ev.isExclusive);
+    $('#upPrice').disabled = excl;
+    if (excl) { $('#upPrice').value = 0; $('#upStatus').textContent = 'Álbum exclusivo OnlyClick: las fotos son gratis.'; }
+    else if ($('#upStatus').textContent.includes('Álbum exclusivo')) $('#upStatus').textContent = '';
+  };
+  $('#upEvent').onchange();
   $('#upBtn').onclick = async () => {
     const files = upRows.length ? upRows : [...$('#upFiles').files].map(f => ({ file: f, bibs: '' }));
     if (!files.length) return alert('Elige al menos una foto.');
     const eventId = Number($('#upEvent').value);
     if (!eventId) return alert('Primero crea un evento.');
+    const upEv = events.find(e => e.id === eventId);
+    // Álbum exclusivo: solo el dueño sube fotos (el servidor también lo
+    // bloquea; esto es solo para avisar antes de subir).
+    if (upEv && upEv.isExclusive && !me.isOwner) return alert('Este álbum es exclusivo OnlyClick: solo el dueño sube fotos.');
     let n = 0, fails = 0;
     await runPool(files, 3, async (row) => {
       try {
@@ -1716,7 +1766,7 @@ async function loadPhotographer() {
           if (thumb && thumb.startsWith('data:image/jpeg') && thumb.length < small.length) thumbB64 = thumb.split(',')[1];
         } catch (_) {}
         const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
-        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: Number($('#upPrice').value || 0), widthPx, heightPx, sizeKb }) });
+        await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: (upEv && upEv.isExclusive) ? 0 : Number($('#upPrice').value || 0), widthPx, heightPx, sizeKb }) });
         n++;
       } catch (_) { fails++; }
       $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
@@ -1766,7 +1816,7 @@ async function loadPhotographer() {
       const r = await api('/api/event-get?eventId=' + ev.id);
       box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (me && me.isOwner ? ' <button id="backfillThumbs" class="secondary">Generar miniaturas</button> <span id="backfillStatus" class="muted"></span>' : '') + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
         <div class="row" style="align-items:center">
-          <img src="/api/photo?id=${p.id}&thumb=1&inline=1" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
+          <img src="${photoImgUrl(p.id, true)}" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" type="search" inputmode="numeric" autocomplete="one-time-code" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
           <button data-reread="${p.id}">Releer con IA</button>
           <button data-savebib="${p.id}">Guardar</button>
