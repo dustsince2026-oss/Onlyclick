@@ -9,9 +9,17 @@ let token = localStorage.getItem('onlyclick_token') || '';
 // sus álbumes ocultos (sin token el servidor responde 404 y la foto se
 // ve negra). Sin sesión no se agrega nada: el álbum oculto sigue
 // invisible para los demás.
+// El token TAMBIÉN rompe el caché del edge: la clave de caché es la URL
+// completa, así que con token cada usuario tiene URLs distintas y Vercel
+// vuelve a bajar la foto en cada vista (eso se comió los 7.52 GB de
+// Fast Origin Transfer). Por eso el token solo se pone cuando hace falta
+// (needsToken): álbum oculto. En eventos visibles no aporta nada, porque
+// el servidor ya las sirve sin sesión. Por default se deja el token
+// (comportamiento viejo, seguro); solo los sitios que SABEN que el
+// evento es visible pasan needsToken=false.
 function imgToken() { return token ? '&token=' + encodeURIComponent(token) : ''; }
-function photoImgUrl(id, thumb) { return '/api/photo?id=' + id + (thumb ? '&thumb=1' : '') + '&inline=1' + imgToken(); }
-function coverImgUrl(eventId) { return '/api/cover?eventId=' + eventId + imgToken(); }
+function photoImgUrl(id, thumb, needsToken) { return '/api/photo?id=' + id + (thumb ? '&thumb=1' : '') + '&inline=1' + (needsToken === false ? '' : imgToken()); }
+function coverImgUrl(eventId, needsToken) { return '/api/cover?eventId=' + eventId + (needsToken === false ? '' : imgToken()); }
 let me = null;
 let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
@@ -26,6 +34,7 @@ let latestEventName = '';
 let lightboxPhoto = null;
 let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
+let currentEventHidden = false; // ¿el evento abierto es oculto? (para el token de la foto ampliada)
 let payReturnHandled = false; // regreso desde Clip ya procesado (no abrir links profundos encima)
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
 let currentView = 'home';
@@ -918,12 +927,16 @@ function photoCard(p, opts) {
   const freeMode = p.freeMode !== false;
   const price = Number(p.priceMxn || p.price || 0);
   const bibs = (p.bibs || []).map(b => `<span class="badge">Dorsal ${esc(b)}</span>`).join('');
+  // Token en la URL solo si el evento es oculto (o no se sabe el evento):
+  // en eventos visibles la foto se sirve sin sesión y sin token el edge
+  // de Vercel la guarda en caché y la sirve más rápido.
+  const needsToken = opts && opts.event ? !!opts.event.isHidden : true;
   // Cuenta atrás de caducidad: solo llega en Mis fotos (listPurchases
   // pone expiresAt). Cuando faltan 15 días o menos, la foto avisa
   // "Se borra en N días" y el número baja solo cada día.
   const daysLeft = p.expiresAt ? Math.ceil((new Date(p.expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
   return `<div class="photo">
-    <div class="thumb-wrap"><img src="${photoImgUrl(p.id, true)}" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">${freeMode ? '' : `<span class="price-pill">$${price} MXN</span>`}</div>
+    <div class="thumb-wrap"><img src="${photoImgUrl(p.id, true, needsToken)}" loading="lazy" decoding="async" alt="Foto dorsal ${(p.bibs || []).join(', ')}" data-open="${p.id}">${freeMode ? '' : `<span class="price-pill">$${price} MXN</span>`}</div>
     <div class="meta">${bibs || '<span class="muted">Sin dorsal</span>'}
       ${freeMode ? '<span class="badge free">Gratis</span>' : `<span class="badge">$${price} MXN</span>`}
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
@@ -948,7 +961,11 @@ function openLightbox(p) {
   const price = Number(p.priceMxn || p.price || 0);
   lightboxFreeMode = freeMode;
   lightboxPriceMxn = price;
-  $('#lbImg').src = photoImgUrl(p.id, false);
+  // Token solo si la foto es de un álbum oculto (el dueño viéndolo): si
+  // es del evento abierto y ese evento es visible, sin token para que el
+  // edge la cachee; si no se sabe el evento, se deja el token (seguro).
+  const lbNeedsToken = (p.eventId != null && Number(p.eventId) === Number(currentEvent)) ? currentEventHidden : true;
+  $('#lbImg').src = photoImgUrl(p.id, false, lbNeedsToken);
   $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
   $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
   $('#lbSave').dataset.save = p.id;
@@ -956,7 +973,7 @@ function openLightbox(p) {
   // en una pestaña nueva (ahí se puede guardar con pulsación larga).
   const lbOpen = $('#lbOpen');
   lbOpen.style.display = isInAppBrowser() ? '' : 'none';
-  lbOpen.onclick = () => { window.open(photoImgUrl(p.id, false), '_blank'); };
+  lbOpen.onclick = () => { window.open(photoImgUrl(p.id, false, lbNeedsToken), '_blank'); };
   // Botón del carrito en la vista ampliada: solo fotos de pago sin comprar.
   const lbCart = $('#lbCart');
   lbCart.style.display = (!freeMode && !p.owned) ? '' : 'none';
@@ -1259,7 +1276,14 @@ async function runBibSearch(bib) {
     const r = await api('/api/search?bib=' + encodeURIComponent(bib) + (ev.id ? '&eventId=' + ev.id : ''));
     currentPhotos = r.photos;
     if (r.photos.length) {
-      box.innerHTML = `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${r.photos.map(p => photoCard(p)).join('')}</div>`;
+      // #evGrid YA es una cuadrícula: no anidar otra dentro (el título
+      // ocupaba la primera celda y TODAS las fotos caían en la segunda
+      // columna, apiladas a la derecha). En el inicio (#searchResults,
+      // un div normal) sí hace falta el grid interno.
+      const cards = r.photos.map(p => photoCard(p)).join('');
+      box.innerHTML = t.scope === 'event'
+        ? `<p style="grid-column: 1 / -1">${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p>${cards}`
+        : `<p>${r.photos.length} foto(s) con el dorsal ${esc(bib)}:</p><div class="grid">${cards}</div>`;
     } else {
       const ctx = emptySearchCtx(ev.id || latestEventId, ev.name || latestEventName, t.statusEl, box);
       box.innerHTML = emptySearchHtml({ bib, eventName: ev.name || latestEventName, scope: ctx.scope });
@@ -1330,7 +1354,15 @@ async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, result
     currentPhotos = list;
     if (!resultsEl) return;
     if (list.length) {
-      resultsEl.innerHTML = `<p>${list.length} foto(s) donde sales tú en ${esc(eventName)}:${note ? ' ' + esc(note) : ''}</p><div class="grid">${list.map(p => photoCard(p)).join('')}</div>`;
+      // #evGrid YA es una cuadrícula: no anidar otra dentro (mismo bug
+      // que en la búsqueda por dorsal: el título ocupaba la primera
+      // celda y todas las fotos caían en la segunda columna). En el
+      // inicio (#searchResults, div normal) sí hace falta el interno.
+      const cards = list.map(p => photoCard(p)).join('');
+      const title = `${list.length} foto(s) donde sales tú en ${esc(eventName)}:${note ? ' ' + esc(note) : ''}`;
+      resultsEl.innerHTML = resultsEl.classList.contains('grid')
+        ? `<p style="grid-column: 1 / -1">${title}</p>${cards}`
+        : `<p>${title}</p><div class="grid">${cards}</div>`;
     } else {
       const ctx = emptySearchCtx(eventId, eventName, statusEl, resultsEl);
       resultsEl.innerHTML = emptySearchHtml({ eventName, scope: ctx.scope }) + '<p class="muted">Tip: prueba con otra selfie de frente y con buena luz.</p>' + (note ? `<p class="muted">${esc(note)}</p>` : '');
@@ -1407,7 +1439,7 @@ function eventCard(e) {
   const price = Number(e.priceMxn || 20);
   const priceTxt = e.freeMode ? 'Descarga gratis' : 'Desde $' + price + ' MXN/foto';
   return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
-    ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
+    ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id, !!e.isHidden)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
     <div class="event-body">
       <strong>${esc(e.name)}</strong> ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : (e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : '')} ${e.isHidden ? '<span class="badge">Oculto</span>' : ''}
       ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
@@ -1491,7 +1523,7 @@ async function buildPhotoStrip(evs) {
     }
     if (!picked.length) return;
     for (let i = picked.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = picked[i]; picked[i] = picked[j]; picked[j] = t; }
-    const imgs = picked.map(p => '<img src="' + photoImgUrl(p.id, true) + '" alt="Foto del evento" loading="lazy">').join('');
+    const imgs = picked.map(p => '<img src="' + photoImgUrl(p.id, true, false) + '" alt="Foto del evento" loading="lazy">').join('');
     box.innerHTML = '<div class="marquee"><div class="marquee-track">' + imgs + imgs + '</div></div>';
   } catch (e) { /* sin cinta si falla */ }
 }
@@ -1512,6 +1544,7 @@ async function loadEventDetail(eventId, push) {
   const r = await api('/api/event-get?eventId=' + eventId);
   currentPhotos = r.photos;
   currentEventName = r.event.name || '';
+  currentEventHidden = !!r.event.isHidden; // para el token de la foto ampliada
   currentTipClabe = r.tipClabe || '';
   currentTipName = r.tipName || '';
   // El precio por foto ya viene del servidor (cada fotógrafo el suyo):
@@ -1529,7 +1562,7 @@ async function loadEventDetail(eventId, push) {
     ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id && !r.event.isExclusive ? (r.isParticipant
       ? `<p class="ok">Ya participas en este evento · Tu precio: $${r.myPrice || r.event.priceMxn} MXN por foto</p>`
       : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="1" max="5000" value="20" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div><p id="joinStatus" class="muted"></p></div>`) : ''}
-    ${r.event.coverPath ? `<img src="${coverImgUrl(eventId)}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
+    ${r.event.coverPath ? `<img src="${coverImgUrl(eventId, !!r.event.isHidden)}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
@@ -1599,8 +1632,56 @@ async function loadPhotographer() {
   // Todas las peticiones del panel salen A LA VEZ: antes iban una por
   // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
   // Ahora el tiempo total es más o menos el de la petición más lenta.
-  box.innerHTML = '<p class="muted">Cargando panel…</p>';
-  const [eventsRes, sales, stats, earnings, payouts, payoutHistory, photographers, applications] = await Promise.all([
+  // Iconos del panel en lista (SVG simples en dorado, sin emoji).
+  const pIco = {
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+    upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 5 5m-5-5L7 9"/><path d="M4 20h16"/></svg>',
+    grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11V4h7l10 10-7 7L3 11z"/><circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none"/></svg>',
+    chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
+    users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 15.4c2 .7 3.4 2.2 3.9 4.6"/></svg>',
+    wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2.5"/><path d="M3 10h18M16 15h2"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"/></svg>',
+    logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/></svg>',
+  };
+  const panelRow = (icon, label, onclick, danger) => `<button type="button" class="panel-row${danger ? ' danger' : ''}" onclick="${onclick}"><span class="panel-ico">${pIco[icon]}</span><span class="panel-label">${label}</span><span class="panel-chev">›</span></button>`;
+  // Inicio del panel en lista (se usa en el dibujo rápido y en el
+  // completo: es el mismo marcado, para que no se desincronice).
+  const panelHomeHtml = (dueCount) => `
+    <div id="panelListHome">
+    ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
+    <div class="panel-sec">PANEL FOTÓGRAFO</div>
+    <div class="panel-list">
+    ${panelRow('plus', 'Crear evento', "goPanelSection('gestion','secCrearEvento')")}
+    ${panelRow('upload', 'Subir fotos', "goPanelSection('gestion','secSubirFotos')")}
+    ${panelRow('grid', 'Mis eventos', "goPanelSection('gestion','secMisEventos')")}
+    ${panelRow('tag', 'Fotos vendidas', "goPanelSection('ventas')")}
+    </div>
+    <div class="panel-sec">VENTAS Y ESTADÍSTICAS</div>
+    <div class="panel-list">
+    ${panelRow('chart', 'Estadísticas', "goPanelSection('estadisticas')")}
+    ${me.isOwner ? panelRow('users', 'Fotógrafos', "goPanelSection('fotografos')") : panelRow('wallet', 'Mis ganancias', "goPanelSection('ganancias')")}
+    ${panelRow('gear', 'Gestión', "goPanelSection('gestion')")}
+    </div>
+    <div class="panel-sec">CUENTA</div>
+    <div class="panel-list">
+    ${panelRow('logout', 'Cerrar sesión', 'doLogout()', true)}
+    </div>
+    </div>
+  `;
+  // El panel abre AL INSTANTE con la lista y las secciones en
+  // "Cargando…": los datos llegan después (8 llamadas en paralelo) y
+  // solo entonces se dibuja el contenido. Antes la lista no aparecía
+  // hasta que TODO cargaba y el panel tardaba varios segundos en abrir.
+  const homeBefore = document.getElementById('panelListHome');
+  const panelWasOpen = !!homeBefore && homeBefore.classList.contains('hidden');
+  box.innerHTML = panelHomeHtml(0) +
+    '<button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>' +
+    [['gestion', 'Gestión'], ['ventas', 'Fotos vendidas'], ['ganancias', 'Mis ganancias'], ['fotografos', 'Fotógrafos'], ['estadisticas', 'Estadísticas']].map(([t, title]) => `<section data-tabpanel="${t}" class="hidden"><h2 class="sec-title">${title}</h2><p class="muted">Cargando…</p></section>`).join('');
+  // Todas las peticiones del panel salen A LA VEZ: antes iban una por
+  // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
+  // Ahora el tiempo total es más o menos el de la petición más lenta.
+  const panelResults = await Promise.all([
     api('/api/events'),
     api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 })),
     api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] })),
@@ -1609,7 +1690,14 @@ async function loadPhotographer() {
     me.isOwner ? api('/api/payouts-history').catch(() => ({ payouts: [] })) : Promise.resolve({ payouts: [] }),
     me.isOwner ? api('/api/list-photographers').catch(() => ({ photographers: [] })) : Promise.resolve({ photographers: [] }),
     me.isOwner ? api('/api/list-applications').catch(() => ({ applications: [] })) : Promise.resolve({ applications: [] }),
-  ]);
+  ]).catch(() => null);
+  if (!panelResults) {
+    box.innerHTML = panelHomeHtml(0) +
+      '<button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>' +
+      '<p class="error">No se pudo cargar el panel. Revisa tu conexión.</p><button class="primary" onclick="loadPhotographer()">Reintentar</button>';
+    return;
+  }
+  const [eventsRes, sales, stats, earnings, payouts, payoutHistory, photographers, applications] = panelResults;
   const events = eventsRes.events;
   // Cada fotógrafo ve solo SUS eventos en el panel; el dueño ve todos.
   const myEvents = me.isOwner ? events : events.filter(e => e.photographerId === me.id);
@@ -1682,19 +1770,6 @@ async function loadPhotographer() {
   // secciones acomodadas.
   const kv = (label, value, gold) => `<div class="sec-kv"><span>${label}</span><span class="sec-val${gold ? ' gold' : ''}">${value}</span></div>`;
   const earningsHtml = earnings ? `${kv('Total vendido', fmtMxn(earnings.totalSold))}${kv('Comisión Clip', fmtMxn(earnings.clipFee))}${kv('Comisión ONLYCLICK (10%)', fmtMxn(earnings.orlanFee))}${kv('Mi parte', fmtMxn(earnings.photographerShare), true)}${kv('Pendiente por pagarme', fmtMxn(earnings.pendingBalance))}${kv('Ya me pagaron', fmtMxn(earnings.paidShare))}${earnings.lastPayout ? kv('Último pago', fmtMxn(earnings.lastPayout.amountMxn) + ' el ' + String(earnings.lastPayout.paidAt || '').slice(0, 10)) : ''}<p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
-  // Iconos del panel en lista (SVG simples en dorado, sin emoji).
-  const pIco = {
-    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
-    upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 5 5m-5-5L7 9"/><path d="M4 20h16"/></svg>',
-    grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
-    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11V4h7l10 10-7 7L3 11z"/><circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none"/></svg>',
-    chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
-    users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 15.4c2 .7 3.4 2.2 3.9 4.6"/></svg>',
-    wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2.5"/><path d="M3 10h18M16 15h2"/></svg>',
-    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"/></svg>',
-    logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/></svg>',
-  };
-  const panelRow = (icon, label, onclick, danger) => `<button type="button" class="panel-row${danger ? ' danger' : ''}" onclick="${onclick}"><span class="panel-ico">${pIco[icon]}</span><span class="panel-label">${label}</span><span class="panel-chev">›</span></button>`;
   // Fila de un evento propio en "Mis eventos": encabezado con nombre y
   // resumen; los controles (precio, dorsales, ocultar, eliminar) salen
   // debajo al picarla. Cada fila es UN hijo de [data-pg="events"], así
@@ -1716,28 +1791,14 @@ async function loadPhotographer() {
       <p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}</p>
       <div class="sec-inline"><span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></div>
     </div>`;
+  // ¿El usuario abrió una sección MIENTRAS cargaba? El esqueleto se
+  // reemplaza aquí: si la lista está oculta es que hay una sección
+  // abierta y hay que restaurarla al final (panelWasOpen, de arriba,
+  // solo cubre la sección abierta ANTES de empezar a cargar).
+  const _homeNow = document.getElementById('panelListHome');
+  const panelOpenedWhileLoading = !!_homeNow && _homeNow.classList.contains('hidden');
   box.innerHTML = `
-    <!-- Inicio del panel en lista: al picar una fila se abre esa sección -->
-    <div id="panelListHome">
-    ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
-    <div class="panel-sec">PANEL FOTÓGRAFO</div>
-    <div class="panel-list">
-    ${panelRow('plus', 'Crear evento', "goPanelSection('gestion','secCrearEvento')")}
-    ${panelRow('upload', 'Subir fotos', "goPanelSection('gestion','secSubirFotos')")}
-    ${panelRow('grid', 'Mis eventos', "goPanelSection('gestion','secMisEventos')")}
-    ${panelRow('tag', 'Fotos vendidas', "goPanelSection('ventas')")}
-    </div>
-    <div class="panel-sec">VENTAS Y ESTADÍSTICAS</div>
-    <div class="panel-list">
-    ${panelRow('chart', 'Estadísticas', "goPanelSection('estadisticas')")}
-    ${me.isOwner ? panelRow('users', 'Fotógrafos', "goPanelSection('fotografos')") : panelRow('wallet', 'Mis ganancias', "goPanelSection('ganancias')")}
-    ${panelRow('gear', 'Gestión', "goPanelSection('gestion')")}
-    </div>
-    <div class="panel-sec">CUENTA</div>
-    <div class="panel-list">
-    ${panelRow('logout', 'Cerrar sesión', 'doLogout()', true)}
-    </div>
-    </div>
+    ${panelHomeHtml(dueCount)}
     <button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>
     <section data-tabpanel="gestion">
     <h2 class="sec-title">Gestión</h2>
@@ -2234,8 +2295,10 @@ async function loadPhotographer() {
     } catch (e) { box.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
   });
   // Lista y paginación: se aplican después de cada render del panel.
-  // El panel siempre abre en la lista (ninguna sección visible).
-  showPanelHome();
+  // El panel siempre abre en la lista, salvo que el usuario ya hubiera
+  // abierto una sección (antes de cargar, o mientras cargaba): ahí se
+  // queda donde estaba.
+  if ((panelWasOpen || panelOpenedWhileLoading) && document.querySelector(`#photoPanel [data-tabpanel="${panelTab}"]`)) showPanelTab(panelTab); else showPanelHome();
   applyPanelPagination();
 }
 
