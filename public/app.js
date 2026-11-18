@@ -961,10 +961,14 @@ function openLightbox(p) {
   const price = Number(p.priceMxn || p.price || 0);
   lightboxFreeMode = freeMode;
   lightboxPriceMxn = price;
-  // Token solo si la foto es de un álbum oculto (el dueño viéndolo): si
-  // es del evento abierto y ese evento es visible, sin token para que el
-  // edge la cachee; si no se sabe el evento, se deja el token (seguro).
-  const lbNeedsToken = (p.eventId != null && Number(p.eventId) === Number(currentEvent)) ? currentEventHidden : true;
+  // Token en la vista ampliada: hace falta cuando los bytes dependen
+  // de quién mira — álbum oculto (solo el dueño) o evento de PAGO (el
+  // que compró ve el original, el que no compró ve la miniatura; sin
+  // token el servidor no sabe quién eres y al comprador le saldría la
+  // miniatura chica en vez del original). En evento gratis y visible no
+  // hace falta: la foto es igual para todos y sin token el edge la
+  // guarda en caché. Si no se sabe el evento, se deja el token (seguro).
+  const lbNeedsToken = (p.eventId != null && Number(p.eventId) === Number(currentEvent)) ? (currentEventHidden || !freeMode) : true;
   $('#lbImg').src = photoImgUrl(p.id, false, lbNeedsToken);
   $('#lbInfo').textContent = `Dorsal: ${(p.bibs || []).join(', ') || 'sin dorsal'} · ${freeMode ? 'Descarga gratis' : '$' + price + ' MXN'}` + (p.photographerName ? ` · Foto de ${p.photographerName}` : '');
   $('#lbSave').textContent = freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN');
