@@ -152,18 +152,74 @@ const SINGLE_TIERS = [
   { from: 6, to: Infinity, discount: 0 },
 ];
 const CART_MAX_TOTAL = 5000; // límite de Clip por transacción (MXN)
-const CART_KEY = 'onlyclick_cart';
-let cart = loadCart();
-function loadCart() {
+// ---- Carrito por cuenta (no por teléfono) ----
+// Antes el carrito vivía en UNA sola clave de localStorage
+// ('onlyclick_cart'): al salir de la cuenta de deportista y entrar
+// como fotógrafo (o sin sesión) seguían apareciendo las mismas fotos.
+// Ahora cada cuenta tiene su propio carrito y el invitado (sin sesión)
+// tiene el suyo. El pago pendiente NO vive en el carrito: se consulta
+// al servidor (checkout-status), así que cambiar la clave no afecta
+// ningún pago en proceso.
+const LEGACY_CART_KEY = 'onlyclick_cart';
+const GUEST_CART_KEY = 'onlyclick_cart_guest';
+function cartKeyFor(user) { return user && user.id ? 'onlyclick_cart_u_' + Number(user.id) : GUEST_CART_KEY; }
+function activeCartKey() { return cartKeyFor(me); }
+let cartKey = activeCartKey();
+let cart = loadCart(cartKey);
+function readCartItems(key) {
   try {
-    const raw = localStorage.getItem(CART_KEY);
+    const raw = localStorage.getItem(key);
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr) ? arr.filter(x => x && Number(x.id)) : [];
   } catch (_) { return []; }
 }
+function loadCart(key) { return readCartItems(key || activeCartKey()); }
 function saveCart() {
-  try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch (_) {}
+  try { localStorage.setItem(cartKey, JSON.stringify(cart)); } catch (_) {}
   updateCartBadge();
+}
+// Une dos listas de fotos sin repetir por id (la base manda).
+function mergeCartItems(base, extra) {
+  const seen = new Set(base.map(x => Number(x.id)));
+  const out = base.slice();
+  for (const it of extra) { if (!seen.has(Number(it.id))) { seen.add(Number(it.id)); out.push(it); } }
+  return out;
+}
+// Migración única de la clave vieja ('onlyclick_cart'): sus fotos
+// pasan a la clave activa (la del usuario si hay sesión, la de
+// invitado si no) y la clave vieja se borra. Idempotente: sin clave
+// vieja no hace nada.
+function migrateLegacyCart() {
+  const legacy = readCartItems(LEGACY_CART_KEY);
+  if (legacy.length) {
+    const key = activeCartKey();
+    try { localStorage.setItem(key, JSON.stringify(mergeCartItems(readCartItems(key), legacy))); } catch (_) {}
+  }
+  try { localStorage.removeItem(LEGACY_CART_KEY); } catch (_) {}
+}
+// Al entrar con sesión, lo que el invitado agregó pasa al carrito del
+// usuario (sin duplicar) y el carrito de invitado queda vacío. Así se
+// conserva el flujo "veo fotos sin entrar y luego entro a pagar" y el
+// del carrito compartido (que agrega al carrito activo).
+function mergeGuestCartIntoUser() {
+  if (!me || !me.id) return;
+  const guest = readCartItems(GUEST_CART_KEY);
+  if (!guest.length) return;
+  const key = cartKeyFor(me);
+  try { localStorage.setItem(key, JSON.stringify(mergeCartItems(readCartItems(key), guest))); } catch (_) {}
+  try { localStorage.removeItem(GUEST_CART_KEY); } catch (_) {}
+}
+// Cambia el carrito activo según quién tiene la sesión: migra la clave
+// vieja, fusiona el carrito de invitado si se entró con sesión, carga
+// el carrito de la cuenta, actualiza el numerito y vuelve a pintar la
+// vista del carrito si está abierta.
+function setActiveCart() {
+  try { migrateLegacyCart(); } catch (_) {}
+  try { mergeGuestCartIntoUser(); } catch (_) {}
+  cartKey = activeCartKey();
+  cart = loadCart(cartKey);
+  updateCartBadge();
+  if (currentView === 'cart') renderCartView();
 }
 function singleDiscountForPosition(pos) {
   for (const t of SINGLE_TIERS) if (pos >= t.from && pos <= t.to) return t.discount;
@@ -375,9 +431,12 @@ async function refreshAuth() {
       closeUserMenu();
     }
   } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  // La sesión ya se resolvió (o no hay): el carrito activo es el de
+  // esta cuenta (o el de invitado). Nunca debe romper el inicio.
+  try { setActiveCart(); } catch (_) {}
 }
 
-function doLogout() { saveToken(''); me = null; location.reload(); }
+function doLogout() { saveToken(''); me = null; setActiveCart(); location.reload(); }
 
 // Menú del avatar (header): saludo + accesos + cerrar sesión. El logo
 // nunca choca con ningún botón: aquí solo hay un círculo.
@@ -2283,11 +2342,15 @@ if (resetToken) {
   $('#authTitle').textContent = 'Nueva contraseña';
 }
 
-refreshAuth();
-loadHome();
-handlePayReturn();
-handleDeepLinks();
-updateCartBadge();
+// La sesión se resuelve primero: el inicio, el regreso de un pago y
+// los links profundos usan el carrito, y el carrito activo depende de
+// quién tiene la sesión (setActiveCart corre dentro de refreshAuth).
+refreshAuth().finally(() => {
+  loadHome();
+  handlePayReturn();
+  handleDeepLinks();
+  updateCartBadge();
+});
 if (resetToken) showView('account');
 checkInvite();
 // Si la URL trae ?unirme=1 (link para mandar a un fotógrafo), abrir el
