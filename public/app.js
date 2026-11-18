@@ -2498,3 +2498,16 @@ checkInvite();
 // inicio con el formulario "Soy fotógrafo, quiero unirme" ya desplegado.
 if (new URLSearchParams(location.search).get('unirme')) goToPhotographerForm();
 if (isInAppBrowser()) { const b = $('#inAppBanner'); if (b) b.style.display = ''; }
+
+// ---------- Botón flotante "volver arriba" ----------
+// Aparece al bajar más de 300px y al picarlo regresa arriba suave.
+// Es global: sirve en el inicio, el panel, la galería y cualquier vista.
+function initToTopBtn() {
+  const btn = document.getElementById('toTopBtn');
+  if (!btn) return;
+  const onScroll = () => { btn.classList.toggle('show', window.scrollY > 300); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+  btn.addEventListener('click', () => { window.scrollTo({ top: 0, behavior: 'smooth' }); });
+}
+initToTopBtn();
