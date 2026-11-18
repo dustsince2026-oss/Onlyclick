@@ -243,7 +243,7 @@ function supabase() {
 }
 
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, createdAt: r.created_at } : null; }
-function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', isHidden: !!r.is_hidden, createdAt: r.created_at, photoCount } : null; }
+function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', isHidden: !!r.is_hidden, isExclusive: !!r.is_exclusive, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', widthPx: r.width_px != null ? Number(r.width_px) : null, heightPx: r.height_px != null ? Number(r.height_px) : null, sizeKb: r.size_kb != null ? Number(r.size_kb) : null, createdAt: r.created_at } : null; }
 // Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
 // llena cuando se mandó el aviso (una sola vez por correo y evento).
@@ -324,11 +324,26 @@ const supabaseStore = {
     return out;
   },
   async getEvent(id) { const { data } = await supabase().from('events').select().eq('id', id).maybeSingle(); return mapEvent(data); },
-  async createEvent(e) { const { data, error } = await supabase().from('events').insert({ photographer_id: e.photographerId, name: e.name, sport: e.sport, event_date: e.eventDate, location: e.location, free_mode: e.freeMode !== false, price_mxn: e.priceMxn !== undefined ? e.priceMxn : 20 }).select().single(); if (error) throw new Error(error.message); return mapEvent(data, 0); },
+  async createEvent(e) {
+    const ins = { photographer_id: e.photographerId, name: e.name, sport: e.sport, event_date: e.eventDate, location: e.location, free_mode: e.freeMode !== false, price_mxn: e.priceMxn !== undefined ? e.priceMxn : 20 };
+    // Álbum exclusivo: la columna solo se manda cuando es exclusivo, para
+    // que crear eventos normales no se rompa si aún no se corrió el SQL
+    // (falta el ALTER): si la columna no existe, se reintenta sin ella y
+    // el evento queda como álbum normal, igual que con las columnas de
+    // metadatos de las fotos.
+    if (e.isExclusive === true) ins.is_exclusive = true;
+    let { data, error } = await supabase().from('events').insert(ins).select().single();
+    if (error && /is_exclusive/i.test(error.message || '')) {
+      delete ins.is_exclusive;
+      ({ data, error } = await supabase().from('events').insert(ins).select().single());
+    }
+    if (error) throw new Error(error.message); return mapEvent(data, 0);
+  },
   async updateEvent(id, patch) {
     const p = {}; if (patch.freeMode !== undefined) p.free_mode = patch.freeMode;
     if (patch.priceMxn !== undefined) p.price_mxn = patch.priceMxn;
     if (patch.isHidden !== undefined) p.is_hidden = patch.isHidden;
+    if (patch.isExclusive !== undefined) p.is_exclusive = patch.isExclusive;
     if (patch.name !== undefined) p.name = patch.name;
     if (patch.coverPath !== undefined) p.cover_path = patch.coverPath;
     const { data } = await supabase().from('events').update(p).eq('id', id).select().single(); return mapEvent(data);

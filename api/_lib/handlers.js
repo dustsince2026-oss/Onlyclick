@@ -248,12 +248,18 @@ async function createEvent(store, user, body) {
   requirePhotographer(user);
   const name = String(body.name || '').trim();
   if (!name) throw err(400, 'El evento necesita un nombre.');
+  // Álbum exclusivo OnlyClick: SOLO el dueño puede marcarlo (otros
+  // fotógrafos ni siquiera ven la casilla; si la mandan a mano se ignora).
+  // Un álbum exclusivo siempre es GRATIS y sin precio: el organizador le
+  // paga directo al dueño, fuera de OnlyClick.
+  const isExclusive = user.isOwner && body.isExclusive === true;
   const pm = Number(body.priceMxn);
   const ev = await store.createEvent({
     photographerId: user.id, name, sport: String(body.sport || 'Carrera'),
     eventDate: String(body.eventDate || ''), location: String(body.location || ''),
-    freeMode: body.freeMode !== false,
-    priceMxn: (Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : 20,
+    freeMode: isExclusive ? true : body.freeMode !== false,
+    priceMxn: isExclusive ? 0 : ((Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : 20),
+    isExclusive,
   });
   // El creador ya es participante de su evento, con el precio del evento.
   try { await store.joinEvent(ev.id, user.id, ev.priceMxn); } catch (_) {}
@@ -317,6 +323,9 @@ async function uploadPhoto(store, user, body) {
   // Subir a un evento compartido: el creador o cualquier participante.
   const part = ev.photographerId !== user.id ? await store.getParticipant(ev.id, user.id).catch(() => null) : null;
   if (ev.photographerId !== user.id && !part) throw err(403, 'No participas en ese evento. Únete primero desde el evento.');
+  // Álbum exclusivo OnlyClick: SOLO el creador (dueño) sube fotos; ni
+  // siquiera un participante (que no puede haber: nadie se puede unir).
+  if (ev.isExclusive && ev.photographerId !== user.id) throw err(403, 'Este álbum es exclusivo OnlyClick: solo el dueño sube fotos.');
   const dataBase64 = String(body.dataBase64 || '');
   if (!dataBase64) throw err(400, 'No llegó ninguna foto.');
   const fileBuffer = Buffer.from(dataBase64, 'base64');
@@ -343,7 +352,7 @@ async function uploadPhoto(store, user, body) {
   // ¿Es la PRIMERA foto del evento? Si sí, hay atletas esperando el
   // aviso "Avísame cuando haya fotos": se les avisa una sola vez.
   const hadPhotos = (await store.listPhotos(ev.id).catch(() => [])).length > 0;
-  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: Number(body.price || 0), photographerId: user.id, fileBuffer, thumbBuffer, widthPx, heightPx, sizeKb });
+  const photo = await store.createPhoto({ eventId: ev.id, filename: String(body.filename || 'foto.jpg'), mimeType, bibs, price: ev.isExclusive ? 0 : Number(body.price || 0), photographerId: user.id, fileBuffer, thumbBuffer, widthPx, heightPx, sizeKb });
   if (!hadPhotos) { try { await notifyPhotoAlerts(store, ev.id); } catch (_) { /* el aviso nunca rompe la subida */ } }
   return { status: 201, data: { photo: { ...photo, filePath: undefined, storagePath: undefined, thumbPath: undefined } } };
 }
@@ -805,6 +814,9 @@ async function setFreeMode(store, user, body) {
   const ev = await store.getEvent(body.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
   if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  // Un álbum exclusivo OnlyClick siempre es gratis (el organizador paga
+  // directo al dueño): no se puede cambiar a pago.
+  if (ev.isExclusive && body.freeMode === false) throw err(400, 'Un álbum exclusivo OnlyClick siempre es gratis.');
   const updated = await store.updateEvent(ev.id, { freeMode: body.freeMode !== false });
   return { status: 200, data: { event: updated } };
 }
@@ -1637,6 +1649,8 @@ async function setEventPrice(store, user, body) {
   const ev = await store.getEvent(body.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
   if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  // Álbum exclusivo: no tiene precio, las fotos son gratis.
+  if (ev.isExclusive) throw err(400, 'Un álbum exclusivo OnlyClick no tiene precio: las fotos son gratis.');
   const price = Number(body.priceMxn);
   if (!Number.isFinite(price) || price < 1 || price > 5000) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
   const updated = await store.updateEvent(ev.id, { priceMxn: Math.round(price * 100) / 100 });
@@ -1987,6 +2001,9 @@ async function joinEvent(store, user, body) {
   const price = validPrice(body.priceMxn);
   if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
   if (ev.photographerId === user.id) return { status: 200, data: { ok: true, alreadyCreator: true, eventId: ev.id, priceMxn: ev.priceMxn } };
+  // Álbum exclusivo OnlyClick: ningún otro fotógrafo se puede unir ni
+  // vender fotos ahí; solo el dueño sube fotos.
+  if (ev.isExclusive) throw err(403, 'Este álbum es exclusivo OnlyClick: solo el dueño sube fotos.');
   const row = await store.joinEvent(ev.id, user.id, price);
   return { status: 200, data: { ok: true, eventId: ev.id, photographerId: user.id, priceMxn: row.priceMxn } };
 }
@@ -2041,6 +2058,8 @@ async function setMyEventPrice(store, user, body) {
   requirePhotographer(user);
   const ev = await store.getEvent(Number(body.eventId));
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // Álbum exclusivo: no tiene precio, las fotos son gratis.
+  if (ev.isExclusive) throw err(400, 'Un álbum exclusivo OnlyClick no tiene precio: las fotos son gratis.');
   const price = validPrice(body.priceMxn);
   if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
   if (ev.photographerId === user.id) {
