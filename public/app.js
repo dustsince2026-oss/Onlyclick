@@ -804,6 +804,17 @@ async function pollCartPayment(pid) {
   }
 }
 
+// Borrar foto: solo el fotógrafo dueño de la foto (o el dueño de
+// OnlyClick, que puede borrar cualquier foto). Espejo del backend
+// (isPhotoOwner): si la foto no trae photographerId (fotos viejas),
+// se usa el fotógrafo del evento que se pasa en opts.event.
+function canDeletePhoto(p, ev) {
+  if (!me || me.role !== 'photographer') return false;
+  if (me.isOwner) return true;
+  if (p && p.photographerId != null) return Number(p.photographerId) === me.id;
+  return !!ev && Number(ev.photographerId) === me.id;
+}
+
 function photoCard(p, opts) {
   const freeMode = p.freeMode !== false;
   const price = Number(p.priceMxn || p.price || 0);
@@ -822,6 +833,7 @@ function photoCard(p, opts) {
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
       ${opts && opts.remove && Number(p.amount || 0) === 0 ? `<button data-remove="${p.id}" class="secondary">Quitar de Mis fotos</button>` : ''}
+      ${opts && opts.delete && canDeletePhoto(p, opts.event) ? `<button data-delete="${p.id}" class="secondary">Eliminar foto</button>` : ''}
     </div></div>`;
 }
 
@@ -851,6 +863,15 @@ function openLightbox(p) {
   lbCart.dataset.cart = p.id;
   lbCart.disabled = cartHas(p.id);
   lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito · $' + price + ' MXN';
+  // Borrar foto en la vista ampliada: solo el dueño de la foto. Aquí
+  // no siempre se conoce el evento, así que sin photographerId solo el
+  // dueño de OnlyClick la ve (en la cuadrícula del evento sí se usa el
+  // fotógrafo del evento como respaldo).
+  const lbDelete = $('#lbDelete');
+  if (lbDelete) {
+    lbDelete.style.display = canDeletePhoto(p, null) ? '' : 'none';
+    lbDelete.onclick = () => deletePhotoFlow(p.id);
+  }
   // Lo que incluye + detalles (archivo, dorsal, fotógrafo, evento,
   // resolución y tamaño cuando se conocen).
   const inc = $('#lbIncludes');
@@ -886,6 +907,24 @@ function openLightbox(p) {
   pushNav({ view: currentView, lightbox: p.id });
 }
 
+// Borrar una foto del álbum: pregunta primero y, si se confirma, la
+// borra en el servidor y saca la tarjeta de la vista sin recargar la
+// página. Si la foto ya se vendió, el servidor la bloquea (400) y se
+// muestra el motivo. Una foto a la vez.
+async function deletePhotoFlow(photoId) {
+  if (!confirm('¿Eliminar esta foto? No se puede deshacer.')) return;
+  try {
+    await api('/api/photo-delete', { method: 'POST', body: JSON.stringify({ photoId }) });
+    const btn = document.querySelector(`[data-delete="${photoId}"]`);
+    if (btn) { const card = btn.closest('.photo'); if (card) card.remove(); }
+    const i = currentPhotos.findIndex(x => x.id === photoId);
+    if (i >= 0) currentPhotos.splice(i, 1);
+    if (lightboxPhoto && lightboxPhoto.id === photoId) hideLightbox();
+    const grid = document.querySelector('#evGrid');
+    if (grid && !grid.querySelector('.photo')) grid.innerHTML = '<p>No hay fotos todavía.</p>';
+  } catch (e) { alert(e.message || 'No se pudo eliminar la foto.'); }
+}
+
 function bindPhotos(photos) {
   document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => {
     const p = photos.find(x => x.id === Number(b.dataset.save)) || currentPhotos.find(x => x.id === Number(b.dataset.save));
@@ -899,6 +938,7 @@ function bindPhotos(photos) {
     const p = photos.find(x => x.id === Number(img.dataset.open));
     if (p) openLightbox(p);
   });
+  document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => deletePhotoFlow(Number(b.dataset.delete)));
 }
 
 // ---- Búsqueda: un solo botón, 3 métodos (idea de ZebraSnap) ----
@@ -1299,7 +1339,7 @@ async function loadEventDetail(eventId, push) {
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
     ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
-    <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
+    <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   trackView('event', null, eventId);
   const notifyBtn = $('#notifyBtn');
