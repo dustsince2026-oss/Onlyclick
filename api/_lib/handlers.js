@@ -217,9 +217,13 @@ async function listEvents(store, user) {
   const names = new Map();
   const ownerIds = new Set();
   for (const ph of await store.listPhotographers()) { names.set(ph.id, displayNameFor(ph)); if (ph.isOwner) ownerIds.add(ph.id); }
+  // Las filas de participantes de cada evento son independientes: se
+  // piden todas a la vez (antes iban una por una y la lista tardaba).
+  const partsList = await Promise.all(events.map(e => store.listParticipants(e.id).catch(() => [])));
   const out = [];
-  for (const e of events) {
-    const parts = await store.listParticipants(e.id).catch(() => []);
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const parts = partsList[i] || [];
     const myPart = user ? parts.find(pt => Number(pt.photographerId) === user.id) : null;
     const isCreator = user ? e.photographerId === user.id : false;
     out.push({
@@ -278,12 +282,18 @@ async function getEvent(store, user, eventId) {
   }
   // Álbum oculto: solo el dueño lo puede abrir (también por link directo).
   assertEventVisible(user, ev);
-  const photos = await store.listPhotos(eventId);
+  // Cinco lecturas independientes: a la vez (antes iban una tras otra y
+  // abrir la galería tardaba).
+  const [photos, userDownloads, photographer, parts, allPhotographers] = await Promise.all([
+    store.listPhotos(eventId),
+    user ? store.listDownloadsByUser(user.id) : Promise.resolve([]),
+    store.findUserById(ev.photographerId),
+    store.listParticipants(eventId).catch(() => []),
+    store.listPhotographers(),
+  ]);
   const owned = new Set();
-  if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
-  const photographer = await store.findUserById(ev.photographerId);
-  const parts = await store.listParticipants(eventId).catch(() => []);
-  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  for (const d of userDownloads || []) owned.add(d.photoId);
+  const users = new Map((allPhotographers || []).map(u => [u.id, u]));
   // Cada foto lleva su autor, su precio y la propina DE SU fotógrafo.
   const enriched = photos.map(p => {
     const pid = photoOwnerId(p, ev);
@@ -710,9 +720,8 @@ async function trackView(store, user, body) {
 
 async function listStats(store, user) {
   requirePhotographer(user);
-  let views = await store.listViews();
-  let downloads = await store.listAllDownloads();
-  let events = await store.listEvents();
+  // Tres listas independientes: se piden a la vez, no una tras otra.
+  let [views, downloads, events] = await Promise.all([store.listViews(), store.listAllDownloads(), store.listEvents()]);
   if (!user.isOwner) {
     // Cada fotógrafo ve SOLO las estadísticas de sus eventos: los que
     // creó y los compartidos en los que participa. El dueño ve todas.
@@ -725,7 +734,9 @@ async function listStats(store, user) {
     downloads = downloads.filter(d => own.has(d.eventId));
   }
   const photos = new Map();
-  for (const ev of events) for (const p of await store.listPhotos(ev.id)) photos.set(p.id, p);
+  // Las fotos de cada evento son independientes: a la vez, no evento por
+  // evento (antes la pestaña de estadísticas esperaba cada lista).
+  for (const list of await Promise.all(events.map(ev => store.listPhotos(ev.id)))) for (const p of list || []) photos.set(p.id, p);
   if (!user.isOwner) {
     // En un evento compartido: las descargas y las vistas de FOTO son
     // de quien subió esa foto (las visitas al evento sí se ven para
@@ -923,7 +934,10 @@ async function coverFile(store, user, eventId) {
   assertEventVisible(user, ev);
   const cover = await store.getEventCover(eventId);
   if (!cover) throw err(404, 'Este evento no tiene portada.');
-  return { status: 200, file: { bytes: cover.bytes, mimeType: cover.mimeType, filename: `onlyclick-portada-${eventId}.jpg`, inline: true } };
+  // La portada es igual para todos los que ven el evento (el álbum
+  // oculto exige token en la URL, así que su clave de caché es solo del
+  // dueño; un anónimo recibe 404 sin headers de caché). Cacheable: true.
+  return { status: 200, file: { bytes: cover.bytes, mimeType: cover.mimeType, filename: `onlyclick-portada-${eventId}.jpg`, inline: true, cacheable: true } };
 }
 
 // Borra un evento completo: sus fotos del bucket (libera espacio),
@@ -1142,7 +1156,16 @@ async function photoFile(store, user, photoId, req) {
     if (bytes) mimeType = 'image/jpeg';
   }
   if (!bytes) bytes = await store.readPhotoBytes(photo);
-  return { status: 200, file: { bytes, mimeType, filename: `onlyclick-foto-${photo.id}.${(photo.filename || 'foto.jpg').split('.').pop() || 'jpg'}`, inline: req && req.query && req.query.inline === '1' } };
+  // ¿Se puede guardar en el caché del edge de Vercel? Solo cuando los
+  // bytes NO dependen de quién pide: la miniatura es siempre la misma, y
+  // la foto completa de un evento gratis también. En un evento de pago la
+  // misma URL devuelve la miniatura (sin comprar) o el original
+  // (comprado): si el edge la guardara, quien compró podría recibir la
+  // miniatura o quien no compró el original. La descarga (sin inline)
+  // nunca se cachea: exige sesión y compra. (El wrapper api/photo.js
+  // traduce este flag a s-maxage o a no-store.)
+  const cacheable = (req && req.query && req.query.thumb === '1') || (inline && ev.freeMode);
+  return { status: 200, file: { bytes, mimeType, filename: `onlyclick-foto-${photo.id}.${(photo.filename || 'foto.jpg').split('.').pop() || 'jpg'}`, inline: req && req.query && req.query.inline === '1', cacheable } };
 }
 
 
@@ -1722,9 +1745,8 @@ async function approvePhotographer(store, user, body) {
 
 async function listPhotographers(store, user) {
   requireOwner(user);
-  const photographers = await store.listPhotographers();
-  const events = await store.listEvents();
-  const downloads = await store.listAllDownloads();
+  // Tres listas independientes: a la vez, no una tras otra.
+  const [photographers, events, downloads] = await Promise.all([store.listPhotographers(), store.listEvents(), store.listAllDownloads()]);
   // Dueño de cada descarga: el fotógrafo DE LA FOTO (en eventos
   // compartidos, las ventas de los demás no son del creador del evento).
   const photoOwnerCache = new Map();
@@ -1742,6 +1764,9 @@ async function listPhotographers(store, user) {
   // rompe el panel: todos salen sin solicitud.
   let linked = new Set();
   try { linked = new Set((await store.listApplications()).map(a => a.photographerId).filter(id => id != null)); } catch (_) { linked = new Set(); }
+  // Los dueños de las descargas se resuelven todos a la vez (antes cada
+  // descarga esperaba a la anterior dentro del conteo por fotógrafo).
+  await Promise.all([...new Set(downloads.map(d => d.photoId))].map(id => ownerOfDownload({ photoId: id })));
   const rows = [];
   for (const ph of photographers) {
     let eventCount = 0, totalSold = 0;
@@ -1936,8 +1961,8 @@ async function setPayoutClabe(store, user, body) {
 // las sumas sean exactas. pending = descargas de pago sin payout_id
 // (aún no liquidadas); pendingSince = la venta sin pagar más vieja.
 async function photographerEarnings(store, photographerId) {
-  const downloads = await store.listAllDownloads();
-  const payouts = await store.listPayoutsByPhotographer(photographerId);
+  // Dos listas independientes: a la vez, no una tras otra.
+  const [downloads, payouts] = await Promise.all([store.listAllDownloads(), store.listPayoutsByPhotographer(photographerId)]);
   // Solo las descargas de SUS fotos (en eventos compartidos, las fotos
   // de los demás fotógrafos no cuentan para él).
   const photoOwnerCache = new Map();
@@ -1952,6 +1977,9 @@ async function photographerEarnings(store, photographerId) {
   let totalSoldC = 0, clipC = 0, orlanC = 0, shareC = 0;
   let pendingShareC = 0, pendingClipC = 0, pendingOrlanC = 0, pendingSince = null;
   const pendingIds = [];
+  // Los dueños de las descargas se resuelven todos a la vez (antes cada
+  // descarga esperaba a la anterior dentro del conteo).
+  await Promise.all([...new Set(downloads.map(d => d.photoId))].map(id => ownerOf({ photoId: id })));
   for (const d of downloads) {
     if ((await ownerOf(d)) !== photographerId) continue;
     const amt = Number(d.amount || 0);
@@ -1986,8 +2014,12 @@ async function payoutsSummary(store, user) {
   const photographers = (await store.listPhotographers()).filter(ph => !ph.isOwner);
   const rows = [];
   const totals = { totalSold: 0, clipFee: 0, orlanFee: 0, photographerShare: 0, pendingBalance: 0 };
-  for (const ph of photographers) {
-    const e = await photographerEarnings(store, ph.id);
+  // Las ganancias de cada fotógrafo son independientes: se calculan todas
+  // a la vez (antes iban una por una y la pestaña Fotógrafos esperaba).
+  const earningsList = await Promise.all(photographers.map(ph => photographerEarnings(store, ph.id)));
+  for (let i = 0; i < photographers.length; i++) {
+    const ph = photographers[i];
+    const e = earningsList[i];
     let dueAt = null, isDue = false, hoursUntilDue = null;
     if (e.pendingSince) {
       // Vence 72 h después de la venta sin pagar más vieja.
@@ -2072,8 +2104,9 @@ async function markPayoutPaid(store, user, body) {
 
 async function payoutsHistory(store, user) {
   requireOwner(user);
-  const payouts = await store.listPayouts();
-  const names = new Map((await store.listPhotographers()).map(ph => [ph.id, ph.name || '']));
+  // Dos listas independientes: a la vez, no una tras otra.
+  const [payouts, photographers] = await Promise.all([store.listPayouts(), store.listPhotographers()]);
+  const names = new Map(photographers.map(ph => [ph.id, ph.name || '']));
   return { status: 200, data: { payouts: payouts.map(p => ({ id: p.id, photographerId: p.photographerId, photographerName: names.get(p.photographerId) || '', amountMxn: p.amountMxn, orlanFeeMxn: p.orlanFeeMxn, clipFeeMxn: p.clipFeeMxn, status: p.status, createdAt: p.createdAt, paidAt: p.paidAt })) } };
 }
 
