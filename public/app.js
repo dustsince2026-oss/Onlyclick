@@ -344,13 +344,27 @@ function clearCart() { cart = []; saveCart(); }
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// timeoutMs (opcional): si el servidor no contesta en ese tiempo, la
+// llamada falla en vez de quedarse colgada para siempre. Solo lo usan
+// las llamadas que no pueden esperar (panel, sesión); las subidas y la
+// lectura de dorsales no llevan límite.
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (token) headers.Authorization = 'Bearer ' + token;
-  const res = await fetch(path, { ...opts, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Error del servidor.');
-  return data;
+  const { timeoutMs, ...fetchOpts } = opts;
+  let ctrl, timer;
+  if (timeoutMs) { ctrl = new AbortController(); timer = setTimeout(() => ctrl.abort(), timeoutMs); }
+  try {
+    const res = await fetch(path, { ...fetchOpts, headers, ...(ctrl ? { signal: ctrl.signal } : {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Error del servidor.');
+    return data;
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('El servidor tardó demasiado en responder.');
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Pequeño pool de concurrencia: sube/lee de 3 en 3 para que sea rápido
@@ -441,7 +455,7 @@ function trackView(kind, photoId, eventId, bib) {
 
 async function refreshAuth() {
   try {
-    const s = await api('/api/auth-status');
+    const s = await api('/api/auth-status', { timeoutMs: 10000 });
     me = s.user;
     $('#photoTakenNote').textContent = 'Si te registras como fotógrafo, ONLYCLICK debe aprobar tu cuenta antes de que puedas crear eventos.';
     const sessionEl = $('#session');
@@ -465,10 +479,19 @@ async function refreshAuth() {
       $('#auth').classList.remove('hidden');
       $('#profileBlock').classList.add('hidden');
       sessionEl.innerHTML = `<button id="loginBtn" class="ghost">Entrar</button>`;
-      $('#loginBtn').onclick = () => showView('account');
       closeUserMenu();
     }
-  } catch (e) { $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  } catch (e) {
+    // Si el servidor no contesta, el encabezado igual debe tener con
+    // qué entrar: antes quedaba sin botón de cuenta (así lo vio Orlan
+    // en su teléfono) y sin campanita. El clic lo atiende el manejador
+    // de #session (abajo, junto al inicio de la app).
+    $('#authMsg').innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    updateNotificationsNav();
+    updateNotifBadge(0);
+    const sessionEl = $('#session');
+    if (sessionEl && !sessionEl.innerHTML.trim()) sessionEl.innerHTML = `<button id="loginBtn" class="ghost">Entrar</button>`;
+  }
   // La sesión ya se resolvió (o no hay): el carrito activo es el de
   // esta cuenta (o el de invitado). Nunca debe romper el inicio.
   try { setActiveCart(); } catch (_) {}
@@ -1849,16 +1872,25 @@ async function loadPhotographer() {
   // Todas las peticiones del panel salen A LA VEZ: antes iban una por
   // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
   // Ahora el tiempo total es más o menos el de la petición más lenta.
+  // Cada llamada del panel tiene su propio tiempo límite (10 s) y su
+  // respaldo: el 2026-11-18 /api/events no contestó en 300 s y, como era
+  // la única llamada sin respaldo, el Promise.all nunca se resolvió y
+  // todas las secciones se quedaron en "Cargando…". Ahora una llamada
+  // atorada ya no puede congelar el panel: vence a los 10 s, usa su
+  // respaldo y la sección afectada avisa con Reintentar.
+  const panelFailed = {};
+  const panelApi = (path, fallback, key) => api(path, { timeoutMs: 10000 }).catch(() => { panelFailed[key] = true; return fallback; });
   const panelResults = await Promise.all([
-    api('/api/events'),
-    api('/api/sales').catch(() => ({ sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 })),
-    api('/api/stats').catch(() => ({ totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] })),
-    api('/api/my-earnings').catch(() => null),
-    me.isOwner ? api('/api/payouts-summary').catch(() => null) : Promise.resolve(null),
-    me.isOwner ? api('/api/payouts-history').catch(() => ({ payouts: [] })) : Promise.resolve({ payouts: [] }),
-    me.isOwner ? api('/api/list-photographers').catch(() => ({ photographers: [] })) : Promise.resolve({ photographers: [] }),
-    me.isOwner ? api('/api/list-applications').catch(() => ({ applications: [] })) : Promise.resolve({ applications: [] }),
+    panelApi('/api/events', { events: [] }, 'events'),
+    panelApi('/api/sales', { sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }, 'sales'),
+    panelApi('/api/stats', { totals: { photoViews: 0, uniqueViewers: 0, eventViews: 0, totalDownloads: 0, freeDownloads: 0, revenue: 0 }, events: [], topPhotos: [], topBibs: [] }, 'stats'),
+    panelApi('/api/my-earnings', null, 'earnings'),
+    me.isOwner ? panelApi('/api/payouts-summary', null, 'payouts') : Promise.resolve(null),
+    me.isOwner ? panelApi('/api/payouts-history', { payouts: [] }, 'payoutHistory') : Promise.resolve({ payouts: [] }),
+    me.isOwner ? panelApi('/api/list-photographers', { photographers: [] }, 'photographers') : Promise.resolve({ photographers: [] }),
+    me.isOwner ? panelApi('/api/list-applications', { applications: [] }, 'applications') : Promise.resolve({ applications: [] }),
   ]).catch(() => null);
+  const panelFailedAny = Object.keys(panelFailed).length > 0;
   if (!panelResults) {
     box.innerHTML = panelHomeHtml(0) +
       '<button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>' +
@@ -1967,6 +1999,7 @@ async function loadPhotographer() {
   const panelOpenedWhileLoading = !!_homeNow && _homeNow.classList.contains('hidden');
   box.innerHTML = `
     ${panelHomeHtml(dueCount)}
+    ${panelFailedAny ? '<p class="error">Algunos datos del panel no se pudieron cargar: el servidor tardó demasiado en responder.</p><button class="primary" onclick="loadPhotographer()">Reintentar</button>' : ''}
     <button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>
     <section data-tabpanel="gestion">
     <h2 class="sec-title">Gestión</h2>
@@ -2025,7 +2058,8 @@ async function loadPhotographer() {
     </div>
     <div class="panel-sec" id="secMisEventos">Mis eventos</div>
     <div class="sec-card">
-    <div data-pg="events">${myEvents.map(e => eventRowHtml(e)).join('') || '<p>Sin eventos.</p>'}</div>
+    ${panelFailed.events ? '<p class="error">No se pudieron cargar tus eventos: el servidor tardó demasiado en responder.</p><button class="primary" onclick="loadPhotographer()">Reintentar</button>' : ''}
+    <div data-pg="events">${panelFailed.events ? '' : (myEvents.map(e => eventRowHtml(e)).join('') || '<p>Sin eventos.</p>')}</div>
     <div data-pg-controls="events"></div>
     </div>
     ${joinedEvents.length ? `<div class="panel-sec">Eventos en los que participo</div>
@@ -2741,6 +2775,14 @@ if (resetToken) {
   $('#forgotBox').style.display = 'none';
   $('#authTitle').textContent = 'Nueva contraseña';
 }
+
+// El botón "Entrar" del encabezado vive en #session (y el avatar con
+// las iniciales cuando hay sesión): un solo manejador cubre el botón
+// que ya trae el HTML, el que dibuja refreshAuth sin sesión y el que
+// dibuja si la sesión no contesta. Antes el botón solo aparecía cuando
+// /api/auth-status contestaba, y sin sesión no había con qué entrar
+// desde arriba.
+$('#session').addEventListener('click', (e) => { if (e.target.closest && e.target.closest('#loginBtn')) showView('account'); });
 
 // La sesión se resuelve primero: el inicio, el regreso de un pago y
 // los links profundos usan el carrito, y el carrito activo depende de

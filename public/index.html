@@ -25,6 +25,7 @@
   @media (min-width: 720px) { #topNav { display: flex; } }
   #topNav button { background: none; border: none; color: #a7a7ad; font-size: 15px; font-weight: 600; padding: 8px 12px; width: auto; margin: 0; }
   #topNav button.active { color: #d4af37; }
+  .nav-bell { width: 18px; height: 18px; vertical-align: -3px; color: #d4af37; }
   .avatar { width: 40px; height: 40px; border-radius: 50%; background: #d4af37; color: #141414; font-weight: 800; font-size: 15px; border: none; padding: 0; margin: 0; width: 40px; flex: none; cursor: pointer; }
   .user-menu { position: absolute; top: calc(100% + 8px); right: 0; background: #17171c; border: 1px solid #2a2a30; border-radius: 12px; min-width: 230px; padding: 10px; z-index: 60; box-shadow: 0 12px 32px rgba(0,0,0,.55); }
   .user-menu .um-name { font-weight: 800; font-size: 16px; padding: 4px 8px 0; }
@@ -214,14 +215,14 @@
       <button data-view="home">Inicio</button>
       <button data-view="events">Eventos</button>
       <button data-view="myphotos">Mis fotos</button>
-      <button data-view="notifications" style="display:none">Notificaciones <span id="notifCountTop" class="cart-badge hidden">0</span></button>
+      <button data-view="notifications" style="display:none"><svg class="nav-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 15 18 9"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg> Notificaciones <span id="notifCountTop" class="cart-badge hidden">0</span></button>
       <button data-view="account">Cuenta</button>
     </nav>
     <button id="cartTopBtn" class="cart-top-btn" aria-label="Ver carrito">
       <svg viewBox="0 0 48 48" fill="none" stroke="#d4af37" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 16h7"/><path d="M1 23h7"/><path d="M3 30h7"/><path d="M13 6h6l4.2 16.5a3 3 0 0 0 3 2.5h13.6a3 3 0 0 0 3-2.5L45 12H19"/><g stroke-width="2"><path d="M27 12v13"/><path d="M33 12v13"/><path d="M39 12v13"/><path d="M22 18.5h21.5"/></g><circle cx="24" cy="38" r="3.2"/><circle cx="38" cy="38" r="3.2"/></svg>
       <span id="cartCount" class="cart-badge hidden">0</span>
     </button>
-    <div id="session"></div>
+    <div id="session"><button id="loginBtn" class="ghost">Entrar</button></div>
     <div id="userMenu" class="user-menu hidden"></div>
   </div>
 </header>
@@ -467,7 +468,7 @@
   <button data-view="home">Inicio</button>
   <button data-view="events">Eventos</button>
   <button data-view="myphotos">Mis fotos</button>
-  <button data-view="notifications" style="display:none">Notificaciones <span id="notifCountBottom" class="cart-badge hidden">0</span></button>
+  <button data-view="notifications" style="display:none" aria-label="Notificaciones"><svg class="nav-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 15 18 9"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg> <span id="notifCountBottom" class="cart-badge hidden">0</span></button>
   <button data-view="account">Cuenta</button>
 </nav>
 
