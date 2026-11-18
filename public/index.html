@@ -387,14 +387,20 @@
     <div id="cartBox"></div>
   </section>
 
-  <!-- NOTIFICACIONES: avisos del dueño a todos los fotógrafos -->
+  <!-- NOTIFICACIONES: noticias del dueño (atletas / fotógrafos / todos) + avisos de caducidad -->
   <section id="view-notifications" class="hidden">
     <h2>Notificaciones</h2>
     <div id="notifForm" class="card" style="display:none">
-      <h3>Publicar un aviso a los fotógrafos</h3>
-      <input id="notifTitle" type="text" maxlength="80" placeholder="Título del aviso">
-      <textarea id="notifBody" rows="3" maxlength="1000" placeholder="Mensaje para los fotógrafos..."></textarea>
-      <button id="notifPublish" class="primary">Publicar aviso</button>
+      <h3>Publicar una noticia</h3>
+      <input id="notifTitle" type="text" maxlength="80" placeholder="Título de la noticia">
+      <textarea id="notifBody" rows="3" maxlength="500" placeholder="Mensaje para los atletas..."></textarea>
+      <label class="muted" for="notifAudience">¿A quién va dirigida?</label>
+      <select id="notifAudience">
+        <option value="athletes" selected>Atletas</option>
+        <option value="photographers">Fotógrafos</option>
+        <option value="all">Todos</option>
+      </select>
+      <button id="notifPublish" class="primary">Publicar noticia</button>
       <p id="notifFormStatus" class="muted"></p>
     </div>
     <p id="notifStatus" class="muted"></p>

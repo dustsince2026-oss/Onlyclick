@@ -2498,8 +2498,8 @@ function showView(v) {
   if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
 }
 
-// ---- Notificaciones: avisos del dueño a los fotógrafos + avisos de
-// caducidad para TODOS (atletas incluidos) ----
+// ---- Notificaciones: avisos del dueño a los fotógrafos, noticias para
+// los atletas y avisos de caducidad para TODOS (atletas incluidos) ----
 // El botón se ve para cualquier usuario con sesión (antes solo
 // fotógrafos: los atletas no tenían cómo enterarse de que sus fotos
 // iban a desaparecer).
@@ -2532,7 +2532,7 @@ async function loadNotifications() {
     // desaparecen en 15 días o menos.
     const warn = (r.expiring || []).map(w => `<div class="card"><strong>El álbum ${esc(w.eventName)} desaparecerá en ${w.daysLeft} día${w.daysLeft === 1 ? '' : 's'}.</strong><p>Descarga tus fotos antes de que se borre.</p></div>`).join('');
     list.innerHTML = (warn + (items.length
-      ? items.map(x => `<div class="card"><strong>${esc(x.title)}</strong><p>${esc(x.body).replace(/\n/g, '<br>')}</p><p class="muted">${esc(String(x.createdAt || '').slice(0, 10))}</p></div>`).join('')
+      ? items.map(x => `<div class="card"><strong>${esc(x.title)}</strong><p>${esc(x.body).replace(/\n/g, '<br>')}</p><p class="muted">${esc(String(x.createdAt || '').slice(0, 10))}${(me && me.isOwner) ? ' · ' + esc(audienceLabel(x.audience)) : ''}</p></div>`).join('')
       : '')).trim() || '<p>No hay avisos todavía.</p>';
     if (status) status.textContent = '';
     // Al abrirlas ya se vieron: marcar leídas y limpiar el numerito.
@@ -2542,15 +2542,25 @@ async function loadNotifications() {
     if (status) status.textContent = 'No se pudieron cargar los avisos. Intenta de nuevo.';
   }
 }
+// Etiqueta del público de una noticia (solo la ve el dueño en su lista).
+function audienceLabel(aud) {
+  if (aud === 'athletes') return 'Para atletas';
+  if (aud === 'photographers') return 'Para fotógrafos';
+  if (aud === 'all') return 'Para todos';
+  return 'Para fotógrafos';
+}
 async function publishAnnouncement() {
   const st = $('#notifFormStatus');
   const title = $('#notifTitle').value.trim();
   const body = $('#notifBody').value.trim();
+  const audience = ($('#notifAudience') && $('#notifAudience').value) || 'athletes';
+  const sent = { athletes: 'Noticia publicada para los atletas.', photographers: 'Aviso publicado para los fotógrafos.', all: 'Noticia publicada para todos.' };
   try {
-    await api('/api/create-announcement', { method: 'POST', body: JSON.stringify({ title, body }) });
+    await api('/api/create-announcement', { method: 'POST', body: JSON.stringify({ title, body, audience }) });
     $('#notifTitle').value = '';
     $('#notifBody').value = '';
-    if (st) st.textContent = 'Aviso publicado a todos los fotógrafos.';
+    if ($('#notifAudience')) $('#notifAudience').value = 'athletes';
+    if (st) st.textContent = sent[audience] || sent.athletes;
     loadNotifications();
   } catch (e) { if (st) st.textContent = e.message; }
 }
