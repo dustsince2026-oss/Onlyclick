@@ -46,11 +46,25 @@ const PANEL_PAGE_SIZE = 10;
 let panelTab = 'ventas'; // pestaña activa del panel
 let panelPages = {}; // clave de lista -> página actual (empieza en 1)
 
-// Muestra solo la pestaña pedida del panel; las demás se esconden.
+// Panel en lista: el inicio del panel es una lista de filas (se arma en
+// loadPhotographer); al picar una fila se abre esa sección y arriba sale
+// "‹ Panel fotógrafo" para volver a la lista. showPanelTab abre una
+// sección (esconde la lista y muestra el botón de volver); showPanelHome
+// vuelve a la lista (esconde todas las secciones).
 function showPanelTab(tab) {
   panelTab = tab;
   document.querySelectorAll('#photoPanel [data-tabpanel]').forEach(s => s.classList.toggle('hidden', s.dataset.tabpanel !== tab));
-  document.querySelectorAll('#photoPanel [data-panel-tabbtn]').forEach(b => b.classList.toggle('primary', b.dataset.panelTabbtn === tab));
+  const home = document.getElementById('panelListHome');
+  if (home) home.classList.add('hidden');
+  const back = document.getElementById('panelBack');
+  if (back) back.classList.remove('hidden');
+}
+function showPanelHome() {
+  document.querySelectorAll('#photoPanel [data-tabpanel]').forEach(s => s.classList.add('hidden'));
+  const home = document.getElementById('panelListHome');
+  if (home) home.classList.remove('hidden');
+  const back = document.getElementById('panelBack');
+  if (back) back.classList.add('hidden');
 }
 
 // Botones rápidos del panel: cambia a la pestaña y baja a la sección
@@ -1643,17 +1657,42 @@ async function loadPhotographer() {
   // "Mis ganancias" es el mismo bloque para todos: el dueño lo ve dentro
   // de la pestaña Fotógrafos y los demás fotógrafos en su propia pestaña.
   const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión ONLYCLICK (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
+  // Iconos del panel en lista (SVG simples en dorado, sin emoji).
+  const pIco = {
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+    upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 5 5m-5-5L7 9"/><path d="M4 20h16"/></svg>',
+    grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11V4h7l10 10-7 7L3 11z"/><circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none"/></svg>',
+    chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
+    users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 15.4c2 .7 3.4 2.2 3.9 4.6"/></svg>',
+    wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2.5"/><path d="M3 10h18M16 15h2"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"/></svg>',
+    logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/></svg>',
+  };
+  const panelRow = (icon, label, onclick, danger) => `<button type="button" class="panel-row${danger ? ' danger' : ''}" onclick="${onclick}"><span class="panel-ico">${pIco[icon]}</span><span class="panel-label">${label}</span><span class="panel-chev">›</span></button>`;
   box.innerHTML = `
+    <!-- Inicio del panel en lista: al picar una fila se abre esa sección -->
+    <div id="panelListHome">
     ${dueCount ? `<p class="error">● Tienes ${dueCount} pago(s) a fotógrafos vencido(s) (72 h). Revisa la pestaña "Fotógrafos".</p>` : ''}
-    <!-- Accesos rápidos: lo más usado del panel, a la vista desde que se abre -->
-    <div class="row" style="gap:8px;margin-bottom:12px">
-      <button class="primary" style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secCrearEvento')">Crear evento</button>
-      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secSubirFotos')">Subir fotos</button>
-      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('gestion','secMisEventos')">Mis eventos</button>
-      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('ventas')">Fotos vendidas</button>
-      <button style="flex:1 1 45%;padding:14px" onclick="goPanelSection('estadisticas')">Estadísticas</button>
+    <div class="panel-sec">PANEL FOTÓGRAFO</div>
+    <div class="panel-list">
+    ${panelRow('plus', 'Crear evento', "goPanelSection('gestion','secCrearEvento')")}
+    ${panelRow('upload', 'Subir fotos', "goPanelSection('gestion','secSubirFotos')")}
+    ${panelRow('grid', 'Mis eventos', "goPanelSection('gestion','secMisEventos')")}
+    ${panelRow('tag', 'Fotos vendidas', "goPanelSection('ventas')")}
     </div>
-    <div class="row" style="gap:6px;margin-bottom:12px">${panelTabs.map(t => `<button data-panel-tabbtn="${t[0]}" style="flex:0 0 auto;min-width:0">${t[1]}</button>`).join('')}</div>
+    <div class="panel-sec">VENTAS Y ESTADÍSTICAS</div>
+    <div class="panel-list">
+    ${panelRow('chart', 'Estadísticas', "goPanelSection('estadisticas')")}
+    ${me.isOwner ? panelRow('users', 'Fotógrafos', "goPanelSection('fotografos')") : panelRow('wallet', 'Mis ganancias', "goPanelSection('ganancias')")}
+    ${panelRow('gear', 'Gestión', "goPanelSection('gestion')")}
+    </div>
+    <div class="panel-sec">CUENTA</div>
+    <div class="panel-list">
+    ${panelRow('logout', 'Cerrar sesión', 'doLogout()', true)}
+    </div>
+    </div>
+    <button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>
     <section data-tabpanel="gestion">
     <h3 id="secCrearEvento">Crear evento</h3>
     <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
@@ -2091,8 +2130,9 @@ async function loadPhotographer() {
       });
     } catch (e) { box.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
   });
-  // Pestañas y paginación: se aplican después de cada render del panel.
-  showPanelTab(panelTab);
+  // Lista y paginación: se aplican después de cada render del panel.
+  // El panel siempre abre en la lista (ninguna sección visible).
+  showPanelHome();
   applyPanelPagination();
 }
 
