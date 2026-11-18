@@ -137,12 +137,14 @@ const fileStore = {
   async getApplicationById(id) { return (loadDb().applications || []).find(x => x.id === Number(id)) || null; },
   async getApplicationByToken(token) { return (loadDb().applications || []).find(x => x.inviteToken === String(token)) || null; },
   async listApplications() { return (loadDb().applications || []).slice().sort((a, b) => b.id - a.id); },
-  // ---- Notificaciones: avisos del dueño a los fotógrafos ----
+  // ---- Notificaciones: avisos del dueño a los fotógrafos + noticias
+  // para atletas (audience: 'athletes' | 'photographers' | 'all').
+  // Sin audience (fila vieja) se trata como solo fotógrafos, como antes.
   async createAnnouncement(a) {
     const db = loadDb();
     if (!db.announcements) db.announcements = [];
     if (!db.seq.announcement) db.seq.announcement = 1;
-    const row = { id: nextId(db, 'announcement'), title: a.title, body: a.body, createdBy: a.createdBy || null, createdAt: new Date().toISOString() };
+    const row = { id: nextId(db, 'announcement'), title: a.title, body: a.body, audience: a.audience || 'photographers', createdBy: a.createdBy || null, createdAt: new Date().toISOString() };
     db.announcements.push(row); saveDb(db); return row;
   },
   async listAnnouncements() { return (loadDb().announcements || []).slice().sort((a, b) => b.id - a.id); },
@@ -256,7 +258,7 @@ function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.p
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
-function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
+function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, audience: r.audience || 'photographers', createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
 function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
@@ -476,10 +478,25 @@ const supabaseStore = {
   async getApplicationById(id) { const { data } = await supabase().from('photographer_applications').select().eq('id', id).maybeSingle(); return mapApplication(data); },
   async getApplicationByToken(token) { const { data } = await supabase().from('photographer_applications').select().eq('invite_token', token).maybeSingle(); return mapApplication(data); },
   async listApplications() { const { data } = await supabase().from('photographer_applications').select().order('id', { ascending: false }); return (data || []).map(mapApplication); },
-  // ---- Notificaciones: avisos del dueño a los fotógrafos ----
+  // ---- Notificaciones: avisos del dueño a los fotógrafos + noticias
+  // para atletas (audience: 'athletes' | 'photographers' | 'all').
   // Si la tabla aún no existe en vivo (falta correr el SQL), la lectura
   // devuelve vacío y la vista muestra "No hay avisos todavía".
-  async createAnnouncement(a) { const { data, error } = await supabase().from('announcements').insert({ title: a.title, body: a.body, created_by: a.createdBy || null }).select().single(); if (error) throw new Error(error.message); return mapAnnouncement(data); },
+  // Si la columna audience aún no existe (falta correr el SQL de
+  // noticias), se reintenta sin ella y la noticia queda como aviso
+  // solo para fotógrafos, como antes.
+  async createAnnouncement(a) {
+    const row = { title: a.title, body: a.body, created_by: a.createdBy || null };
+    if (a.audience) row.audience = a.audience;
+    const { data, error } = await supabase().from('announcements').insert(row).select().single();
+    if (!error) return mapAnnouncement(data);
+    if (a.audience && /audience/i.test(error.message || '')) {
+      const retry = await supabase().from('announcements').insert({ title: a.title, body: a.body, created_by: a.createdBy || null }).select().single();
+      if (retry.error) throw new Error(retry.error.message);
+      return mapAnnouncement(retry.data);
+    }
+    throw new Error(error.message);
+  },
   // ---- Avisos "Avísame cuando haya fotos" ----
   async createPhotoAlert(a) {
     const email = String(a.email || '').trim().toLowerCase();

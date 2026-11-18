@@ -1849,28 +1849,42 @@ function looksLikeUrl(s) {
   try { const u = new URL(String(s || '')); return u.protocol === 'http:' || u.protocol === 'https:'; } catch (_) { return false; }
 }
 
-// ---- Notificaciones: avisos del dueño a todos los fotógrafos ----
-// Solo el dueño publica; solo fotógrafos aprobados (dueño incluido) leen.
-// El autor nunca se muestra con nombre personal en la vista: solo título,
+// ---- Notificaciones: avisos del dueño a los fotógrafos y noticias
+// para los atletas (audience: 'athletes' | 'photographers' | 'all') ----
+// Solo el dueño publica; cada grupo lee solo lo suyo. Un anuncio viejo
+// sin audience se trata como solo fotógrafos, como antes. El autor
+// nunca se muestra con nombre personal en la vista: solo título,
 // mensaje y fecha.
+const ANNOUNCEMENT_AUDIENCES = ['athletes', 'photographers', 'all'];
 async function createAnnouncement(store, user, body) {
   requireOwner(user);
   const title = String(body.title || '').trim();
   const bodyText = String(body.body || '').trim();
-  if (!title) throw err(400, 'El aviso necesita un título.');
+  const audience = String(body.audience || 'athletes').trim().toLowerCase();
+  if (!ANNOUNCEMENT_AUDIENCES.includes(audience)) throw err(400, 'Elige a quién va dirigida la noticia: atletas, fotógrafos o todos.');
+  if (!title) throw err(400, 'La noticia necesita un título.');
   if (title.length > 80) throw err(400, 'El título no puede tener más de 80 caracteres.');
-  if (!bodyText) throw err(400, 'El aviso necesita un mensaje.');
-  if (bodyText.length > 1000) throw err(400, 'El mensaje no puede tener más de 1000 caracteres.');
-  const a = await store.createAnnouncement({ title, body: bodyText, createdBy: user.id });
-  return { status: 201, data: { announcement: { id: a.id, title: a.title, body: a.body, createdAt: a.createdAt } } };
+  if (!bodyText) throw err(400, 'La noticia necesita un mensaje.');
+  if (bodyText.length > 500) throw err(400, 'El mensaje no puede tener más de 500 caracteres.');
+  const a = await store.createAnnouncement({ title, body: bodyText, audience, createdBy: user.id });
+  return { status: 201, data: { announcement: { id: a.id, title: a.title, body: a.body, audience: a.audience || 'photographers', createdAt: a.createdAt } } };
 }
 
 async function listAnnouncements(store, user) {
   requireUser(user);
   await expireOldEvents(store);
-  // Los avisos del dueño son solo para fotógrafos; los atletas no los ven.
+  // Cada grupo ve solo lo suyo: los fotógrafos ven avisos para
+  // fotógrafos y para todos; los atletas ven noticias para atletas y
+  // para todos. Un anuncio viejo sin audience es solo para fotógrafos.
   const isPhotog = user.role === 'photographer' && user.approved !== false;
-  const all = isPhotog ? await store.listAnnouncements() : [];
+  const isAthlete = user.role === 'athlete';
+  const visible = (a) => {
+    const aud = a.audience || 'photographers';
+    if (aud === 'all') return isPhotog || isAthlete;
+    if (aud === 'athletes') return isAthlete;
+    return isPhotog;
+  };
+  const all = (await store.listAnnouncements()).filter(visible);
   // No leídos = avisos creados después de la última vez que el usuario
   // abrió las notificaciones. Si nunca las abrió, todos son no leídos.
   const seenAt = user.lastAnnouncementsSeenAt ? new Date(user.lastAnnouncementsSeenAt).getTime() : 0;
@@ -1880,7 +1894,7 @@ async function listAnnouncements(store, user) {
   // entró en la ventana de 15 días después de la última visita.
   const expiring = await expiringEventsFor(store, user);
   const unreadExpiring = expiring.filter(w => w.warnFrom > seenAt).length;
-  return { status: 200, data: { announcements: all.map(a => ({ id: a.id, title: a.title, body: a.body, createdAt: a.createdAt })), expiring: expiring.map(({ warnFrom, ...w }) => w), unreadCount: unread + unreadExpiring } };
+  return { status: 200, data: { announcements: all.map(a => ({ id: a.id, title: a.title, body: a.body, audience: a.audience || 'photographers', createdAt: a.createdAt })), expiring: expiring.map(({ warnFrom, ...w }) => w), unreadCount: unread + unreadExpiring } };
 }
 
 async function markAnnouncementsRead(store, user) {
