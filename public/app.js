@@ -1608,7 +1608,7 @@ function eventCard(e) {
   // Álbum "Próximo evento": se ve la portada, el título y la fecha con la
   // etiqueta "Próximo evento", SIN precio y SIN abrirse (no hay fotos
   // todavía). La tarjeta lleva data-upcoming para que el clic no abra la
-  // galería (bindEventCards) salvo al dueño.
+  // galería (bindEventCards), ni al dueño.
   if (e.isUpcoming) {
     return `<div class="event-card" data-ev="${e.id}" data-upcoming="1" role="button" tabindex="0">
     ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id, !!e.isHidden)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
@@ -1636,9 +1636,10 @@ function eventCard(e) {
 function bindEventCards() {
   document.querySelectorAll('[data-ev]').forEach(b => {
     b.onclick = () => {
-      // Tarjeta "Próximo evento": no se abre (no hay fotos todavía); solo
-      // el dueño la abre para subir fotos y gestionarla.
-      if (b.dataset.upcoming && !(me && me.isOwner)) { showToast('Las fotos estarán disponibles después de la carrera.'); return; }
+      // Tarjeta "Próximo evento": no se abre el detalle para nadie (no hay
+      // fotos todavía y el detalle repetía la misma tarjeta abajo). El dueño
+      // lo gestiona en su panel (Gestión → Mis eventos).
+      if (b.dataset.upcoming) { showToast(me && me.isOwner ? 'Es un Próximo evento: gestiónalo en tu panel (Gestión → Mis eventos).' : 'Las fotos estarán disponibles después de la carrera.'); return; }
       loadEventDetail(Number(b.dataset.ev), true);
     };
     b.onkeydown = (e) => { if (e.key === 'Enter') b.onclick(); };
