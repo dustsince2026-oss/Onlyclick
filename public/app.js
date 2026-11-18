@@ -637,7 +637,7 @@ async function handleSharedCart(ids) {
     const paid = r.photos.filter(p => p.freeMode === false && !p.owned);
     const free = r.photos.filter(p => p.freeMode !== false);
     box.innerHTML = `<div class="card"><h3>Fotos que te compartieron</h3>
-      <p class="muted">${r.photos.length} foto(s) para ti. ${paid.length ? 'Agrégalas a tu carrito y págalas con tarjeta o en OXXO.' : ''}${free.length ? ' Las gratis se guardan desde cada foto.' : ''}${missing.length ? ` ${missing.length} foto(s) ya no están disponibles.` : ''}${expired.length ? ` ${expired.length} foto(s) ya caducaron con su álbum (los álbumes se borran 60 días después del evento).` : ''}</p>
+      <p class="muted">${r.photos.length} foto(s) para ti. ${paid.length ? 'Agrégalas a tu carrito y págalas con tarjeta.' : ''}${free.length ? ' Las gratis se guardan desde cada foto.' : ''}${missing.length ? ` ${missing.length} foto(s) ya no están disponibles.` : ''}${expired.length ? ` ${expired.length} foto(s) ya caducaron con su álbum (los álbumes se borran 60 días después del evento).` : ''}</p>
       ${!r.photos.length && expired.length ? `<p>El álbum de esas fotos ya caducó y se borró, por eso el link ya no muestra nada. Pídele a quien te lo mandó que te comparta fotos de un evento vigente.</p>` : ''}
       ${paid.length ? `<div class="row"><button id="sharedAddAll" class="primary">Agregar todo a mi carrito</button></div><p id="sharedAddStatus" class="muted"></p>` : ''}
       <div class="grid" style="margin-top:12px">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos para mostrar.</p>'}</div></div>`;
@@ -710,7 +710,7 @@ async function handlePayReturn() {
     return;
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso. Si elegiste efectivo en OXXO, paga con tu referencia de Clip en cualquier OXXO (tienes 7 días). En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
+    alert('Tu pago está en proceso. En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
     if (eventId && photoId) pollPayment(photoId);
     return;
   }
@@ -786,7 +786,11 @@ function renderCartView() {
     <div class="row"><button id="cartPay" class="primary" ${t.total > CART_MAX_TOTAL ? 'disabled' : ''}>Pagar todo · $${t.total} MXN</button><button id="cartClear" class="secondary">Vaciar carrito</button></div>
     <div class="row"><button id="cartShare" class="secondary">Compartir carrito</button></div>
     <p id="cartShareStatus" class="muted"></p>
-    <p class="muted">Pagas una sola vez con Clip: tarjeta o efectivo en OXXO. Si pagas en OXXO, Clip te da una referencia y tienes 7 días para pagar; en cuanto pagues, tus fotos aparecen en "Mis fotos".</p></div>`;
+    <p class="muted">Pagas una sola vez con Clip, con tarjeta de crédito o débito (la confirmación es al instante).</p>
+    <div class="pay-methods">
+      <div class="pay-row"><span>💳 Tarjeta de crédito o débito</span><span class="ok">Disponible</span></div>
+      <div class="pay-row pay-disabled"><span>💵 Efectivo en OXXO</span><span class="muted">No disponible por el momento</span></div>
+    </div></div>`;
   box.querySelectorAll('[data-rmcart]').forEach(b => b.onclick = () => { removeFromCart(Number(b.dataset.rmcart)); renderCartView(); });
   box.querySelectorAll('[data-rmpackage]').forEach(b => b.onclick = () => {
     const pkg = t.packages[Number(b.dataset.rmpackage)];
@@ -878,7 +882,7 @@ async function handleCartReturn(pid, paid, pay) {
     }
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso. Si elegiste efectivo en OXXO, paga con tu referencia de Clip en cualquier OXXO (tienes 7 días). En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
+    alert('Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
     const box2 = $('#cartBox');
     if (box2) {
       const row = document.createElement('div');
@@ -1578,6 +1582,21 @@ async function pickSelfieAndSearch(eventId, eventName, statusEl, resultsEl) {
 // inventado.
 function eventCard(e) {
   const price = Number(e.priceMxn || 20);
+  // Álbum "Próximo evento": se ve la portada, el título y la fecha con la
+  // etiqueta "Próximo evento", SIN precio y SIN abrirse (no hay fotos
+  // todavía). La tarjeta lleva data-upcoming para que el clic no abra la
+  // galería (bindEventCards) salvo al dueño.
+  if (e.isUpcoming) {
+    return `<div class="event-card" data-ev="${e.id}" data-upcoming="1" role="button" tabindex="0">
+    ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id, !!e.isHidden)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
+    <div class="event-body">
+      <strong>${esc(e.name)}</strong> <span class="badge official">Próximo evento</span> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''}
+      ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
+      <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
+      <span class="event-meta">Las fotos estarán disponibles después de la carrera</span>
+      <span class="event-cta">Próximamente</span>
+    </div></div>`;
+  }
   const priceTxt = e.freeMode ? 'Descarga gratis' : 'Desde $' + price + ' MXN/foto';
   return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
     ${e.coverPath ? `<img class="event-cover" src="${coverImgUrl(e.id, !!e.isHidden)}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
@@ -1593,8 +1612,13 @@ function eventCard(e) {
 
 function bindEventCards() {
   document.querySelectorAll('[data-ev]').forEach(b => {
-    b.onclick = () => loadEventDetail(Number(b.dataset.ev), true);
-    b.onkeydown = (e) => { if (e.key === 'Enter') loadEventDetail(Number(b.dataset.ev), true); };
+    b.onclick = () => {
+      // Tarjeta "Próximo evento": no se abre (no hay fotos todavía); solo
+      // el dueño la abre para subir fotos y gestionarla.
+      if (b.dataset.upcoming && !(me && me.isOwner)) { showToast('Las fotos estarán disponibles después de la carrera.'); return; }
+      loadEventDetail(Number(b.dataset.ev), true);
+    };
+    b.onkeydown = (e) => { if (e.key === 'Enter') b.onclick(); };
   });
 }
 
@@ -1631,8 +1655,10 @@ async function buildPhotoStrip(evs) {
   if (!box) return;
   try {
     // Solo álbumes visibles con fotos, los 5 más nuevos (para no hacer
-    // muchas peticiones).
-    const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0 && !e.isHidden);
+    // muchas peticiones). Los próximos eventos tampoco entran: aún no
+    // tienen fotos que mostrar (y si el dueño ya subió alguna, no se
+    // asoma hasta quitar lo de próximo).
+    const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0 && !e.isHidden && !e.isUpcoming);
     if (!withPhotos.length) return;
     const newest = [...withPhotos].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || ''))).slice(0, 5);
     const lists = (await Promise.all(newest.map(ev => api('/api/event-get?eventId=' + ev.id)))).map(r => (r.photos || []).slice()).filter(l => l.length);
@@ -1697,6 +1723,7 @@ async function loadEventDetail(eventId, push) {
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     ${r.event.isHidden ? '<p><span class="badge">Oculto — solo tú lo ves</span></p>' : ''}
+    ${r.event.isUpcoming ? '<p><span class="badge official">Próximo evento</span></p><p class="muted">Este álbum se ve como próximo evento: sin precio y sin abrirse para los demás. Quítalo en Gestión cuando subas las fotos.</p>' : ''}
     ${r.event.isExclusive ? '<p><span class="badge official">Exclusivo OnlyClick</span></p>' : (r.isOfficial ? '<p><span class="badge official">✓ Álbum oficial Only Click</span></p>' : '')}
     ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
     ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
@@ -1918,13 +1945,13 @@ async function loadPhotographer() {
   const eventRowHtml = e => `
     <div class="sec-ev">
       <button type="button" class="sec-ev-head" onclick="toggleEventRow(this)">
-        <span class="sec-ev-name"><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : ''}<br><span class="muted">${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}${(e.freeMode || e.isExclusive) ? '' : ' · $' + Number(e.priceMxn || 20)}</span></span>
+        <span class="sec-ev-name"><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : ''} ${e.isUpcoming ? '<span class="badge official">Próximo evento</span>' : ''}<br><span class="muted">${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}${(e.freeMode || e.isExclusive) ? '' : ' · $' + Number(e.priceMxn || 20)}</span></span>
         <span class="sec-chev">›</span>
       </button>
       <div class="sec-ev-body hidden">
         ${e.isExclusive ? '' : `<button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button>`}
         ${e.freeMode ? '' : `<div class="sec-field"><span class="muted">Precio por foto: $</span> <input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button></div>`}
-        <div class="sec-actions"><button data-rev="${e.id}">Revisar dorsales</button>${me.isOwner ? ` <button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></div>
+        <div class="sec-actions"><button data-rev="${e.id}">Revisar dorsales</button>${me.isOwner ? ` <button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button> <button data-upcoming="${e.id}">${e.isUpcoming ? 'Quitar “Próximo evento”' : 'Marcar como próximo evento'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></div>
       </div>
     </div>`;
   const joinedRowHtml = e => `
@@ -1952,6 +1979,7 @@ async function loadPhotographer() {
       <div class="sec-field"><label class="sec-label" for="evPlace">Lugar</label><input id="evPlace" placeholder="Lugar"></div>
     </div>
     ${me.isOwner ? `<label class="sec-check"><input id="evExclusive" type="checkbox"><span><strong>Álbum exclusivo OnlyClick</strong><br><span class="muted">Solo yo subo fotos, gratis para los participantes. Para cuando un organizador te contrata: él te paga directo y ningún otro fotógrafo puede unirse ni vender en este álbum.</span></span></label>` : ''}
+    ${me.isOwner ? `<label class="sec-check"><input id="evUpcoming" type="checkbox"><span><strong>Próximo evento (aún sin fotos)</strong><br><span class="muted">Se publica la portada, el título y la fecha con la etiqueta "Próximo evento", sin precio y sin abrirse. Cuando subas las fotos, quítalo en Gestión y el álbum se vuelve normal.</span></span></label>` : ''}
     <button id="evCreate" class="primary sec-btn-gold">Crear evento</button>
     </div>
     <div class="panel-sec">Nombre en tus fotos</div>
@@ -2084,7 +2112,7 @@ async function loadPhotographer() {
       : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}
     </section>`;
   $('#evCreate').onclick = async () => {
-    try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value, isExclusive: !!($('#evExclusive') && $('#evExclusive').checked) }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+    try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value, isExclusive: !!($('#evExclusive') && $('#evExclusive').checked), isUpcoming: !!($('#evUpcoming') && $('#evUpcoming').checked) }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
   $('#displaySave').onclick = async () => {
     try { const r = await api('/api/set-display-name', { method: 'POST', body: JSON.stringify({ displayName: $('#displayName').value }) }); me.displayName = r.displayName || ''; const shown = me.displayName || (me.name || '').split(' ')[0]; $('#displayStatus').textContent = 'Nombre guardado: tus fotos dirán "Foto de ' + shown + '".'; } catch (e) { $('#displayStatus').textContent = e.message; }
@@ -2337,6 +2365,12 @@ async function loadPhotographer() {
   document.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.hide));
     try { await api('/api/set-event-hidden', { method: 'POST', body: JSON.stringify({ eventId: ev.id, isHidden: !ev.isHidden }) }); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
+  });
+  // Marcar/quitar "Próximo evento" (solo el dueño, solo sus álbumes):
+  // se actualiza el panel y las listas sin recargar la página entera.
+  document.querySelectorAll('[data-upcoming]').forEach(b => b.onclick = async () => {
+    const ev = events.find(e => e.id === Number(b.dataset.upcoming));
+    try { await api('/api/set-event-upcoming', { method: 'POST', body: JSON.stringify({ eventId: ev.id, isUpcoming: !ev.isUpcoming }) }); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   });
   document.querySelectorAll('[data-saveprice]').forEach(b => b.onclick = async () => {
     const id = Number(b.dataset.saveprice);
