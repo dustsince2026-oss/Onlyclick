@@ -257,13 +257,21 @@ async function createEvent(store, user, body) {
   // Un álbum exclusivo siempre es GRATIS y sin precio: el organizador le
   // paga directo al dueño, fuera de OnlyClick.
   const isExclusive = user.isOwner && body.isExclusive === true;
+  // Álbum "Próximo evento": SOLO el dueño puede marcarlo (mismo patrón
+  // que el exclusivo: si otro fotógrafo lo manda a mano, se ignora).
+  // Se publica la portada, el título y la fecha con la etiqueta
+  // "Próximo evento", sin precio y sin abrirse; cuando suba las fotos el
+  // dueño lo quita en Gestión (set-event-upcoming) y el álbum se vuelve
+  // normal. La caducidad de 60 días sigue contando desde la fecha del
+  // evento, igual que siempre.
+  const isUpcoming = user.isOwner && body.isUpcoming === true;
   const pm = Number(body.priceMxn);
   const ev = await store.createEvent({
     photographerId: user.id, name, sport: String(body.sport || 'Carrera'),
     eventDate: String(body.eventDate || ''), location: String(body.location || ''),
     freeMode: isExclusive ? true : body.freeMode !== false,
     priceMxn: isExclusive ? 0 : ((Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : 20),
-    isExclusive,
+    isExclusive, isUpcoming,
   });
   // El creador ya es participante de su evento, con el precio del evento.
   try { await store.joinEvent(ev.id, user.id, ev.priceMxn); } catch (_) {}
@@ -282,6 +290,9 @@ async function getEvent(store, user, eventId) {
   }
   // Álbum oculto: solo el dueño lo puede abrir (también por link directo).
   assertEventVisible(user, ev);
+  // Álbum "Próximo evento": solo el dueño lo puede abrir (para subir
+  // fotos y gestionarlo); para los demás no se abre todavía.
+  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
   // Cinco lecturas independientes: a la vez (antes iban una tras otra y
   // abrir la galería tardaba).
   const [photos, userDownloads, photographer, parts, allPhotographers] = await Promise.all([
@@ -566,7 +577,8 @@ async function sharedCart(store, query) {
     // Foto de un álbum oculto en un carrito compartido: el link es
     // público y no lleva sesión, así que no se puede saber si quien lo
     // abre es el dueño; se trata como si ya no existiera.
-    if (ev.isHidden) { missing.push(id); continue; }
+    // Lo mismo para un álbum "Próximo evento": aún no hay fotos que ver.
+    if (ev.isHidden || ev.isUpcoming) { missing.push(id); continue; }
     const exp = eventExpiresAt(ev);
     if (exp && new Date(exp).getTime() <= Date.now()) { expired.push(id); continue; }
     const parts = await store.listParticipants(ev.id).catch(() => []);
@@ -588,6 +600,8 @@ async function searchBib(store, user, query) {
   for (const ev of events) {
     // Búsqueda por dorsal no devuelve fotos de álbumes ocultos (salvo al dueño).
     if (isEventHiddenFor(user, ev)) continue;
+    // Ni de álbumes "Próximo evento" (salvo al dueño): aún no hay fotos.
+    if (ev.isUpcoming && !(user && user.isOwner)) continue;
     const parts = await store.listParticipants(ev.id).catch(() => []);
     const priceByPh = new Map(parts.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
     for (const p of await store.listPhotos(ev.id)) {
@@ -846,6 +860,21 @@ async function setEventHidden(store, user, body) {
   return { status: 200, data: { event: updated } };
 }
 
+// POST /api/set-event-upcoming { eventId, isUpcoming } — marca o quita
+// un álbum como "Próximo evento". SOLO el dueño (isOwner) y SOLO un
+// álbum que él creó (mismo patrón que set-event-hidden). Un álbum
+// próximo se ve en las listas con la etiqueta "Próximo evento", sin
+// precio y sin abrirse para nadie que no sea el dueño; el dueño sí lo
+// abre para subir fotos y gestionarlo.
+async function setEventUpcoming(store, user, body) {
+  requireOwner(user);
+  const ev = await store.getEvent(body.eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  const updated = await store.updateEvent(ev.id, { isUpcoming: body.isUpcoming === true });
+  return { status: 200, data: { event: updated } };
+}
+
 async function setTip(store, user, body) {
   requirePhotographer(user);
   const clabe = String(body.clabe || '').replace(/[\s-]/g, '');
@@ -1057,6 +1086,8 @@ async function faceSearch(store, user, body) {
   if (exp && new Date(exp).getTime() <= Date.now()) throw err(404, 'Este álbum ya caducó.');
   // Búsqueda por selfie no toca álbumes ocultos (salvo al dueño).
   assertEventVisible(user, ev);
+  // Ni álbumes "Próximo evento" (salvo al dueño): aún no hay fotos.
+  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
   const selfieBase64 = String(body.selfieBase64 || '');
   if (!selfieBase64) throw err(400, 'Falta tu selfie.');
   const selfieBuf = Buffer.from(selfieBase64, 'base64');
@@ -1125,6 +1156,10 @@ async function photoFile(store, user, photoId, req) {
   // Foto de un álbum oculto: ni la miniatura ni el original se sirven a
   // nadie que no sea el dueño (sin esto el álbum se podría ver por id).
   assertEventVisible(user, ev);
+  // Foto de un álbum "Próximo evento": tampoco se sirve a nadie que no
+  // sea el dueño (la portada sí se ve en la tarjeta, esa va por
+  // cover-file y no se bloquea).
+  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Foto no encontrada.');
   const inline = req && req.query && req.query.inline === '1';
   if (!ev.freeMode && !inline) {
     // Evento de pago: la vista previa (inline) se permite para ver la foto,
@@ -1392,18 +1427,26 @@ async function refreshPaymentFromClip(store, payment) {
   return { clip: r.clip, payment: mine, paid: r.paid };
 }
 
-// ---- Pago en efectivo en OXXO (Clip Checkout) ----
-// Clip acepta efectivo en OXXO en el mismo link de pago: basta pedir
-// payment_method_types ["credit", "debit", "cash"] en
-// custom_payment_options. El comprador elige "Efectivo" en la página
-// de Clip, recibe su referencia y paga en cualquier OXXO; Clip avisa
-// por webhook y el cobro se confirma igual que con tarjeta (el
-// GET /v2/checkout no dice cómo se pagó, y no hace falta: la entrega es
-// la misma). Comisión igual: 3.6% + IVA. SPEI está desactivado por Clip
-// por ahora ("temporalmente desactivado" en su centro de ayuda), así que
-// no se ofrece.
-// La referencia vive lo que vive el link: se pone expires_at a 7 días
-// (el default de Clip son 72 h) para que el corredor alcance a ir al
+// ---- Pago en efectivo en OXXO (Clip Checkout) — BLOQUEADO 2026-11-18 ----
+// El efectivo en OXXO YA NO SE OFRECE para pagos nuevos: Orlan lo pidió
+// el 2026-11-18 porque el cobro de $50 del 2026-11-17 (checkout
+// 10TIJ5OJGK) seguía sin reflejarse y no le gusta esperar. La opción
+// queda VISIBLE pero BLOQUEADA en la pantalla de pago (no se puede
+// elegir) y createClipLink solo pide tarjeta: payment_method_types
+// ["credit", "debit"] en TODOS los intentos.
+// El cobro de $50 YA CREADO no se cancela: sigue pendiente y se confirma
+// por webhook o con "Verificar pago" (checkout-status) igual que antes;
+// nada de eso se toca aquí.
+// Antes el efectivo funcionaba así: bastaba pedir payment_method_types
+// ["credit", "debit", "cash"] en custom_payment_options. El comprador
+// elegía "Efectivo" en la página de Clip, recibía su referencia y pagaba
+// en cualquier OXXO; Clip avisaba por webhook y el cobro se confirmaba
+// igual que con tarjeta (el GET /v2/checkout no dice cómo se pagó, y no
+// hace falta: la entrega es la misma). Comisión igual: 3.6% + IVA. SPEI
+// está desactivado por Clip por ahora ("temporalmente desactivado" en su
+// centro de ayuda), así que no se ofrece.
+// La referencia vivía lo que vive el link: se ponía expires_at a 7 días
+// (el default de Clip son 72 h) para que el corredor alcanzara a ir al
 // OXXO.
 // BUG 2026-11-17 (en vivo, no solo en la doc): Clip rechazaba TODOS los
 // cobros con 400 "Invalid input" (lo vio Orlan en su teléfono, foto y
@@ -1417,28 +1460,29 @@ async function refreshPaymentFromClip(store, payment) {
 // credit|debit|cash|bank_transfer|wallet"}.
 // "card" NO es un valor válido en la API en vivo, aunque la doc
 // (developer.clip.mx ?page=cnp-mxn) lo sugiera: la API en vivo manda.
-// Por eso ahora se manda ["credit", "debit", "cash"].
+// Por eso ahora se manda ["credit", "debit"] (tarjeta solamente).
 // El cobro del OXXO del 2026-11-17 ($50, checkout 10TIJ5OJGK) salió
 // gracias al intento 3 (payload mínimo, sin custom_payment_options):
-// es el fallback que salva el cobro si Clip vuelve a rechazar un
-// campo opcional.
+// era el fallback que salvaba el cobro si Clip volvía a rechazar un
+// campo opcional. Con el efectivo bloqueado, el intento 3 ya no puede ir
+// sin custom_payment_options (el default de Clip volvería a ofrecer
+// efectivo): lleva los mismos tipos de tarjeta, solo sin expires_at.
 // expires_at en el formato EXACTO de la doc (sin milisegundos).
 function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'); }
 // ¿Es un 400 de Clip? clipRequest pone e.clipStatus = status; el mensaje
 // siempre es "Clip (400): ...". Solo un 400 dispara reintentos (un 401,
 // 500 o fallo de red se lanza tal cual).
 function isClip400(e) { return !!e && (e.clipStatus === 400 || /Clip \(400\)/.test(String(e.message || ''))); }
-// Crea el link de Clip con cadena de reintentos: (1) completo (cash +
-// expires_at en formato de la doc); (2) sin expires_at; (3) payload
-// mínimo, sin custom_payment_options tampoco — el mismo que funcionó el
-// 2026-11-15. Así el cobro con tarjeta nunca se rompe por un campo
-// opcional. Cada reintento se registra en el log del servidor.
+// Crea el link de Clip con cadena de reintentos: (1) completo (tarjeta +
+// expires_at en formato de la doc); (2) sin expires_at; (3) solo tipos de
+// tarjeta, sin expires_at. Así el cobro con tarjeta nunca se rompe por un
+// campo opcional. Cada reintento se registra en el log del servidor.
 async function createClipLink(opts) {
-  const cash = { payment_method_types: ['credit', 'debit', 'cash'] };
+  const cardOnly = { payment_method_types: ['credit', 'debit'] };
   const attempts = [
-    { ...opts, custom_payment_options: cash, expires_at: clipExpiresAt() },
-    { ...opts, custom_payment_options: cash },
-    { ...opts },
+    { ...opts, custom_payment_options: cardOnly, expires_at: clipExpiresAt() },
+    { ...opts, custom_payment_options: cardOnly },
+    { ...opts, custom_payment_options: cardOnly },
   ];
   let lastErr = null;
   for (let i = 0; i < attempts.length; i++) {
@@ -2243,6 +2287,7 @@ async function dispatch(route, req) {
     case 'stats': return listStats(store, user);
     case 'set-free-mode': return setFreeMode(store, user, b);
     case 'set-event-hidden': return setEventHidden(store, user, b);
+    case 'set-event-upcoming': return setEventUpcoming(store, user, b);
     case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
