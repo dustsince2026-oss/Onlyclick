@@ -1169,7 +1169,7 @@ function eventCard(e) {
   return `<div class="event-card" data-ev="${e.id}" role="button" tabindex="0">
     ${e.coverPath ? `<img class="event-cover" src="/api/cover?eventId=${e.id}" alt="" loading="lazy">` : '<div class="event-cover event-cover-empty"></div>'}
     <div class="event-body">
-      <strong>${esc(e.name)}</strong> ${e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : ''}
+      <strong>${esc(e.name)}</strong> ${e.isOfficial ? '<span class="badge official">✓ Álbum oficial Only Click</span>' : ''} ${e.isHidden ? '<span class="badge">Oculto</span>' : ''}
       ${e.photographerName ? `<span class="muted">Fotos de ${esc(e.photographerName)}</span>` : ''}
       ${e.isShared ? `<span class="badge">Evento compartido · ${e.participantsCount || 2} fotógrafos</span>` : ''}
       <span class="muted">${esc(e.sport)} · ${esc(e.eventDate)} · ${esc(e.location)}</span>
@@ -1252,6 +1252,7 @@ async function loadEventDetail(eventId, push) {
   r.photos.forEach(p => { p.freeMode = r.event.freeMode; });
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
+    ${r.event.isHidden ? '<p><span class="badge">Oculto — solo tú lo ves</span></p>' : ''}
     ${r.isOfficial ? '<p><span class="badge official">✓ Álbum oficial Only Click</span></p>' : ''}
     ${r.photographerName ? `<p class="muted">Fotos de ${esc(r.photographerName)}</p>` : ''}
     ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
@@ -1445,7 +1446,7 @@ async function loadPhotographer() {
     <button id="covBtn" class="primary">Subir portada</button>
     <p id="covStatus" class="muted"></p>
     <h3 id="secMisEventos">Mis eventos</h3>
-    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
+    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button> ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> ${me.isOwner ? `<button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
     <div data-pg-controls="events"></div>
     ${joinedEvents.length ? `<h3>Eventos en los que participo</h3><p class="muted">Eventos de otros fotógrafos donde subes tus fotos a tu precio. El creador del evento maneja si es gratis o de pago.</p><div data-pg="joined">${joinedEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></p>`).join('')}</div><div data-pg-controls="joined"></div>` : ''}
     <div id="revList"></div>
@@ -1730,6 +1731,12 @@ async function loadPhotographer() {
     const ev = events.find(e => e.id === Number(b.dataset.free));
     await api('/api/set-free-mode', { method: 'POST', body: JSON.stringify({ eventId: ev.id, freeMode: !ev.freeMode }) });
     loadPhotographer(); loadEvents();
+  });
+  // Ocultar/mostrar álbum (solo el dueño, solo sus álbumes): se actualiza
+  // el panel y las listas sin recargar la página entera.
+  document.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
+    const ev = events.find(e => e.id === Number(b.dataset.hide));
+    try { await api('/api/set-event-hidden', { method: 'POST', body: JSON.stringify({ eventId: ev.id, isHidden: !ev.isHidden }) }); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   });
   document.querySelectorAll('[data-saveprice]').forEach(b => b.onclick = async () => {
     const id = Number(b.dataset.saveprice);
