@@ -1692,6 +1692,14 @@ async function setEventPrice(store, user, body) {
   const price = Number(body.priceMxn);
   if (!Number.isFinite(price) || price < 1 || price > 5000) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
   const updated = await store.updateEvent(ev.id, { priceMxn: Math.round(price * 100) / 100 });
+  // El precio que se ve en cada foto sale de la fila de participante del
+  // fotógrafo (photoPrice), no del evento: si solo se actualiza el
+  // evento, las fotos del dueño seguirían mostrando el precio viejo
+  // (BUG 2026-11-17: álbum a $25, fotos a $20). Sincronizar la fila del
+  // que guarda el precio; las de los demás fotógrafos no se tocan.
+  // Si la tabla aún no existe, se ignora: sin fila, las fotos heredan el
+  // precio del evento (mismo patrón que createEvent).
+  try { await store.joinEvent(ev.id, user.id, updated.priceMxn); } catch (_) {}
   return { status: 200, data: { event: updated } };
 }
 
@@ -2102,6 +2110,11 @@ async function setMyEventPrice(store, user, body) {
   if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
   if (ev.photographerId === user.id) {
     const updated = await store.updateEvent(ev.id, { priceMxn: price });
+    // Igual que set-event-price: el precio de cada foto sale de la fila
+    // de participante del fotógrafo (photoPrice), así que también se
+    // sincroniza la fila del creador; si no, sus fotos seguirían con el
+    // precio viejo aunque el evento ya diga el nuevo (BUG 2026-11-17).
+    try { await store.joinEvent(ev.id, user.id, updated.priceMxn); } catch (_) {}
     return { status: 200, data: { event: updated } };
   }
   const part = await store.getParticipant(ev.id, user.id).catch(() => null);
