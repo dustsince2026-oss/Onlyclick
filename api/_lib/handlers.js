@@ -1996,6 +1996,53 @@ async function payoutsSummary(store, user) {
   return { status: 200, data: { photographers: rows, totals } };
 }
 
+// Aviso por correo cuando Orlan marca un pago como pagado: el fotógrafo
+// recibe el desglose de lo que se le depositó. Se manda DESPUÉS de crear
+// la fila de payout y liquidar las descargas, y SOLO al fotógrafo que se
+// pagó (nunca a Orlan: él es el que paga). La CLABE nunca sale completa:
+// solo sus últimos 4 dígitos. Las cifras salen de la fila de payout
+// (amountMxn / clipFeeMxn / orlanFeeMxn) y el total de los pendientes de
+// earnings; por la matemática en centavos de splitSale, W + Y + Z == T.
+async function notifyPayout(store, ph, payout, settledCount, pendingTotals) {
+  if (!ph || !ph.email) return;
+  const w = Number(payout.amountMxn || 0);
+  const y = Number(payout.clipFeeMxn || 0);
+  const z = Number(payout.orlanFeeMxn || 0);
+  // Total vendido de este pago: de earnings (pendientes liquidados); si no
+  // viene, es la suma de la fila de payout (misma cifra por construcción).
+  const t = pendingTotals
+    ? Math.round((Number(pendingTotals.pendingBalance || 0) + Number(pendingTotals.pendingClipFee || 0) + Number(pendingTotals.pendingOrlanFee || 0)) * 100) / 100
+    : Math.round((w + y + z) * 100) / 100;
+  const digits = String(ph.payoutClabe || '').replace(/\D/g, '');
+  const clabeTxt = digits.length >= 4 ? `a tu CLABE terminada en ****${digits.slice(-4)}` : 'a tu CLABE';
+  const date = String(payout.paidAt || '').slice(0, 10);
+  const n = Number(settledCount || 0);
+  // El texto plano también abre con el encabezado (decisión de Orlan).
+  const text = `Recibiste pago de OnlyClick\n\nHola ${displayNameFor(ph)},\n\nOnlyClick te depositó $${w.toFixed(2)} MXN ${clabeTxt}.\n\nDesglose de este pago:\n• Fotos vendidas pagadas: ${n}\n• Total vendido: $${t.toFixed(2)} MXN\n• Comisión Clip (4.18%): $${y.toFixed(2)} MXN\n• Comisión OnlyClick (10%): $${z.toFixed(2)} MXN\n• Te depositamos: $${w.toFixed(2)} MXN\n\nFecha del pago: ${date}\n\nPuedes verlo en tu panel de fotógrafo.`;
+  // HTML propio (no el <br> automático): encabezado GRANDE con el título,
+  // el monto depositado destacado y el desglose como lista.
+  const html = `<h1 style="font-size:28px;line-height:1.2;color:#b8860b;margin:0 0 8px;">Recibiste pago de OnlyClick</h1>`
+    + `<p style="font-size:22px;font-weight:bold;color:#111111;margin:0 0 12px;">Te depositamos $${w.toFixed(2)} MXN</p>`
+    + `<p style="font-size:15px;color:#222222;">Hola ${displayNameFor(ph)},</p>`
+    + `<p style="font-size:15px;color:#222222;">OnlyClick te depositó $${w.toFixed(2)} MXN ${clabeTxt}.</p>`
+    + `<p style="font-size:15px;color:#222222;margin-bottom:4px;">Desglose de este pago:</p>`
+    + `<ul style="font-size:15px;color:#222222;">`
+    + `<li>Fotos vendidas pagadas: ${n}</li>`
+    + `<li>Total vendido: $${t.toFixed(2)} MXN</li>`
+    + `<li>Comisión Clip (4.18%): $${y.toFixed(2)} MXN</li>`
+    + `<li>Comisión OnlyClick (10%): $${z.toFixed(2)} MXN</li>`
+    + `<li><strong>Te depositamos: $${w.toFixed(2)} MXN</strong></li>`
+    + `</ul>`
+    + `<p style="font-size:15px;color:#222222;">Fecha del pago: ${date}</p>`
+    + `<p style="font-size:15px;color:#222222;">Puedes verlo en tu panel de fotógrafo.</p>`;
+  await sendEmail({
+    to: ph.email,
+    subject: `¡Te pagamos en OnlyClick! $${w.toFixed(2)} MXN`,
+    text,
+    html,
+  });
+}
+
 // Orlan ya envió el dinero: se crea la fila de payout (status 'paid') y
 // sus descargas quedan ligadas (salen del saldo pendiente). Se puede
 // pagar antes de las 72 h; la pestaña solo resalta los vencidos en rojo.
@@ -2010,6 +2057,10 @@ async function markPayoutPaid(store, user, body) {
   const now = new Date().toISOString();
   const payout = await store.createPayout({ photographerId: ph.id, amountMxn: e.pendingBalance, orlanFeeMxn: e.pendingOrlanFee, clipFeeMxn: e.pendingClipFee, status: 'paid', paidAt: now });
   const settled = await store.updateDownloadsPayout(e.pendingIds, payout.id);
+  // Aviso al fotógrafo con el desglose. El pago YA quedó registrado: si el
+  // correo falla o tarda, se espera máximo 4 s y se sigue (nunca rompe
+  // el "Marcar como pagado").
+  try { await Promise.race([notifyPayout(store, ph, payout, settled, e), new Promise(r => setTimeout(r, 4000))]); } catch (err2) { console.error('aviso de pago falló:', err2 && err2.message); }
   return { status: 200, data: { payout: { id: payout.id, photographerId: ph.id, name: ph.name, amountMxn: payout.amountMxn, orlanFeeMxn: payout.orlanFeeMxn, clipFeeMxn: payout.clipFeeMxn, status: payout.status, paidAt: payout.paidAt }, downloadsSettled: settled } };
 }
 
