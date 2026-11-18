@@ -1381,12 +1381,46 @@ async function refreshPaymentFromClip(store, payment) {
 // no se ofrece.
 // La referencia vive lo que vive el link: se pone expires_at a 7 días
 // (el default de Clip son 72 h) para que el corredor alcance a ir al
-// OXXO. Si Clip rechaza el expires_at, se reintenta sin él: el cobro
-// con tarjeta nunca se rompe por este campo.
-function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(); }
+// OXXO.
+// BUG 2026-11-17: Clip rechazaba TODOS los cobros con 400 "Invalid
+// input" (lo vio Orlan en su teléfono, foto y carrito). Causa:
+// expires_at se mandaba con Date.toISOString(), que SIEMPRE trae
+// milisegundos (2026-11-24T18:39:00.123Z), pero la doc oficial de Clip
+// exige el formato SIN milisegundos (YYYY-MM-DDTHH:MM:SSZ;
+// developer.clip.mx ?page=cnp-mxn, máx 365 días). custom_payment_options
+// con "cash" SÍ es válido según la misma doc, y el resto del payload es
+// idéntico al que funcionó el 2026-11-15 ($20 pagado). El mensaje
+// genérico "Invalid input" no nombra el campo, y el reintento viejo solo
+// se disparaba si el mensaje decía "expires_at", así que nunca se
+// disparó.
+// expires_at en el formato EXACTO de la doc (sin milisegundos).
+function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'); }
+// ¿Es un 400 de Clip? clipRequest pone e.clipStatus = status; el mensaje
+// siempre es "Clip (400): ...". Solo un 400 dispara reintentos (un 401,
+// 500 o fallo de red se lanza tal cual).
+function isClip400(e) { return !!e && (e.clipStatus === 400 || /Clip \(400\)/.test(String(e.message || ''))); }
+// Crea el link de Clip con cadena de reintentos: (1) completo (cash +
+// expires_at en formato de la doc); (2) sin expires_at; (3) payload
+// mínimo, sin custom_payment_options tampoco — el mismo que funcionó el
+// 2026-11-15. Así el cobro con tarjeta nunca se rompe por un campo
+// opcional. Cada reintento se registra en el log del servidor.
 async function createClipLink(opts) {
-  try { return await clip.createCheckoutLink({ ...opts, custom_payment_options: { payment_method_types: ['card', 'cash'] }, expires_at: clipExpiresAt() }); }
-  catch (e) { if (/expires_at/i.test(e.message || '')) return clip.createCheckoutLink({ ...opts, custom_payment_options: { payment_method_types: ['card', 'cash'] } }); throw e; }
+  const cash = { payment_method_types: ['card', 'cash'] };
+  const attempts = [
+    { ...opts, custom_payment_options: cash, expires_at: clipExpiresAt() },
+    { ...opts, custom_payment_options: cash },
+    { ...opts },
+  ];
+  let lastErr = null;
+  for (let i = 0; i < attempts.length; i++) {
+    try { return await clip.createCheckoutLink(attempts[i]); }
+    catch (e) {
+      lastErr = e;
+      if (!isClip400(e) || i === attempts.length - 1) throw e;
+      console.error('[clip] createCheckout intento ' + (i + 1) + ' rechazado (400): ' + (e.message || e) + ' — reintentando con menos campos opcionales');
+    }
+  }
+  throw lastErr;
 }
 
 // POST /api/checkout-create { photoId } — crea el link de pago de Clip

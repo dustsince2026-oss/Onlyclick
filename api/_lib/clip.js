@@ -44,6 +44,11 @@ async function clipRequest(method, path, body) {
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
   if (!res.ok) {
     const detail = (data && (data.message || data.error || data.detail)) || text || ('HTTP ' + res.status);
+    // Log del cuerpo completo de Clip (solo va la respuesta del servidor,
+    // sin credenciales) para diagnosticar un 400 futuro desde los logs
+    // de Vercel: el mensaje al usuario ("Invalid input") no dice qué campo
+    // falló, y sin este log el siguiente 400 sería indiagnosticable.
+    try { console.error('[clip] ' + method + ' ' + path + ' -> HTTP ' + res.status + ': ' + String(text || '').slice(0, 500)); } catch (_) {}
     const e = new Error('Clip (' + res.status + '): ' + detail);
     e.status = 502;
     e.clipStatus = res.status;
