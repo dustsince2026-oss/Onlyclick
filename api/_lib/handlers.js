@@ -32,6 +32,12 @@ function requirePhotographer(u) {
 function requireOwner(u) { requireUser(u); if (!u.isOwner) throw err(403, 'Solo el dueño de la página puede hacer eso.'); return u; }
 // El fotógrafo dueño del evento, o Orlan (dueño de la página, ve todo).
 function isEventOwner(user, ev) { return !!user && !!ev && (user.isOwner || ev.photographerId === user.id); }
+// Álbum oculto: solo el dueño de la página lo ve. Para los demás el
+// álbum no existe (404), sin revelar que está oculto. La columna
+// is_hidden puede faltar (SQL sin correr o fila vieja): se trata como
+// no oculto, nunca se rompe.
+function isEventHiddenFor(user, ev) { return !!ev && !!ev.isHidden && !(user && user.isOwner); }
+function assertEventVisible(user, ev) { if (isEventHiddenFor(user, ev)) throw err(404, 'Evento no encontrado.'); }
 
 // ---- Eventos compartidos: nombre y precio POR FOTO ----
 // El nombre que se muestra ("Foto de ...") es el display_name que el
@@ -232,7 +238,10 @@ async function listEvents(store, user) {
     });
   }
   // Por si el borrado de un caducado falló, que no salga en la lista.
-  return { status: 200, data: { events: out.filter(e => !e.expiresAt || new Date(e.expiresAt).getTime() > Date.now()) } };
+  // Álbum oculto: solo lo ve el dueño (en sus listas sale con la
+  // etiqueta "Oculto"); para los demás no existe. Si el dueño oculta
+  // un evento compartido que él creó, los participantes tampoco lo ven.
+  return { status: 200, data: { events: out.filter(e => (!e.isHidden || (user && user.isOwner)) && (!e.expiresAt || new Date(e.expiresAt).getTime() > Date.now())) } };
 }
 
 async function createEvent(store, user, body) {
@@ -261,6 +270,8 @@ async function getEvent(store, user, eventId) {
     try { await store.deleteEvent(ev.id); } catch (_) {}
     throw err(404, 'Este álbum ya caducó.');
   }
+  // Álbum oculto: solo el dueño lo puede abrir (también por link directo).
+  assertEventVisible(user, ev);
   const photos = await store.listPhotos(eventId);
   const owned = new Set();
   if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
@@ -410,13 +421,15 @@ async function backfillThumbs(store, user, body) {
 // Un correo por evento (la base lo deduplica); si la tabla aún no
 // existe en vivo (falta correr sql/zebrasnap-ideas.sql), se avisa con
 // 503 en vez de romper.
-async function subscribePhotoAlert(store, body) {
+async function subscribePhotoAlert(store, user, body) {
   const email = String(body.email || '').trim().toLowerCase();
   const eventId = Number(body.eventId);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw err(400, 'Escribe un correo válido.');
   if (!eventId) throw err(400, 'Falta el evento.');
   const ev = await store.getEvent(eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // No se deja suscribir (ni se revela si tiene fotos) a un álbum oculto.
+  assertEventVisible(user, ev);
   const count = (await store.listPhotos(eventId).catch(() => [])).length;
   if (count > 0) return { status: 200, data: { ok: true, hasPhotos: true, eventId } };
   let sub;
@@ -531,6 +544,10 @@ async function sharedCart(store, query) {
     if (!p) { missing.push(id); continue; }
     const ev = await store.getEvent(p.eventId);
     if (!ev) { missing.push(id); continue; }
+    // Foto de un álbum oculto en un carrito compartido: el link es
+    // público y no lleva sesión, así que no se puede saber si quien lo
+    // abre es el dueño; se trata como si ya no existiera.
+    if (ev.isHidden) { missing.push(id); continue; }
     const exp = eventExpiresAt(ev);
     if (exp && new Date(exp).getTime() <= Date.now()) { expired.push(id); continue; }
     const parts = await store.listParticipants(ev.id).catch(() => []);
@@ -542,7 +559,7 @@ async function sharedCart(store, query) {
   return { status: 200, data: { photos, missing, expired } };
 }
 
-async function searchBib(store, query) {
+async function searchBib(store, user, query) {
   const bib = normBib(query.bib);
   if (!bib) throw err(400, 'Escribe un dorsal.');
   const eventId = query.eventId ? Number(query.eventId) : null;
@@ -550,6 +567,8 @@ async function searchBib(store, query) {
   const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
   const out = [];
   for (const ev of events) {
+    // Búsqueda por dorsal no devuelve fotos de álbumes ocultos (salvo al dueño).
+    if (isEventHiddenFor(user, ev)) continue;
     const parts = await store.listParticipants(ev.id).catch(() => []);
     const priceByPh = new Map(parts.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
     for (const p of await store.listPhotos(ev.id)) {
@@ -576,6 +595,8 @@ async function claimPhotos(store, user, body, paid) {
     if (!photo) continue;
     const ev = await store.getEvent(photo.eventId);
     if (!ev) continue;
+    // Descarga gratis de un álbum oculto: solo el dueño.
+    if (isEventHiddenFor(user, ev)) continue;
     if (paid && ev.freeMode) throw err(400, 'Ese evento es gratis, no se cobra.');
     if (!paid && !ev.freeMode) throw err(400, 'Ese evento es de pago.');
     if (await store.hasDownload(user.id, id)) { claimed.push(id); continue; }
@@ -788,6 +809,20 @@ async function setFreeMode(store, user, body) {
   return { status: 200, data: { event: updated } };
 }
 
+// POST /api/set-event-hidden { eventId, isHidden } — oculta o muestra un
+// álbum. SOLO el dueño (isOwner) y SOLO un álbum que él creó. Un álbum
+// oculto es invisible para todos menos el dueño (listas, búsquedas,
+// link directo, fotos y portada). Los fotógrafos que participaban en
+// ese evento también dejan de verlo.
+async function setEventHidden(store, user, body) {
+  requireOwner(user);
+  const ev = await store.getEvent(body.eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
+  const updated = await store.updateEvent(ev.id, { isHidden: body.isHidden === true });
+  return { status: 200, data: { event: updated } };
+}
+
 async function setTip(store, user, body) {
   requirePhotographer(user);
   const clabe = String(body.clabe || '').replace(/[\s-]/g, '');
@@ -866,6 +901,10 @@ async function uploadCover(store, user, body) {
 
 // Devuelve los bytes de la portada de un evento (visible para todos).
 async function coverFile(store, user, eventId) {
+  const ev = await store.getEvent(eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  // Portada de un álbum oculto: no se sirve a nadie que no sea el dueño.
+  assertEventVisible(user, ev);
   const cover = await store.getEventCover(eventId);
   if (!cover) throw err(404, 'Este evento no tiene portada.');
   return { status: 200, file: { bytes: cover.bytes, mimeType: cover.mimeType, filename: `onlyclick-portada-${eventId}.jpg`, inline: true } };
@@ -986,6 +1025,8 @@ async function faceSearch(store, user, body) {
   if (!ev) throw err(404, 'Evento no encontrado.');
   const exp = eventExpiresAt(ev);
   if (exp && new Date(exp).getTime() <= Date.now()) throw err(404, 'Este álbum ya caducó.');
+  // Búsqueda por selfie no toca álbumes ocultos (salvo al dueño).
+  assertEventVisible(user, ev);
   const selfieBase64 = String(body.selfieBase64 || '');
   if (!selfieBase64) throw err(400, 'Falta tu selfie.');
   const selfieBuf = Buffer.from(selfieBase64, 'base64');
@@ -1051,6 +1092,9 @@ async function photoFile(store, user, photoId, req) {
   if (!photo) throw err(404, 'Foto no encontrada.');
   const ev = await store.getEvent(photo.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // Foto de un álbum oculto: ni la miniatura ni el original se sirven a
+  // nadie que no sea el dueño (sin esto el álbum se podría ver por id).
+  assertEventVisible(user, ev);
   const inline = req && req.query && req.query.inline === '1';
   if (!ev.freeMode && !inline) {
     // Evento de pago: la vista previa (inline) se permite para ver la foto,
@@ -1339,6 +1383,8 @@ async function createCheckout(store, user, body) {
   if (!photo) throw err(404, 'Foto no encontrada.');
   const ev = await store.getEvent(photo.eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // No se cobra una foto de un álbum oculto (salvo al dueño).
+  assertEventVisible(user, ev);
   if (ev.freeMode) throw err(400, 'Ese evento es gratis, no se cobra.');
   if (user.role === 'photographer' && photoOwnerId(photo, ev) === user.id) throw err(400, 'No puedes comprar tus propias fotos.');
   if (await store.hasDownload(user.id, photo.id)) return { status: 200, data: { paid: true, photoId: photo.id } };
@@ -1395,6 +1441,8 @@ async function createCartCheckout(store, user, body) {
     if (!photo) throw err(404, 'Foto no encontrada: ' + id + '.');
     const ev = await store.getEvent(photo.eventId);
     if (!ev) throw err(404, 'Evento no encontrado.');
+    // No se cobra una foto de un álbum oculto (salvo al dueño).
+    assertEventVisible(user, ev);
     if (ev.freeMode) throw err(400, 'La foto ' + id + ' es de un evento gratis: quítala del carrito y descárgala gratis.');
     // Un fotógrafo no puede comprar sus PROPIAS fotos; las de otros
     // fotógrafos sí las puede comprar como cualquier corredor.
@@ -1960,9 +2008,11 @@ async function leaveEvent(store, user, body) {
 
 // GET /api/event-participants?eventId=... — público: quiénes participan
 // en el evento, con su nombre a mostrar, cuántas fotos y su precio.
-async function eventParticipants(store, query) {
+async function eventParticipants(store, user, query) {
   const ev = await store.getEvent(Number(query.eventId));
   if (!ev) throw err(404, 'Evento no encontrado.');
+  // Participantes de un álbum oculto: solo los ve el dueño.
+  assertEventVisible(user, ev);
   const parts = await store.listParticipants(ev.id).catch(() => []);
   const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
   const photos = await store.listPhotos(ev.id);
@@ -2018,10 +2068,10 @@ async function dispatch(route, req) {
     case 'get-event': return getEvent(store, user, req.query.eventId);
     case 'upload-photo': return uploadPhoto(store, user, b);
     case 'backfill-thumbs': return backfillThumbs(store, user, b);
-    case 'subscribe-photo-alert': return subscribePhotoAlert(store, b);
+    case 'subscribe-photo-alert': return subscribePhotoAlert(store, user, b);
     case 'photo-meta': return photoMeta(store, req.query);
     case 'shared-cart': return sharedCart(store, req.query);
-    case 'search': return searchBib(store, req.query);
+    case 'search': return searchBib(store, user, req.query);
     case 'claim': return claimPhotos(store, user, b, false);
     // Compra simulada DESACTIVADA: con Clip real, /api/purchase dejaba
     // descargar sin pagar. El cobro es POST /api/checkout-create.
@@ -2032,6 +2082,7 @@ async function dispatch(route, req) {
     case 'track-view': return trackView(store, user, b);
     case 'stats': return listStats(store, user);
     case 'set-free-mode': return setFreeMode(store, user, b);
+    case 'set-event-hidden': return setEventHidden(store, user, b);
     case 'set-tip': return setTip(store, user, b);
     case 'update-photo': return updatePhoto(store, user, b);
     case 'delete-photo': return deletePhoto(store, user, req.query.photoId || b.photoId);
@@ -2062,7 +2113,7 @@ async function dispatch(route, req) {
     case 'my-earnings': return myEarnings(store, user);
     case 'join-event': return joinEvent(store, user, b);
     case 'leave-event': return leaveEvent(store, user, b);
-    case 'event-participants': return eventParticipants(store, req.query);
+    case 'event-participants': return eventParticipants(store, user, req.query);
     case 'set-display-name': return setDisplayName(store, user, b);
     case 'set-my-event-price': return setMyEventPrice(store, user, b);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
