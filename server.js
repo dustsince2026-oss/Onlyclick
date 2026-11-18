@@ -60,8 +60,17 @@ const server = http.createServer(async (req, res) => {
         'Content-Type': result.file.mimeType,
         'Content-Disposition': result.file.inline ? 'inline' : `attachment; filename="${result.file.filename}"`,
         'Content-Length': result.file.bytes.length,
-        // Los bytes de una foto nunca cambian para un mismo id: caché larga.
-        'Cache-Control': 'public, max-age=86400, immutable',
+        // Caché del edge (Vercel): `s-maxage` es lo que lee la CDN;
+        // `max-age` solo lo lee el navegador. Solo se cachea cuando los
+        // bytes NO dependen de quién pide (lo decide photoFile en
+        // handlers.js: miniatura siempre, completa solo en evento gratis).
+        // La vista previa y la descarga de un evento de pago llevan
+        // `no-store`: la misma URL da miniatura u original según quién
+        // pide, y guardarla en el edge filtraría el original o serviría
+        // la miniatura a quien compró. ESTE es el servidor que corre en
+        // vivo en Vercel (server.js es el entrypoint); api/photo.js es
+        // solo el equivalente local y NO se ejecuta en producción.
+        'Cache-Control': result.file.cacheable ? 'public, max-age=86400, s-maxage=86400, immutable' : 'private, max-age=0, no-store',
       });
       return res.end(result.file.bytes);
     }
@@ -72,6 +81,13 @@ const server = http.createServer(async (req, res) => {
         'Content-Type': result.file.mimeType,
         'Content-Disposition': 'inline',
         'Content-Length': result.file.bytes.length,
+        // Portada: igual para todos los que ven el evento (el álbum
+        // oculto exige token en la URL, así que su clave de caché es
+        // solo del dueño). Sin `immutable`: la portada sí se puede
+        // cambiar; el navegador revalida cada hora y el edge la guarda
+        // un día. (Igual que arriba: en vivo corre este server.js, no
+        // api/cover.js.)
+        'Cache-Control': 'public, max-age=3600, s-maxage=86400',
       });
       return res.end(result.file.bytes);
     }
