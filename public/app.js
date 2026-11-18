@@ -1225,6 +1225,143 @@ function openSearchModal(pref) {
 }
 function closeSearchModal() { const m = $('#searchModal'); if (m) m.style.display = 'none'; }
 
+// ---------- Documentos legales (Términos y Aviso de privacidad) ----------
+// Textos completos aprobados por Orlan el 2026-11-18. Se muestran en un
+// modal desde la sección "Legal" de la pestaña Cuenta. No se recorta nada.
+const LEGAL_DOCS = {
+  terms: { title: "Términos y Condiciones — OnlyClick", html: `<h2>Términos y Condiciones — OnlyClick</h2>
+<p>Última actualización: 18 de noviembre de 2026.</p>
+<h3>1. Aceptación de los términos</h3>
+<p>Al usar OnlyClick aceptas estos términos. Si no estás de acuerdo, no uses la plataforma. Para crear una cuenta debes tener al menos 18 años y capacidad legal para contratar en México. Los menores de edad pueden aparecer en las fotos como participantes de un evento, pero las compras las hace un adulto o su tutor.</p>
+<h3>2. Sobre el servicio</h3>
+<p>OnlyClick es un marketplace de fotografía deportiva que conecta a fotógrafos con corredores y aficionados. Los fotógrafos publican y venden sus fotos de eventos deportivos; los compradores las encuentran con su número de dorsal o con una selfie, usando herramientas de búsqueda con inteligencia artificial, y las adquieren para uso personal. OnlyClick es operado en Ensenada, Baja California, México. Contacto: WhatsApp 644 453 1015 y onlyclick.com.mx.</p>
+<h3>3. Tu cuenta</h3>
+<p>Eres responsable de la información que registras y de toda la actividad que ocurra desde tu cuenta. Mantén tu contraseña en privado y avísanos de inmediato si detectas un acceso no autorizado. Una persona no puede operar varias cuentas para evadir límites o sanciones. OnlyClick aprueba a los fotógrafos: para vender primero llenas la solicitud y OnlyClick revisa y aprueba tu cuenta.</p>
+<h3>4. Fotos: propiedad y licencia</h3>
+<p>Los fotógrafos conservan la propiedad y los derechos de autor de las fotos que suben. Al publicarlas otorgan a OnlyClick una licencia no exclusiva y revocable para alojarlas, mostrarlas, generar vistas previas con marca de agua, detectar dorsales y rostros con IA, y venderlas dentro de la plataforma. Esta licencia se mantiene mientras las fotos estén publicadas y por el tiempo razonable necesario para completar las compras y obligaciones asociadas. Solo puedes subir fotos de las que tengas derechos: material propio o con autorización de quien las tomó.</p>
+<h3>5. Eventos y álbumes</h3>
+<p>Cada evento tiene un álbum con sus fotos. Los álbumes <strong>caducan 60 días después de la fecha del evento</strong> y se borran solos con todo su contenido (fotos y portada), incluidas las fotos ya compradas. Por eso debes descargar tus fotos antes de que se acabe ese plazo: cuando falten 15 días o menos verás el aviso "Se borra en N días" en Mis fotos y recibirás una notificación.</p>
+<p>En los <strong>eventos compartidos</strong>, cualquier fotógrafo aprobado puede unirse con su propio precio por foto; el corredor busca su dorsal una vez y ve juntas las fotos de todos. En los <strong>álbumes exclusivos OnlyClick</strong>, contratados por un organizador, las fotos se descargan gratis para los participantes, el organizador le paga directo a OnlyClick y ningún otro fotógrafo puede subir fotos a la venta en ese álbum.</p>
+<h3>6. Precios y descuentos</h3>
+<p>El precio por foto lo fija cada fotógrafo para su evento. Aplican descuentos por volumen: la 4ª y 5ª foto tienen 20% de descuento, y el paquete de 10 fotos tiene 25% de descuento sobre el total. Los precios se muestran en pesos mexicanos (MXN) y pueden cambiar para eventos nuevos sin afectar compras ya hechas.</p>
+<h3>7. Comisiones y pagos a fotógrafos</h3>
+<p>Por cada venta se descuenta en total el <strong>13.8%</strong>: la comisión del procesador de pagos (Clip, 4.18% con IVA incluido) y la comisión de OnlyClick (10% después de Clip). El fotógrafo se queda con el <strong>86.2%</strong> restante. Ejemplo: en una foto de $20 MXN, Clip se queda $0.84, OnlyClick $1.92 y el fotógrafo $17.24.</p>
+<p>Todo el dinero de las ventas cae en la cuenta de OnlyClick y OnlyClick le transfiere su parte a cada fotógrafo a su CLABE en un <strong>máximo de 72 horas</strong> después de la venta, y marca el pago como pagado en la plataforma. El fotógrafo puede ver su desglose (ventas, comisiones y pendiente por pagar) en su panel.</p>
+<h3>8. Compras y uso permitido</h3>
+<p>Cuando compras una foto recibes una licencia personal y no exclusiva para uso privado: imprimirla, guardarla y compartirla en tus redes sociales. No se permite el uso comercial, la reventa, cederla a medios ni usarla en publicidad sin autorización expresa por escrito del fotógrafo. Las vistas previas sin pagar llevan marca de agua ("ONLYCLICK • VISTA PREVIA"); quitar la marca de agua o redistribuir fotos descargadas está prohibido.</p>
+<h3>9. Pagos y reembolsos</h3>
+<p>Los pagos se procesan con <strong>Clip</strong>: tarjeta de crédito o débito y efectivo en OXXO. El límite por transacción es de $5,000 MXN. Las fotos son un producto digital: <strong>no hay reembolsos una vez descargada la foto</strong>, salvo que la foto esté defectuosa o no corresponda a lo que compraste (por ejemplo, no eres tú o no es tu dorsal). En ese caso repórtalo <strong>dentro de los 7 días</strong> siguientes a la compra desde la página de la orden o por WhatsApp; OnlyClick revisa el caso y puede reembolsar la orden o una parte. Si pagaste en efectivo en OXXO, la confirmación del pago puede tardar hasta 2 días hábiles.</p>
+<h3>10. Impuestos</h3>
+<p>Los fotógrafos venden por cuenta propia, no como empleados ni agentes de OnlyClick, y son los únicos responsables de declarar esos ingresos y de los impuestos que les correspondan en México (ISR, IVA). OnlyClick no retiene ni paga impuestos por cuenta de los fotógrafos, salvo que la ley lo exija.</p>
+<h3>11. Funciones de inteligencia artificial</h3>
+<p>OnlyClick usa IA para detectar dorsales en las fotos y para buscar tus fotos con una selfie. Estas funciones se ofrecen tal cual: mejoran con el uso, pero no garantizan resultados perfectos (una foto puede no aparecer aunque salgas en ella, o puede aparecer una que no es tuya; revísala antes de comprar). <strong>Tu selfie no se guarda</strong>: se usa solo para esa búsqueda y se descarta. No usamos las fotos de los fotógrafos para entrenar modelos de terceros.</p>
+<h3>12. Conducta aceptable</h3>
+<ul>
+<li>No puedes usar OnlyClick para subir o compartir contenido ilegal, difamatorio, violento, sexualmente explícito, discriminatorio o que infrinja derechos de terceros.</li>
+<li>No puedes interferir con la plataforma, intentar acceder a áreas restringidas, evadir límites de uso, descargar fotos de forma masiva ni usar bots no autorizados para extraer fotos o datos.</li>
+<li>No puedes suplantar a otra persona, registrar información falsa ni revender el acceso a tu cuenta.</li>
+</ul>
+<h3>13. Reportes y contenido ofensivo</h3>
+<p>OnlyClick tiene tolerancia cero con el contenido ofensivo y los usuarios abusivos. Cualquier persona puede reportar una foto, un álbum, un evento o un usuario por WhatsApp o desde la plataforma. Revisamos cada reporte y el contenido que incumple estos términos se elimina; la cuenta que lo publicó se suspende o se cierra.</p>
+<h3>14. Propiedad intelectual de OnlyClick</h3>
+<p>La marca, el logo, el sitio, el código y los materiales de OnlyClick son propiedad de OnlyClick. No puedes copiarlos, modificarlos ni usarlos comercialmente sin autorización por escrito. Las fotos publicadas en la plataforma siguen siendo de sus respectivos fotógrafos.</p>
+<h3>15. Reclamaciones por infracción de derechos</h3>
+<p>Si crees que una foto u otro contenido publicado en OnlyClick infringe tus derechos, escríbenos por WhatsApp con la información necesaria para evaluar el reclamo (identificación de la obra, prueba de titularidad, enlace del contenido y tus datos de contacto). Retiramos rápido el contenido que claramente infrinja derechos y suspendemos cuentas con infracciones reincidentes.</p>
+<h3>16. Enlaces y servicios de terceros</h3>
+<p>OnlyClick puede enlazar a sitios o integrarse con servicios de terceros (Clip para pagos, WhatsApp, redes sociales, servicios de alojamiento e IA). No controlamos esos servicios y no respondemos por su contenido, disponibilidad o políticas. Tu uso de servicios externos se rige por sus propios términos.</p>
+<h3>17. Comunicaciones</h3>
+<p>Aceptas recibir comunicaciones electrónicas relacionadas con tu cuenta, ventas, compras, soporte y novedades del producto. Puedes desactivar las comunicaciones de marketing desde la configuración de tu cuenta. Las comunicaciones operacionales (pagos, avisos de caducidad de álbumes, alertas legales) no se pueden desactivar mientras tengas una cuenta activa.</p>
+<h3>18. Sin garantías</h3>
+<p>OnlyClick se ofrece tal cual y según disponibilidad. No garantizamos disponibilidad ininterrumpida, precisión absoluta de la IA, conservación indefinida de los archivos ni resultados específicos de venta. Trabajamos para mantener un servicio estable, pero el uso es bajo tu propio riesgo.</p>
+<h3>19. Limitación de responsabilidad</h3>
+<p>En la máxima medida permitida por la ley, OnlyClick no responde por daños indirectos, incidentales, especiales, punitivos o consecuentes, ni por pérdida de ganancias, datos o reputación derivados del uso de la plataforma. Nuestra responsabilidad total agregada en cualquier caso queda limitada a los montos que nos hayas pagado en los doce meses previos al hecho que motivó el reclamo.</p>
+<h3>20. Indemnización</h3>
+<p>Te comprometes a mantener indemne a OnlyClick, sus directivos y colaboradores frente a reclamos de terceros derivados del contenido que publiques, del uso indebido de la plataforma o del incumplimiento de estos términos.</p>
+<h3>21. Cambios en los términos</h3>
+<p>Podemos actualizar estos términos cuando lancemos nuevas funciones, cambien las regulaciones aplicables o necesitemos aclarar reglas. Avisaremos los cambios materiales por correo o dentro de la plataforma antes de que entren en vigor. Si sigues usando la plataforma después de la fecha indicada, aceptas la nueva versión.</p>
+<h3>22. Suspensión y terminación</h3>
+<p>Puedes cerrar tu cuenta cuando quieras desde tu configuración. Podemos suspender o terminar cuentas que incumplan estos términos, presenten riesgo legal o de seguridad, o realicen fraude. Antes de una terminación definitiva intentamos contactarte y darte oportunidad de apelar, salvo que un cierre inmediato sea necesario por motivos legales.</p>
+<h3>23. Ley aplicable</h3>
+<p>Estos términos se rigen por las leyes de México. Cualquier controversia se someterá a los tribunales competentes de Ensenada, Baja California, salvo que la ley de protección al consumidor disponga otra cosa de forma obligatoria.</p>
+<h3>24. Disposiciones generales</h3>
+<p>Si alguna cláusula resulta inválida, las demás siguen vigentes. La falta de ejercicio de un derecho no implica renuncia. No puedes ceder estos términos sin nuestro consentimiento; nosotros sí podemos cederlos a una entidad sucesora. Los reclamos deben presentarse en el plazo máximo de un año desde el hecho que les dio origen, salvo que la ley aplicable establezca lo contrario.</p>` },
+  privacy: { title: "Aviso de Privacidad — OnlyClick", html: `<h2>Aviso de Privacidad — OnlyClick</h2>
+<p>Última actualización: 18 de noviembre de 2026.</p>
+<p>OnlyClick, con domicilio en Ensenada, Baja California, México, es responsable del tratamiento de tus datos personales. Contacto: WhatsApp 644 453 1015 y onlyclick.com.mx.</p>
+<h3>1. Información que recopilamos</h3>
+<ul>
+<li><strong>Datos de cuenta:</strong> correo electrónico, nombre, contraseña (guardada con hash, nunca la vemos en texto plano), tipo de cuenta (atleta o fotógrafo) y el nombre con el que firmas tus fotos.</li>
+<li><strong>Datos de fotógrafos:</strong> CLABE para pagarte tus ventas, historial de ventas y ganancias.</li>
+<li><strong>Fotos y metadatos:</strong> las imágenes que subes como fotógrafo, los dorsales que detecta la IA, las portadas de los eventos y los datos del álbum.</li>
+<li><strong>Selfies para búsqueda:</strong> cuando buscas tus fotos con una selfie, la foto se usa solo para esa búsqueda y <strong>no se guarda</strong>. Se descarta al terminar.</li>
+<li><strong>Compras y pagos:</strong> órdenes, fotos compradas, totales y metadatos de pago. Los números de tarjeta los procesa Clip directamente, nunca los guardamos nosotros.</li>
+<li><strong>Datos de uso y dispositivo:</strong> páginas que visitas, búsquedas que haces, dirección IP, navegador e idioma, para que la plataforma funcione y para seguridad.</li>
+<li><strong>Cookies y tecnologías similares:</strong> solo las estrictamente necesarias para mantener tu sesión activa, recordar tu carrito y tus preferencias. No usamos cookies de publicidad ni de analítica de terceros.</li>
+</ul>
+<h3>2. Cómo usamos tus datos</h3>
+<ul>
+<li>Operar la plataforma: mostrar fotos, procesar compras, pagarle a los fotógrafos y darte soporte.</li>
+<li>Funciones de IA: detección de dorsales y búsqueda por selfie para que encuentres tus fotos.</li>
+<li>Mejorar el servicio: analizar el uso de forma general para detectar errores y priorizar funciones.</li>
+<li>Seguridad y prevención de fraude: detectar abuso, proteger cuentas y cumplir obligaciones legales. Los registros de compra se usan para prevenir fraudes y para responder disputas de pago.</li>
+<li>Comunicación: enviarte avisos de tu cuenta, de tus ventas o compras, de la caducidad de álbumes y novedades del producto. Puedes salirte del marketing cuando quieras.</li>
+</ul>
+<p><strong>No vendemos tus datos y no los compartimos con anunciantes.</strong></p>
+<h3>3. Reconocimiento facial y datos biométricos</h3>
+<ul>
+<li>Las fotos de los fotógrafos se procesan con inteligencia artificial (Google Gemini) para detectar dorsales y rostros y ayudarte a encontrar tus fotos.</li>
+<li>Cuando buscas por selfie, tu foto se compara con las fotos del evento solo durante esa búsqueda y <strong>se elimina al terminar. No la guardamos, no la vendemos y no la usamos para entrenar modelos de terceros.</strong></li>
+<li>La búsqueda por selfie es opcional. Puedes buscar por evento, fecha o dorsal sin necesidad de usarla.</li>
+</ul>
+<h3>4. Con quién compartimos información</h3>
+<ul>
+<li><strong>Proveedores de servicio que necesitamos:</strong> Clip (pagos), Supabase (alojamiento, base de datos y almacenamiento de fotos), Vercel (alojamiento del sitio), Google Gemini (inteligencia artificial) y Gmail (correos de avisos y ventas).</li>
+<li><strong>Fotógrafos y compradores:</strong> cuando compras, el fotógrafo ve qué se vendió y los datos de la orden que necesita para completarla; nunca recibe tus datos de tarjeta.</li>
+<li><strong>Cumplimiento legal y seguridad:</strong> cuando lo requiera la ley, una orden judicial, o para proteger a los usuarios de fraude, abuso o daño inminente.</li>
+<li><strong>Transferencias de negocio:</strong> si OnlyClick participa en una fusión, venta o reestructura, tus datos pueden transferirse a la nueva entidad bajo los mismos términos.</li>
+</ul>
+<h3>5. Cookies</h3>
+<p>Usamos solo cookies y almacenamiento local estrictamente necesarios para que la plataforma funcione: mantener tu sesión activa, guardar tu carrito (separado por cuenta) y recordar tus preferencias. No usamos cookies de publicidad ni de medición de terceros. Si desactivas las necesarias, partes de la plataforma pueden dejar de funcionar.</p>
+<h3>6. Seguridad</h3>
+<ul>
+<li>Los datos viajan cifrados (TLS) entre tu teléfono y nuestros servidores.</li>
+<li>Las contraseñas se guardan con hash moderno; nunca las vemos en texto plano.</li>
+<li>El acceso a los datos se limita al personal autorizado de OnlyClick.</li>
+</ul>
+<p>Ningún sistema es perfecto. Si encuentras una vulnerabilidad, escríbenos por WhatsApp para arreglarla rápido.</p>
+<h3>7. Tus derechos (ARCO)</h3>
+<p>Conforme a la Ley Federal de Protección de Datos Personales en Posesión de los Particulares (LFPDPPP), tienes derecho a:</p>
+<ul>
+<li><strong>Acceso:</strong> saber qué información tenemos sobre ti.</li>
+<li><strong>Rectificación:</strong> corregir tu perfil y tus datos.</li>
+<li><strong>Cancelación:</strong> pedir que borremos tus datos personales que no debamos conservar por motivos legales.</li>
+<li><strong>Oposición:</strong> oponerte a usos específicos (como marketing) o limitar ciertos tratamientos.</li>
+<li><strong>Revocación del consentimiento:</strong> salirte de funciones como la búsqueda por selfie y el marketing cuando quieras.</li>
+</ul>
+<p>Para ejercer estos derechos escríbenos por WhatsApp al 644 453 1015 o desde tu cuenta. Te responderemos en los plazos que marca la ley.</p>
+<h3>8. Retención de datos</h3>
+<ul>
+<li><strong>Datos de cuenta:</strong> se mantienen mientras tu cuenta está activa. Tras eliminarla se borran o anonimizan en un plazo razonable, salvo lo que debamos conservar por obligación legal, contable o anti-fraude.</li>
+<li><strong>Fotos:</strong> se mantienen mientras el álbum está publicado. Los álbumes caducan 60 días después de la fecha del evento y se borran con todo su contenido.</li>
+<li><strong>Selfies:</strong> nunca se guardan; se descartan al terminar cada búsqueda.</li>
+<li><strong>Registros de compras y fiscales:</strong> se conservan el tiempo requerido por la legislación fiscal y contable.</li>
+</ul>
+<h3>9. Menores de edad</h3>
+<p>OnlyClick no se dirige a menores de 18 años para crear cuentas. Sin embargo, los menores pueden aparecer en las fotos como participantes de un evento deportivo, y las compras las hace un adulto o su tutor. Si crees que un menor creó una cuenta o que tenemos información de un menor, escríbenos y la borraremos.</p>
+<h3>10. Transferencias internacionales</h3>
+<p>OnlyClick opera desde México y usa proveedores ubicados en Estados Unidos (Supabase, Vercel, Google y Clip). Cuando tus datos se procesan en esos servicios, se transfieren conforme a los mecanismos reconocidos por las leyes de privacidad aplicables.</p>
+<h3>11. Cambios a este aviso</h3>
+<p>Podemos actualizar este aviso cuando lancemos funciones, cambien las regulaciones o cambien proveedores. Avisaremos los cambios materiales por correo o dentro de la plataforma antes de que entren en vigor. La fecha al inicio refleja la versión más reciente.</p>` },
+};
+function openLegalDoc(key) {
+  const doc = LEGAL_DOCS[key]; if (!doc) return;
+  const titleEl = $('#legalModalTitle'); if (titleEl) titleEl.textContent = doc.title;
+  const body = $('#legalModalBody');
+  if (body) { body.innerHTML = doc.html; body.scrollTop = 0; }
+  const m = $('#legalModal'); if (m) m.style.display = 'flex';
+}
+function closeLegalDoc() { const m = $('#legalModal'); if (m) m.style.display = 'none'; }
+
 // ---- Sin resultados: 3 salidas en vez de un "no hay fotos" ----
 // Cuando una búsqueda por dorsal o selfie no encuentra nada, se muestra
 // "Todavía no te encontramos" con tres caminos: probar con el dorsal,
@@ -2460,6 +2597,17 @@ const searchModalClose = $('#searchModalClose');
 if (searchModalClose) searchModalClose.onclick = closeSearchModal;
 const searchModalEl = $('#searchModal');
 if (searchModalEl) searchModalEl.addEventListener('click', (e) => { if (e.target === searchModalEl) closeSearchModal(); });
+// Documentos legales: filas de la sección "Legal" en la pestaña Cuenta.
+const legalTermsRow = $('#legalTermsRow');
+if (legalTermsRow) legalTermsRow.onclick = () => openLegalDoc('terms');
+const legalPrivacyRow = $('#legalPrivacyRow');
+if (legalPrivacyRow) legalPrivacyRow.onclick = () => openLegalDoc('privacy');
+const legalModalClose = $('#legalModalClose');
+if (legalModalClose) legalModalClose.onclick = closeLegalDoc;
+const legalModalX = $('#legalModalX');
+if (legalModalX) legalModalX.onclick = closeLegalDoc;
+const legalModalEl = $('#legalModal');
+if (legalModalEl) legalModalEl.addEventListener('click', (e) => { if (e.target === legalModalEl) closeLegalDoc(); });
 const notifPublishBtn = $('#notifPublish');
 if (notifPublishBtn) notifPublishBtn.onclick = publishAnnouncement;
 $('#brandHome').onclick = () => showView('home');

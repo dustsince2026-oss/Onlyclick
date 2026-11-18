@@ -100,6 +100,19 @@
   .price-pill { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.78); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 800; font-size: 13px; pointer-events: none; }
   /* ---------- Modal de búsqueda: 3 métodos en tarjetas grandes ---------- */
   #searchModal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 60; }
+  /* ---------- Modal de documentos legales ---------- */
+  #legalModal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 70; }
+  .legal-card { background: #17171c; border: 1px solid #4d4d57; border-radius: 16px; max-width: 560px; width: 100%; max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
+  .legal-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #4d4d57; }
+  .legal-head h3 { flex: 1; margin: 0; font-size: 18px; }
+  .legal-x { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: #26262c; border: 1px solid #3a3a41; color: #fff; font-size: 16px; margin: 0; padding: 0; }
+  .legal-body { padding: 16px; overflow-y: auto; text-align: left; }
+  .legal-body h2 { font-size: 20px; margin: 0 0 10px; }
+  .legal-body h3 { font-size: 17px; margin: 18px 0 8px; }
+  .legal-body p { margin: 0 0 10px; line-height: 1.55; }
+  .legal-body ul { margin: 0 0 12px; padding-left: 20px; }
+  .legal-body li { margin-bottom: 6px; line-height: 1.55; }
+  .legal-foot { padding: 12px 16px; border-top: 1px solid #4d4d57; }
   .method-card { background: #141419; border: 1px solid #2a2a30; border-radius: 12px; padding: 14px; margin-bottom: 10px; cursor: pointer; text-align: left; width: 100%; }
   .method-card strong { display: block; font-size: 17px; margin-bottom: 2px; }
   .method-card p { margin: 0; color: #a7a7ad; font-size: 14px; }
@@ -432,6 +445,12 @@
         <div id="photoPanel"></div>
       </section>
     </div>
+
+    <div class="panel-sec">LEGAL</div>
+    <div class="panel-list">
+      <button type="button" class="panel-row" id="legalTermsRow"><span class="panel-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg></span><span class="panel-label">Términos y condiciones</span><span class="panel-chev">›</span></button>
+      <button type="button" class="panel-row" id="legalPrivacyRow"><span class="panel-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><span class="panel-label">Aviso de privacidad</span><span class="panel-chev">›</span></button>
+    </div>
   </section>
 </main>
 
@@ -484,6 +503,14 @@
     </div>
     <p class="muted" id="searchModalEvent"></p>
     <button class="secondary" id="searchModalClose" style="width:100%">Cerrar</button>
+  </div>
+</div>
+
+<div id="legalModal">
+  <div class="legal-card">
+    <div class="legal-head"><h3 id="legalModalTitle"></h3><button type="button" id="legalModalX" class="legal-x" aria-label="Cerrar">✕</button></div>
+    <div class="legal-body" id="legalModalBody"></div>
+    <div class="legal-foot"><button type="button" class="primary" id="legalModalClose" style="width:100%">Cerrar</button></div>
   </div>
 </div>
 
