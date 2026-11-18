@@ -445,10 +445,8 @@ function renderUserMenu() {
   if (!me) { m.innerHTML = ''; m.classList.add('hidden'); return; }
   m.innerHTML = `<div class="um-name">Hola, ${esc(me.name)}</div>
     <div class="um-sub">${esc(me.email)} · ${me.role === 'photographer' ? 'Fotógrafo' : 'Deportista'}</div>
-    <button id="umPhotos">Mis fotos</button>
     ${me.role === 'photographer' ? '<button id="umPanel">Panel fotógrafo</button>' : ''}
     <button id="umLogout">Cerrar sesión</button>`;
-  m.querySelector('#umPhotos').onclick = () => { closeUserMenu(); showView('myphotos'); };
   const up = m.querySelector('#umPanel');
   if (up) up.onclick = () => { closeUserMenu(); showView('account'); };
   m.querySelector('#umLogout').onclick = doLogout;
