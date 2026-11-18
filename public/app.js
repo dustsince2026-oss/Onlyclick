@@ -67,6 +67,21 @@ function showPanelHome() {
   if (back) back.classList.add('hidden');
 }
 
+// Fila de un evento en "Mis eventos": al picarla se despliegan sus
+// controles debajo (precio, dorsales, ocultar, eliminar) y se puede
+// volver a cerrar; los demás eventos quedan cerrados.
+function toggleEventRow(btn) {
+  const row = btn.closest('.sec-ev');
+  if (!row) return;
+  const body = row.querySelector('.sec-ev-body');
+  if (!body) return;
+  body.classList.toggle('hidden');
+  const open = !body.classList.contains('hidden');
+  row.classList.toggle('open', open);
+  const chev = row.querySelector('.sec-chev');
+  if (chev) chev.textContent = open ? '⌃' : '›';
+}
+
 // Botones rápidos del panel: cambia a la pestaña y baja a la sección
 // pedida (si la hay). El scroll se protege por si el entorno no lo
 // tiene (p. ej. pruebas con jsdom).
@@ -1613,12 +1628,17 @@ async function loadPhotographer() {
   if (!approved) {
     box.innerHTML = `
     <p class="error">Tu cuenta de fotógrafo está pendiente de aprobación por ONLYCLICK. En cuanto te aprueben podrás crear eventos y subir fotos.</p>
-    <h3>CLABE para recibir tus pagos</h3>
+    <div class="panel-sec">Clabe para recibir tus pagos</div>
+    <div class="sec-card">
     <p class="muted">Cuando vendas fotos, ONLYCLICK te manda tu parte a esta CLABE cada 72 horas. Son 18 dígitos.</p>
-    <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
+    <div class="sec-field"><label class="sec-label" for="payClabe">Tu CLABE (18 dígitos)</label><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}"></div>
+    <button id="paySave" class="primary sec-btn-gold">Guardar CLABE</button>
     <p id="payStatus" class="muted"></p>
-    <h3>Mis ganancias</h3>
-    ${earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Mi parte pendiente: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}</p>` : '<p class="muted">Sin datos todavía.</p>'}`;
+    </div>
+    <div class="panel-sec">Mis ganancias</div>
+    <div class="sec-card">
+    ${earnings ? `<div class="sec-kv"><span>Total vendido</span><span class="sec-val">${fmtMxn(earnings.totalSold)}</span></div><div class="sec-kv"><span>Mi parte pendiente</span><span class="sec-val">${fmtMxn(earnings.pendingBalance)}</span></div><div class="sec-kv"><span>Ya me pagaron</span><span class="sec-val">${fmtMxn(earnings.paidShare)}</span></div>` : '<p class="muted">Sin datos todavía.</p>'}
+    </div>`;
     $('#paySave').onclick = async () => {
       try { const r = await api('/api/set-payout-clabe', { method: 'POST', body: JSON.stringify({ clabe: $('#payClabe').value }) }); me.payoutClabe = r.payoutClabe || ''; $('#payStatus').textContent = 'CLABE guardada.'; } catch (e) { $('#payStatus').textContent = e.message; }
     };
@@ -1632,7 +1652,7 @@ async function loadPhotographer() {
   const appsOpen = apps.filter(a => a.status === 'approved' && a.photographerId == null);
   const appsReviewed = apps.filter(a => a.status === 'rejected' || (a.status === 'approved' && a.photographerId != null));
   const appCard = (a, withActions) => `
-    <div class="card">
+    <div class="sec-subcard">
       <p><strong>${esc(a.name)}</strong> · ${esc(a.city)} · <span class="muted">${String(a.createdAt || '').slice(0, 10)}</span></p>
       <p class="muted">WhatsApp: ${esc(a.phone)} · Eventos: ${esc(a.events)}</p>
       <p class="muted">Cámara: ${esc(a.camera || '—')} · Especialidad: ${esc(a.specialty || '—')}</p>
@@ -1640,13 +1660,15 @@ async function loadPhotographer() {
       <p class="muted">CLABE para pagos: ${esc(a.clabe || '—')}</p>
       <p class="muted">Trabajo: <a href="${esc(a.sampleLink)}" target="_blank" rel="noopener">${esc(a.sampleLink)}</a></p>
       ${a.message ? `<p class="muted">Mensaje: ${esc(a.message)}</p>` : ''}
-      ${withActions ? `<button data-app-approve="${a.id}" class="primary">Aprobar</button> <button data-app-reject="${a.id}">Rechazar</button>` : appInviteHtml(a)}
+      <div class="sec-actions">${withActions ? `<button data-app-approve="${a.id}" class="primary">Aprobar</button> <button data-app-reject="${a.id}">Rechazar</button>` : appInviteHtml(a)}</div>
     </div>`;
   const solicitudesHtml = me.isOwner ? `
-    <h3>Solicitudes</h3>
+    <div class="panel-sec">Solicitudes</div>
+    <div class="sec-card">
     <p class="muted">Fotógrafos que llenaron el formulario del inicio. Aprueba al que te guste y se le genera un link para crear su cuenta; si no te convence, recházalo.</p>
     ${appsPending.length || appsOpen.length ? `<div data-pg="applications">${appsPending.map(a => appCard(a, true)).join('')}${appsOpen.map(a => appCard(a, false)).join('')}</div><div data-pg-controls="applications"></div>` : '<p class="muted">No hay solicitudes pendientes.</p>'}
-    ${appsReviewed.length ? `<details><summary>Revisadas (${appsReviewed.length})</summary>${appsReviewed.map(a => `<p class="muted">${esc(a.name)} · ${a.status === 'approved' ? 'Aprobada' : 'Rechazada'} · ${String(a.createdAt || '').slice(0, 10)}</p>`).join('')}</details>` : ''}` : '';
+    ${appsReviewed.length ? `<details><summary>Revisadas (${appsReviewed.length})</summary>${appsReviewed.map(a => `<p class="muted">${esc(a.name)} · ${a.status === 'approved' ? 'Aprobada' : 'Rechazada'} · ${String(a.createdAt || '').slice(0, 10)}</p>`).join('')}</details>` : ''}
+    </div>` : '';
   // Al recargar el panel las listas vuelven a la página 1 (la pestaña
   // activa sí se recuerda mientras se navega).
   panelPages = {};
@@ -1656,7 +1678,10 @@ async function loadPhotographer() {
   if (!panelTabs.some(t => t[0] === panelTab)) panelTab = 'ventas';
   // "Mis ganancias" es el mismo bloque para todos: el dueño lo ve dentro
   // de la pestaña Fotógrafos y los demás fotógrafos en su propia pestaña.
-  const earningsHtml = earnings ? `<p>Total vendido: ${fmtMxn(earnings.totalSold)} · Comisión Clip: ${fmtMxn(earnings.clipFee)} · Comisión ONLYCLICK (10%): ${fmtMxn(earnings.orlanFee)}</p><p><strong>Mi parte: ${fmtMxn(earnings.photographerShare)}</strong> · Pendiente por pagarme: ${fmtMxn(earnings.pendingBalance)} · Ya me pagaron: ${fmtMxn(earnings.paidShare)}${earnings.lastPayout ? ` · Último pago: ${fmtMxn(earnings.lastPayout.amountMxn)} el ${String(earnings.lastPayout.paidAt || '').slice(0, 10)}` : ''}</p><p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
+  // Fila etiqueta / valor (el total en dorado), como en el resto de las
+  // secciones acomodadas.
+  const kv = (label, value, gold) => `<div class="sec-kv"><span>${label}</span><span class="sec-val${gold ? ' gold' : ''}">${value}</span></div>`;
+  const earningsHtml = earnings ? `${kv('Total vendido', fmtMxn(earnings.totalSold))}${kv('Comisión Clip', fmtMxn(earnings.clipFee))}${kv('Comisión ONLYCLICK (10%)', fmtMxn(earnings.orlanFee))}${kv('Mi parte', fmtMxn(earnings.photographerShare), true)}${kv('Pendiente por pagarme', fmtMxn(earnings.pendingBalance))}${kv('Ya me pagaron', fmtMxn(earnings.paidShare))}${earnings.lastPayout ? kv('Último pago', fmtMxn(earnings.lastPayout.amountMxn) + ' el ' + String(earnings.lastPayout.paidAt || '').slice(0, 10)) : ''}<p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
   // Iconos del panel en lista (SVG simples en dorado, sin emoji).
   const pIco = {
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
@@ -1670,6 +1695,27 @@ async function loadPhotographer() {
     logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/></svg>',
   };
   const panelRow = (icon, label, onclick, danger) => `<button type="button" class="panel-row${danger ? ' danger' : ''}" onclick="${onclick}"><span class="panel-ico">${pIco[icon]}</span><span class="panel-label">${label}</span><span class="panel-chev">›</span></button>`;
+  // Fila de un evento propio en "Mis eventos": encabezado con nombre y
+  // resumen; los controles (precio, dorsales, ocultar, eliminar) salen
+  // debajo al picarla. Cada fila es UN hijo de [data-pg="events"], así
+  // la paginación de 10 por página sigue contando eventos, no controles.
+  const eventRowHtml = e => `
+    <div class="sec-ev">
+      <button type="button" class="sec-ev-head" onclick="toggleEventRow(this)">
+        <span class="sec-ev-name"><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : ''}<br><span class="muted">${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}${(e.freeMode || e.isExclusive) ? '' : ' · $' + Number(e.priceMxn || 20)}</span></span>
+        <span class="sec-chev">›</span>
+      </button>
+      <div class="sec-ev-body hidden">
+        ${e.isExclusive ? '' : `<button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button>`}
+        ${e.freeMode ? '' : `<div class="sec-field"><span class="muted">Precio por foto: $</span> <input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button></div>`}
+        <div class="sec-actions"><button data-rev="${e.id}">Revisar dorsales</button>${me.isOwner ? ` <button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></div>
+      </div>
+    </div>`;
+  const joinedRowHtml = e => `
+    <div class="sec-joined">
+      <p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}</p>
+      <div class="sec-inline"><span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></div>
+    </div>`;
   box.innerHTML = `
     <!-- Inicio del panel en lista: al picar una fila se abre esa sección -->
     <div id="panelListHome">
@@ -1694,88 +1740,145 @@ async function loadPhotographer() {
     </div>
     <button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>
     <section data-tabpanel="gestion">
-    <h3 id="secCrearEvento">Crear evento</h3>
-    <input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)">
-    <div class="row"><input id="evSport" placeholder="Deporte" value="Carrera"><input id="evDate" type="date"><input id="evPlace" placeholder="Lugar"></div>
-    ${me.isOwner ? `<label style="display:flex;align-items:flex-start;gap:8px;margin:8px 0"><input id="evExclusive" type="checkbox" style="width:auto;margin:4px 0 0"><span><strong>Álbum exclusivo OnlyClick</strong><br><span class="muted">Solo yo subo fotos, gratis para los participantes. Para cuando un organizador te contrata: él te paga directo y ningún otro fotógrafo puede unirse ni vender en este álbum.</span></span></label>` : ''}
-    <button id="evCreate" class="primary">Crear evento</button>
-    <h3>Nombre que se muestra en tus fotos</h3>
+    <h2 class="sec-title">Gestión</h2>
+    <div class="panel-sec" id="secCrearEvento">Crear evento</div>
+    <div class="sec-card">
+    <div class="sec-field"><label class="sec-label" for="evName">Nombre del evento</label><input id="evName" placeholder="Nombre del evento (ej. Ensenada medio)"></div>
+    <div class="sec-row3">
+      <div class="sec-field"><label class="sec-label" for="evSport">Deporte</label><input id="evSport" placeholder="Deporte" value="Carrera"></div>
+      <div class="sec-field"><label class="sec-label" for="evDate">Fecha</label><input id="evDate" type="date"></div>
+      <div class="sec-field"><label class="sec-label" for="evPlace">Lugar</label><input id="evPlace" placeholder="Lugar"></div>
+    </div>
+    ${me.isOwner ? `<label class="sec-check"><input id="evExclusive" type="checkbox"><span><strong>Álbum exclusivo OnlyClick</strong><br><span class="muted">Solo yo subo fotos, gratis para los participantes. Para cuando un organizador te contrata: él te paga directo y ningún otro fotógrafo puede unirse ni vender en este álbum.</span></span></label>` : ''}
+    <button id="evCreate" class="primary sec-btn-gold">Crear evento</button>
+    </div>
+    <div class="panel-sec">Nombre en tus fotos</div>
+    <div class="sec-card">
     <p class="muted">Así sale en cada foto: "Foto de …". Puede ser tu primer nombre, un apodo o el nombre de tu marca o página. Si lo dejas vacío, sale tu primer nombre.</p>
-    <div class="row"><input id="displayName" placeholder="Ej. Only Dust" value="${esc(me.displayName || '')}" maxlength="40" style="flex:1"><button id="displaySave" class="primary">Guardar nombre</button></div>
+    <div class="sec-field"><label class="sec-label" for="displayName">Nombre</label><input id="displayName" placeholder="Ej. Only Dust" value="${esc(me.displayName || '')}" maxlength="40"></div>
+    <button id="displaySave" class="primary sec-btn-gold">Guardar nombre</button>
     <p id="displayStatus" class="muted"></p>
-    <h3>Cooperación voluntaria</h3>
+    </div>
+    <div class="panel-sec">Clabes</div>
+    <div class="sec-card">
+    <div class="sec-subhead">Cooperación voluntaria</div>
     <p class="muted">Si pones tu CLABE aquí, al descargar una foto gratis les aparecerá un mensaje invitándolos a cooperar. La CLABE solo sirve para recibir depósitos.</p>
     ${tipBlocked ? '<p class="muted">Tus álbumes son de pago, así que la cooperación voluntaria está desactivada. Si cambias un álbum a gratis, se activa de nuevo.</p>' : ''}
-    <div class="row"><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}" style="flex:1"${tipBlocked ? ' disabled' : ''}><button id="tipSave" class="primary"${tipBlocked ? ' disabled' : ''}>Guardar CLABE</button></div>
+    <div class="sec-field"><label class="sec-label" for="tipClabe">Tu CLABE (18 dígitos)</label><input id="tipClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.tipClabe || '')}"${tipBlocked ? ' disabled' : ''}></div>
+    <button id="tipSave" class="primary sec-btn-gold"${tipBlocked ? ' disabled' : ''}>Guardar CLABE</button>
     <p id="tipStatus" class="muted"></p>
-    <h3>CLABE para recibir tus pagos</h3>
+    <div class="sec-divider"></div>
+    <div class="sec-subhead">CLABE para recibir tus pagos</div>
     <p class="muted">Cuando vendas fotos, ONLYCLICK te manda tu parte (90% de lo que queda después de Clip) a esta CLABE cada 72 horas. Son 18 dígitos.</p>
-    <div class="row"><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}" style="flex:1"><button id="paySave" class="primary">Guardar CLABE</button></div>
+    <div class="sec-field"><label class="sec-label" for="payClabe">Tu CLABE (18 dígitos)</label><input id="payClabe" inputmode="numeric" placeholder="Tu CLABE (18 dígitos)" value="${esc(me.payoutClabe || '')}"></div>
+    <button id="paySave" class="primary sec-btn-gold">Guardar CLABE</button>
     <p id="payStatus" class="muted"></p>
-    <h3 id="secSubirFotos">Subir fotos</h3>
-    <select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}${joinedEvents.map(e => `<option value="${e.id}">${esc(e.name)} · participas</option>`).join('')}</select>
-    <input id="upFiles" type="file" accept="image/*" multiple>
-    <input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0">
+    </div>
+    <div class="panel-sec" id="secSubirFotos">Subir fotos</div>
+    <div class="sec-card">
+    <div class="sec-field"><label class="sec-label" for="upEvent">Evento</label><select id="upEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}${joinedEvents.map(e => `<option value="${e.id}">${esc(e.name)} · participas</option>`).join('')}</select></div>
+    <div class="sec-field"><label class="sec-label" for="upFiles">Fotos</label><input id="upFiles" type="file" accept="image/*" multiple></div>
+    <div class="sec-field"><label class="sec-label" for="upPrice">Precio por foto (MXN)</label><input id="upPrice" type="number" placeholder="Precio por foto en MXN (0 si es gratis)" value="0"></div>
     <div id="upList"></div>
     <p id="upStatus" class="muted"></p>
-    <button id="upBtn" class="primary">Subir fotos</button>
+    <button id="upBtn" class="primary sec-btn-gold">Subir fotos</button>
     <p class="muted">Al terminar de subirse, los dorsales se leen solos con IA y se guardan. Si alguna queda sin dorsal, usa "Leer dorsales en lote" en Revisar dorsales.</p>
-    <h3>Portada del evento</h3>
+    </div>
+    <div class="panel-sec">Portada del evento</div>
+    <div class="sec-card">
     <p class="muted">Una foto aparte que se ve en la lista de eventos. Elige el evento y sube la foto.</p>
-    <div class="row"><select id="covEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><input id="covFile" type="file" accept="image/*"></div>
+    <div class="sec-field"><label class="sec-label" for="covEvent">Evento</label><select id="covEvent">${myEvents.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
+    <div class="sec-field"><label class="sec-label" for="covFile">Foto de portada</label><input id="covFile" type="file" accept="image/*"></div>
     <div id="covPreview"></div>
-    <button id="covBtn" class="primary">Subir portada</button>
+    <button id="covBtn" class="primary sec-btn-gold">Subir portada</button>
     <p id="covStatus" class="muted"></p>
-    <h3 id="secMisEventos">Mis eventos</h3>
-    <div data-pg="events">${myEvents.map(e => `<p><strong>${esc(e.name)}</strong> ${e.isHidden ? '<span class="badge">Oculto</span>' : ''} ${e.isExclusive ? '<span class="badge official">Exclusivo OnlyClick</span>' : ''} — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} ${e.isExclusive ? '' : `<button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button>`} ${e.freeMode ? '' : `<span class="muted">Precio por foto: $</span><input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>`} <button data-rev="${e.id}">Revisar dorsales</button> ${me.isOwner ? `<button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></p>`).join('') || '<p>Sin eventos.</p>'}</div>
+    </div>
+    <div class="panel-sec" id="secMisEventos">Mis eventos</div>
+    <div class="sec-card">
+    <div data-pg="events">${myEvents.map(e => eventRowHtml(e)).join('') || '<p>Sin eventos.</p>'}</div>
     <div data-pg-controls="events"></div>
-    ${joinedEvents.length ? `<h3>Eventos en los que participo</h3><p class="muted">Eventos de otros fotógrafos donde subes tus fotos a tu precio. El creador del evento maneja si es gratis o de pago.</p><div data-pg="joined">${joinedEvents.map(e => `<p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'} <span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></p>`).join('')}</div><div data-pg-controls="joined"></div>` : ''}
+    </div>
+    ${joinedEvents.length ? `<div class="panel-sec">Eventos en los que participo</div>
+    <div class="sec-card">
+    <p class="muted">Eventos de otros fotógrafos donde subes tus fotos a tu precio. El creador del evento maneja si es gratis o de pago.</p>
+    <div data-pg="joined">${joinedEvents.map(e => joinedRowHtml(e)).join('')}</div>
+    <div data-pg-controls="joined"></div>
+    </div>` : ''}
+    <div class="panel-sec">Revisar dorsales</div>
+    <div class="sec-card">
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
+    </div>
     </section>
     <section data-tabpanel="ventas">
-    <h3>Descargas y ventas</h3>
-    <p>Total descargas: ${sales.totalDownloads} · Gratis: ${sales.freeDownloads} · Ingresos por ventas: $${sales.revenue} MXN</p>
-    <div data-pg="sales">${sales.sales.map(s => `<p class="muted">${esc(s.eventName)} · Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)} · $${s.amount}</p>`).join('')}</div>
+    <h2 class="sec-title">Fotos vendidas</h2>
+    <div class="panel-sec">Resumen</div>
+    <div class="sec-card">
+    ${kv('Total descargas', sales.totalDownloads)}${kv('Gratis', sales.freeDownloads)}${kv('Ingresos por ventas', '$' + sales.revenue + ' MXN', true)}
+    </div>
+    <div class="panel-sec">Ventas</div>
+    <div class="sec-card">
+    <div data-pg="sales">${sales.sales.map(s => `<div class="sec-sale"><span><strong>${esc(s.eventName)}</strong><br><span class="muted">Dorsal ${esc((s.bibs || []).join(', '))} · ${esc(s.buyerName)}</span></span><span class="sec-val gold">$${s.amount}</span></div>`).join('') || '<p class="muted">Sin ventas todavía.</p>'}</div>
     <div data-pg-controls="sales"></div>
+    </div>
     </section>
     ${me.isOwner ? '' : `<section data-tabpanel="ganancias">
-    <h3>Mis ganancias</h3>
+    <h2 class="sec-title">Mis ganancias</h2>
+    <div class="panel-sec">Mis ganancias</div>
+    <div class="sec-card">
     ${earningsHtml}
+    </div>
     </section>`}
     ${me.isOwner && payouts ? `<section data-tabpanel="fotografos">
-    <h3>Mis ganancias</h3>
+    <h2 class="sec-title">Fotógrafos</h2>
+    <div class="panel-sec">Mis ganancias</div>
+    <div class="sec-card">
     ${earningsHtml}
-    <h3>Pagos a fotógrafos</h3>
+    </div>
+    <div class="panel-sec">Pagos a fotógrafos</div>
+    <div class="sec-card">
     <p class="muted">Todo el dinero cae en tu cuenta de Clip. Cada 72 horas desde la primera venta sin pagar, el pago se vence y sale en rojo. Mándale el dinero a su CLABE y luego marca "Pagado".</p>
-    <p>Totales — Vendido: ${fmtMxn(payouts.totals.totalSold)} · Clip: ${fmtMxn(payouts.totals.clipFee)} · Tu comisión (10%): ${fmtMxn(payouts.totals.orlanFee)} · Para fotógrafos: ${fmtMxn(payouts.totals.photographerShare)} · Pendiente por pagar: ${fmtMxn(payouts.totals.pendingBalance)}</p>
+    ${kv('Vendido', fmtMxn(payouts.totals.totalSold))}${kv('Clip', fmtMxn(payouts.totals.clipFee))}${kv('Tu comisión (10%)', fmtMxn(payouts.totals.orlanFee))}${kv('Para fotógrafos', fmtMxn(payouts.totals.photographerShare))}${kv('Pendiente por pagar', fmtMxn(payouts.totals.pendingBalance), true)}
     <div data-pg="payouts">${(payouts.photographers || []).length ? (payouts.photographers || []).map(p => `
-    <div class="card">
-      <p><strong>${esc(p.name)}</strong> ${p.approved ? '' : '<span class="error">(pendiente de aprobación)</span>'} · ${esc(p.email)}</p>
-      <p class="muted">Vendido: ${fmtMxn(p.totalSold)} · Clip: ${fmtMxn(p.clipFee)} · Tu comisión: ${fmtMxn(p.orlanFee)} · Su parte: ${fmtMxn(p.photographerShare)}</p>
-      <p><strong>Pendiente por pagarle: ${fmtMxn(p.pendingBalance)}</strong> ${p.pendingSince ? (p.isDue ? `<span class="error">● PAGO VENCIDO — vence desde ${String(p.dueAt || '').slice(0, 10)}</span>` : `<span class="muted">Próximo pago en ${p.hoursUntilDue} h</span>`) : '<span class="muted">Sin ventas pendientes.</span>'}</p>
+    <div class="sec-subcard">
+      <p><strong>${esc(p.name)}</strong> ${p.approved ? '<span class="sec-pill">Aprobada</span>' : '<span class="error">(pendiente de aprobación)</span>'} · ${esc(p.email)}</p>
+      ${kv('Vendido', fmtMxn(p.totalSold))}${kv('Clip', fmtMxn(p.clipFee))}${kv('Tu comisión', fmtMxn(p.orlanFee))}${kv('Su parte', fmtMxn(p.photographerShare), true)}${kv('Pendiente por pagarle', fmtMxn(p.pendingBalance), true)}
+      <p>${p.pendingSince ? (p.isDue ? `<span class="sec-danger">● PAGO VENCIDO — vence desde ${String(p.dueAt || '').slice(0, 10)}</span>` : `<span class="muted">Próximo pago en ${p.hoursUntilDue} h</span>`) : '<span class="muted">Sin ventas pendientes.</span>'}</p>
       <p class="muted">CLABE para pagarle: ${p.payoutClabe ? `<strong>${esc(p.payoutClabe)}</strong> <button data-copyclabe="${esc(p.payoutClabe)}">Copiar CLABE</button>` : '<span class="error">El fotógrafo aún no pone su CLABE.</span>'}</p>
       ${p.lastPayout ? `<p class="muted">Último pago: ${fmtMxn(p.lastPayout.amountMxn)} el ${String(p.lastPayout.paidAt || '').slice(0, 10)}</p>` : ''}
-      <button data-pay="${p.photographerId}" class="primary" ${p.pendingBalance > 0 ? '' : 'disabled'}>Marcar como pagado</button>
+      <button data-pay="${p.photographerId}" class="primary sec-btn-gold" ${p.pendingBalance > 0 ? '' : 'disabled'}>Marcar como pagado</button>
     </div>`).join('') : '<p class="muted">Todavía no hay otros fotógrafos.</p>'}</div>
     <div data-pg-controls="payouts"></div>
-    ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<p><strong>Historial de pagos enviados</strong></p><div data-pg="history">` + payoutHistory.payouts.map(h => `<p class="muted">${esc(h.photographerName)} · ${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</p>`).join('') + `</div><div data-pg-controls="history"></div>` : ''}
+    ${(payoutHistory && payoutHistory.payouts && payoutHistory.payouts.length) ? `<div class="panel-sec">Historial de pagos enviados</div><div data-pg="history">` + payoutHistory.payouts.map(h => `<div class="sec-kv"><span>${esc(h.photographerName)}</span><span class="sec-val">${fmtMxn(h.amountMxn)} · ${String(h.paidAt || h.createdAt || '').slice(0, 10)}</span></div>`).join('') + `</div><div data-pg-controls="history"></div>` : ''}
+    </div>
     ${solicitudesHtml}
-    <h3>Fotógrafos</h3>
+    <div class="panel-sec">Fotógrafos</div>
+    <div class="sec-card">
     <p class="muted">Aprueba a los fotógrafos nuevos para que puedan crear eventos y vender. Solo tú ves esta lista.</p>
-    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<p><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${(!ph.isOwner && !ph.hasApplication) ? '<span class="error">Sin solicitud</span>' : ''} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</p>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
+    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<div class="sec-photog"><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${(!ph.isOwner && !ph.hasApplication) ? '<span class="error">Sin solicitud</span>' : ''} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</div>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
     <div data-pg-controls="photogs"></div>
+    </div>
     </section>` : ''}
     <section data-tabpanel="estadisticas">
-    <h3>Estadísticas</h3>
+    <h2 class="sec-title">Estadísticas</h2>
     ${(stats.totals.photoViews || stats.totals.eventViews || stats.totals.totalDownloads)
-      ? `<p>Vistas de fotos: ${stats.totals.photoViews} · Visitantes únicos: ${stats.totals.uniqueViewers} · Visitas a eventos: ${stats.totals.eventViews} · Descargas: ${stats.totals.totalDownloads} · Ingresos: $${stats.totals.revenue} MXN</p>
-    <div data-pg="statsevents">${(stats.events || []).map(e => `<p class="muted">${esc(e.name)} — Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</p>`).join('')}</div>
+      ? `<div class="panel-sec">Resumen</div>
+    <div class="sec-card">
+    ${kv('Vistas de fotos', stats.totals.photoViews)}${kv('Visitantes únicos', stats.totals.uniqueViewers)}${kv('Visitas a eventos', stats.totals.eventViews)}${kv('Descargas', stats.totals.totalDownloads)}${kv('Ingresos', '$' + stats.totals.revenue + ' MXN', true)}
+    </div>
+    <div class="panel-sec">Por evento</div>
+    <div class="sec-card">
+    <div data-pg="statsevents">${(stats.events || []).map(e => `<div class="sec-stat"><strong>${esc(e.name)}</strong><br><span class="muted">Vistas: ${e.photoViews} · Visitantes: ${e.uniqueViewers} · Visitas al evento: ${e.eventViews} · Descargas: ${e.downloads} · $${e.revenue} MXN</span></div>`).join('')}</div>
     <div data-pg-controls="statsevents"></div>
-    <p><strong>Fotos más vistas</strong></p>
-    ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<p class="muted"><img src="${photoImgUrl(p.photoId, true)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')} · ${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</p>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
-    <p><strong>Dorsales más buscados</strong></p>
-    ${(stats.topBibs || []).length ? (stats.topBibs || []).map(b => `<p class="muted">Dorsal ${esc(b.bib)} · ${b.searches} búsqueda(s)</p>`).join('') : '<p class="muted">Sin búsquedas todavía.</p>'}`
+    </div>
+    <div class="panel-sec">Fotos más vistas</div>
+    <div class="sec-card">
+    ${(stats.topPhotos || []).length ? (stats.topPhotos || []).map(p => `<div class="sec-top"><img src="${photoImgUrl(p.photoId, true)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:6px;vertical-align:middle"> <span><strong>Dorsal ${esc((p.bibs || []).join(', ') || 'sin dorsal')}</strong><br><span class="muted">${esc(p.eventName)} · ${p.views} vista(s) · ${p.downloads} descarga(s)</span></span></div>`).join('') : '<p class="muted">Sin vistas todavía.</p>'}
+    </div>
+    <div class="panel-sec">Dorsales más buscados</div>
+    <div class="sec-card">
+    ${(stats.topBibs || []).length ? (stats.topBibs || []).map(b => kv('Dorsal ' + esc(b.bib), b.searches + ' búsqueda(s)')).join('') : '<p class="muted">Sin búsquedas todavía.</p>'}
+    </div>`
       : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}
     </section>`;
   $('#evCreate').onclick = async () => {
