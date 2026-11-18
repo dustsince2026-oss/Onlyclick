@@ -95,7 +95,7 @@
   .row > * { flex: 1; min-width: 140px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
   .photo { background: #141419; border: 1px solid #26262c; border-radius: 10px; overflow: hidden; }
-  .photo img { width: 100%; height: 180px; object-fit: cover; display: block; cursor: pointer; background: #000; }
+  .photo img { width: 100%; height: 180px; object-fit: contain; display: block; cursor: pointer; background: #000; }
   .thumb-wrap { position: relative; }
   .price-pill { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.78); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 800; font-size: 13px; pointer-events: none; }
   /* ---------- Modal de búsqueda: 3 métodos en tarjetas grandes ---------- */
@@ -157,7 +157,7 @@
   @media (min-width: 720px) { #bottomNav { display: none; } }
   /* ---------- Lightbox ---------- */
   #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
-  #lightbox img { max-width: 100%; max-height: 70vh; object-fit: contain; }
+  #lightbox img { max-width: 100%; max-height: 70vh; max-height: calc(100dvh - 170px); object-fit: contain; }
   #lightbox .actions { width: 100%; max-width: 480px; }
   /* ---------- Carrito: icono arriba, junto a Entrar ---------- */
   .cart-top-btn { position: relative; background: none; border: none; padding: 8px; width: auto; margin: 0; display: flex; align-items: center; }
