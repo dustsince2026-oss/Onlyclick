@@ -770,16 +770,29 @@ async function handleCartReturn(pid, paid, pay) {
     try {
       const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
       if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
-      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".</p>';
+      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
+      const cv = $('#cartVerify');
+      if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
       pollCartPayment(pid);
       return;
     } catch (_) {
-      box.innerHTML = '<p>No se pudo verificar el pago todavía. Revisa "Mis fotos" en unos minutos.</p>';
+      box.innerHTML = '<p>No se pudo verificar el pago todavía. Revisa "Mis fotos" en unos minutos.</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
+      const cv = $('#cartVerify');
+      if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
       return;
     }
   }
   if (pay === 'pending') {
     alert('Tu pago está en proceso. Si elegiste efectivo en OXXO, paga con tu referencia de Clip en cualquier OXXO (tienes 7 días). En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
+    const box2 = $('#cartBox');
+    if (box2) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = '<button id="cartVerify" class="secondary">Verificar pago</button>';
+      box2.appendChild(row);
+      const cv = $('#cartVerify');
+      if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
+    }
     pollCartPayment(pid);
     return;
   }
@@ -832,6 +845,7 @@ function photoCard(p, opts) {
       ${p.photographerName ? `<span class="muted">Foto de ${esc(p.photographerName)}</span>` : ''}
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
+      ${p._pending ? `<button data-verify="${p.id}" class="secondary">Verificar pago</button>` : ''}
       ${opts && opts.remove && Number(p.amount || 0) === 0 ? `<button data-remove="${p.id}" class="secondary">Quitar de Mis fotos</button>` : ''}
       ${opts && opts.delete && canDeletePhoto(p, opts.event) ? `<button data-delete="${p.id}" class="secondary">Eliminar foto</button>` : ''}
     </div></div>`;
@@ -863,6 +877,21 @@ function openLightbox(p) {
   lbCart.dataset.cart = p.id;
   lbCart.disabled = cartHas(p.id);
   lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito · $' + price + ' MXN';
+  // "Verificar pago" en la vista ampliada: solo foto de pago sin
+  // comprar y con un pago pendiente del usuario (se pregunta una vez
+  // al abrir, con la rama {photoIds} que lee el estado local).
+  const lbVerify = $('#lbVerify');
+  if (lbVerify) {
+    lbVerify.style.display = 'none';
+    lbVerify.onclick = () => verifyPhotoPayment(p.id, lbVerify);
+    if (!freeMode && !p.owned && token) {
+      api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoIds: [p.id] }) }).then(s => {
+        if (lightboxPhoto !== p) return;
+        const st = (s.photos || [])[0];
+        if (st && st.status === 'pending') lbVerify.style.display = '';
+      }).catch(() => {});
+    }
+  }
   // Borrar foto en la vista ampliada: solo el dueño de la foto. Aquí
   // no siempre se conoce el evento, así que sin photographerId solo el
   // dueño de OnlyClick la ve (en la cuadrícula del evento sí se usa el
@@ -939,6 +968,83 @@ function bindPhotos(photos) {
     if (p) openLightbox(p);
   });
   document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => deletePhotoFlow(Number(b.dataset.delete)));
+  document.querySelectorAll('[data-verify]').forEach(b => b.onclick = () => verifyPhotoPayment(Number(b.dataset.verify), b));
+}
+
+// ---- "Verificar pago" ----
+// El frente solo pregunta solo 2 min tras el regreso de Clip
+// (pollPayment/pollCartPayment: cada 5 s x24). Con efectivo en OXXO
+// Clip tarda más en confirmar, y después de esos 2 min no había forma
+// de volver a preguntar: este botón lo hace a mano, cuando el usuario
+// quiera. Reutiliza /api/checkout-status, que consulta el estado real
+// en Clip; no hay endpoint nuevo ni se pregunta en bucle.
+// Marca las fotos con un pago pendiente del usuario (una sola llamada
+// con todos los ids): la rama {photoIds} de checkout-status lee las
+// filas de pago locales, así que es barata y no toca a Clip. Solo el
+// comprador tiene filas pendientes; el dueño de la foto no ve el botón
+// en la cuadrícula (el servidor sí le permitiría verificar con
+// {photoId}, pero no hay forma de listar sus pendientes sin un
+// endpoint nuevo). Sin sesión o sin fotos de pago, no se llama.
+async function markPendingPhotos(photos) {
+  if (!token || !photos || !photos.length) return;
+  const ids = photos.filter(p => p.freeMode === false && !p.owned).map(p => Number(p.id)).filter(Boolean);
+  if (!ids.length) return;
+  try {
+    const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoIds: ids }) });
+    const pending = new Set((s.photos || []).filter(x => x.status === 'pending').map(x => Number(x.photoId)));
+    photos.forEach(p => { if (pending.has(Number(p.id))) p._pending = true; });
+  } catch (_) { /* sin estado de pagos, las tarjetas quedan como antes */ }
+}
+
+// Vuelve a preguntar a Clip si un pago pendiente de UNA foto ya se
+// confirmó. Pagado: avisa y descarga con el flujo que ya existe.
+// Todavía pendiente: no es un fallo, solo hay que esperar. Cancelado o
+// vencido: el mensaje que ya existe. Si no se puede preguntar: que lo
+// intente de nuevo.
+async function verifyPhotoPayment(photoId, btn) {
+  if (!photoId) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
+  try {
+    const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoId }) });
+    if (s.paid) {
+      alert('¡Pago confirmado! Descargando tu foto…');
+      try { await downloadPhotoBlob(photoId); } catch (_) { alert('El pago quedó registrado, pero la descarga falló. Abre la foto en el evento y dale "Guardar".'); }
+      if (lightboxPhoto && lightboxPhoto.id === photoId) hideLightbox();
+      if (currentView === 'myphotos') loadMyPhotos();
+      else if (currentEvent) loadEventDetail(currentEvent);
+      return;
+    }
+    if (s.status === 'cancelled' || s.status === 'expired') {
+      alert('El pago no se completó (cancelado o vencido). Puedes intentarlo de nuevo con "Pagar y descargar".');
+      if (lightboxPhoto && lightboxPhoto.id === photoId) hideLightbox();
+      if (currentEvent) loadEventDetail(currentEvent);
+      return;
+    }
+    alert('Clip todavía no confirma tu pago, inténtalo en unos minutos.');
+  } catch (_) {
+    alert('No se pudo verificar el pago, inténtalo de nuevo.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Verificar pago'; }
+  }
+}
+
+// "Verificar pago" del carrito: vuelve a preguntar a Clip por TODO el
+// checkout (paymentRequestId) cuando el efectivo de OXXO tarda.
+// Pagado: la caja de "¡Pago confirmado!" que ya existe. Cancelado o
+// vencido: el mensaje que ya existe y el carrito sigue intacto.
+async function verifyCartPayment(pid, btn) {
+  if (!pid) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
+  try {
+    const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
+    if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
+    if (s.status === 'cancelled' || s.status === 'expired') { alert('El pago no se completó (cancelado o vencido). Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
+    alert('Clip todavía no confirma tu pago, inténtalo en unos minutos.');
+  } catch (_) {
+    alert('No se pudo verificar el pago, inténtalo de nuevo.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Verificar pago'; }
+  }
 }
 
 // ---- Búsqueda: un solo botón, 3 métodos (idea de ZebraSnap) ----
@@ -1325,6 +1431,9 @@ async function loadEventDetail(eventId, push) {
   // El precio por foto ya viene del servidor (cada fotógrafo el suyo):
   // aquí solo se marca si el evento es gratis.
   r.photos.forEach(p => { p.freeMode = r.event.freeMode; });
+  // Si el usuario tiene un pago pendiente en alguna foto, su tarjeta
+  // lleva el botón "Verificar pago" (una sola llamada, antes de dibujar).
+  await markPendingPhotos(r.photos);
   $('#eventDetail').innerHTML = `
     <h3>${esc(r.event.name)}</h3>
     ${r.event.isHidden ? '<p><span class="badge">Oculto — solo tú lo ves</span></p>' : ''}
