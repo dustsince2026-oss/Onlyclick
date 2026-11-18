@@ -1371,10 +1371,10 @@ async function refreshPaymentFromClip(store, payment) {
 
 // ---- Pago en efectivo en OXXO (Clip Checkout) ----
 // Clip acepta efectivo en OXXO en el mismo link de pago: basta pedir
-// payment_method_types ["card", "cash"] en custom_payment_options (docs:
-// developer.clip.mx ?page=cnp-mxn). El comprador elige "Efectivo" en la
-// página de Clip, recibe su referencia y paga en cualquier OXXO; Clip
-// avisa por webhook y el cobro se confirma igual que con tarjeta (el
+// payment_method_types ["credit", "debit", "cash"] en
+// custom_payment_options. El comprador elige "Efectivo" en la página
+// de Clip, recibe su referencia y paga en cualquier OXXO; Clip avisa
+// por webhook y el cobro se confirma igual que con tarjeta (el
 // GET /v2/checkout no dice cómo se pagó, y no hace falta: la entrega es
 // la misma). Comisión igual: 3.6% + IVA. SPEI está desactivado por Clip
 // por ahora ("temporalmente desactivado" en su centro de ayuda), así que
@@ -1382,17 +1382,23 @@ async function refreshPaymentFromClip(store, payment) {
 // La referencia vive lo que vive el link: se pone expires_at a 7 días
 // (el default de Clip son 72 h) para que el corredor alcance a ir al
 // OXXO.
-// BUG 2026-11-17: Clip rechazaba TODOS los cobros con 400 "Invalid
-// input" (lo vio Orlan en su teléfono, foto y carrito). Causa:
-// expires_at se mandaba con Date.toISOString(), que SIEMPRE trae
-// milisegundos (2026-11-24T18:39:00.123Z), pero la doc oficial de Clip
-// exige el formato SIN milisegundos (YYYY-MM-DDTHH:MM:SSZ;
-// developer.clip.mx ?page=cnp-mxn, máx 365 días). custom_payment_options
-// con "cash" SÍ es válido según la misma doc, y el resto del payload es
-// idéntico al que funcionó el 2026-11-15 ($20 pagado). El mensaje
-// genérico "Invalid input" no nombra el campo, y el reintento viejo solo
-// se disparaba si el mensaje decía "expires_at", así que nunca se
-// disparó.
+// BUG 2026-11-17 (en vivo, no solo en la doc): Clip rechazaba TODOS los
+// cobros con 400 "Invalid input" (lo vio Orlan en su teléfono, foto y
+// carrito). La primera hipótesis fue expires_at con milisegundos (la doc
+// oficial exige YYYY-MM-DDTHH:MM:SSZ sin milisegundos, y eso se
+// arregló), pero NO era todo: los logs de Vercel del 2026-11-17 a las
+// 19:06 y 19:09 muestran el error real de Clip al crear el checkout
+// del carrito:
+// {"message":"Invalid input","code_message":"002","detail":"Invalid option
+// in payment_method_types, allowed values are
+// credit|debit|cash|bank_transfer|wallet"}.
+// "card" NO es un valor válido en la API en vivo, aunque la doc
+// (developer.clip.mx ?page=cnp-mxn) lo sugiera: la API en vivo manda.
+// Por eso ahora se manda ["credit", "debit", "cash"].
+// El cobro del OXXO del 2026-11-17 ($50, checkout 10TIJ5OJGK) salió
+// gracias al intento 3 (payload mínimo, sin custom_payment_options):
+// es el fallback que salva el cobro si Clip vuelve a rechazar un
+// campo opcional.
 // expires_at en el formato EXACTO de la doc (sin milisegundos).
 function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'); }
 // ¿Es un 400 de Clip? clipRequest pone e.clipStatus = status; el mensaje
@@ -1405,7 +1411,7 @@ function isClip400(e) { return !!e && (e.clipStatus === 400 || /Clip \(400\)/.te
 // 2026-11-15. Así el cobro con tarjeta nunca se rompe por un campo
 // opcional. Cada reintento se registra en el log del servidor.
 async function createClipLink(opts) {
-  const cash = { payment_method_types: ['card', 'cash'] };
+  const cash = { payment_method_types: ['credit', 'debit', 'cash'] };
   const attempts = [
     { ...opts, custom_payment_options: cash, expires_at: clipExpiresAt() },
     { ...opts, custom_payment_options: cash },
