@@ -208,6 +208,10 @@ const fileStore = {
   async getLatestPaymentByUserPhoto(userId, photoId) { const rows = loadDb().payments.filter(x => x.userId === Number(userId) && x.photoId === Number(photoId)).sort((a, b) => b.id - a.id); return rows[0] || null; },
   async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
   async hasDownload(userId, photoId) { return loadDb().downloads.some(d => d.userId === Number(userId) && d.photoId === Number(photoId)); },
+  // ¿Alguien ya PAGÓ por esta foto? Una descarga con amount > 0 es una
+  // venta: esa foto no se puede borrar (el comprador perdería lo que
+  // pagó). Las descargas gratis (amount 0) no bloquean el borrado.
+  async hasPaidDownload(photoId) { return loadDb().downloads.some(d => d.photoId === Number(photoId) && Number(d.amount || 0) > 0); },
   async readPhotoBytes(photo) { return fs.readFileSync(photo.filePath); },
   // Miniatura de la galería: devuelve null si la foto no tiene (fotos
   // viejas subidas antes de las miniaturas) para caer a la foto completa.
@@ -541,6 +545,10 @@ const supabaseStore = {
     return out;
   },
   async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId); return (count || 0) > 0; },
+  // ¿Alguien ya PAGÓ por esta foto? Una descarga con amount > 0 es una
+  // venta: esa foto no se puede borrar (el comprador perdería lo que
+  // pagó). Las descargas gratis (amount 0) no bloquean el borrado.
+  async hasPaidDownload(photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('photo_id', photoId).gt('amount', 0); return (count || 0) > 0; },
   async createPayment(p) { const { data, error } = await supabase().from('payments').insert({ clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' }).select().single(); if (error) throw new Error(error.message); return mapPayment(data); },
   async getPaymentByClipId(id) { const { data } = await supabase().from('payments').select().eq('clip_payment_request_id', id).maybeSingle(); return mapPayment(data); },
   // Todas las filas de un checkout (un carrito = varias filas con el

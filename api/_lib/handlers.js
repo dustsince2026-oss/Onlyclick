@@ -889,6 +889,10 @@ async function deletePhoto(store, user, photoId) {
   if (!p) throw err(404, 'Foto no encontrada.');
   const ev = await store.getEvent(p.eventId);
   if (!ev || !(await isPhotoOwner(user, p, ev))) throw err(403, 'Esa foto no es tuya.');
+  // Una foto ya vendida no se borra: quien pagó por ella perdería su
+  // acceso. Las descargas gratis no bloquean (la foto solo desaparece
+  // de la lista de Mis fotos de quien la guardó gratis).
+  if (await store.hasPaidDownload(p.id)) throw err(400, 'Esta foto ya se vendió y no se puede eliminar: alguien ya pagó por ella.');
   await store.deletePhoto(p.id);
   return { status: 200, data: { ok: true } };
 }
