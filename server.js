@@ -19,7 +19,7 @@ const ROUTES = {
   'password-forgot': 'password-forgot', 'password-reset': 'password-reset',
   'events': 'list-events', 'event-create': 'create-event', 'event-get': 'get-event',
   'photo-upload': 'upload-photo', 'backfill-thumbs': 'backfill-thumbs', 'subscribe-photo-alert': 'subscribe-photo-alert', 'photo-meta': 'photo-meta', 'shared-cart': 'shared-cart', 'search': 'search', 'claim': 'claim', 'purchase': 'purchase',
-  'my-photos': 'my-photos', 'remove-download': 'remove-download', 'sales': 'sales', 'set-free-mode': 'set-free-mode', 'set-event-hidden': 'set-event-hidden',
+  'my-photos': 'my-photos', 'remove-download': 'remove-download', 'sales': 'sales', 'set-free-mode': 'set-free-mode', 'set-event-hidden': 'set-event-hidden', 'set-event-upcoming': 'set-event-upcoming',
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
   'face-search': 'face-search',
   'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
