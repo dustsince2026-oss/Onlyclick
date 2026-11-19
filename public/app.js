@@ -1043,7 +1043,7 @@ function photoCard(p, opts) {
       <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
       ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
       ${p._pending ? `<button data-verify="${p.id}" class="secondary">Verificar pago</button>` : ''}
-      ${opts && opts.remove && Number(p.amount || 0) === 0 ? `<button data-remove="${p.id}" class="secondary">Quitar de Mis fotos</button>` : ''}
+      ${opts && opts.remove ? `<button data-remove="${p.id}" data-paid="${Number(p.amount || 0) > 0 ? '1' : '0'}" class="secondary">Quitar de Mis fotos</button>` : ''}
       ${opts && opts.delete && canDeletePhoto(p, opts.event) ? `<button data-delete="${p.id}" class="secondary">Eliminar foto</button>` : ''}
     </div></div>`;
 }
@@ -1913,11 +1913,16 @@ async function loadMyPhotos() {
   $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, { remove: true })).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
   bindPhotos(r.photos);
   // Quitar de Mis fotos: solo la saca de TU lista (la foto sigue en el
-  // evento). Solo sale en las gratis: las de pago no se pueden quitar,
-  // porque si se quitara perderías una foto que ya pagaste.
+  // evento). También las de pago se pueden quitar (Orlan, 2026-11-19):
+  // antes de quitar una de pago se avisa que ya no la podrá descargar
+  // sin volver a pagarla.
   document.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
     const id = Number(b.dataset.remove);
-    if (!confirm('¿Quitar esta foto de Mis fotos? Solo se quita de tu lista; la foto sigue en el evento.')) return;
+    const paid = b.dataset.paid === '1';
+    const msg = paid
+      ? '¿Quitar esta foto de Mis fotos? Si la quitas, ya no la podrás descargar sin volver a pagarla.'
+      : '¿Quitar esta foto de Mis fotos? Solo se quita de tu lista; la foto sigue en el evento.';
+    if (!confirm(msg)) return;
     try { await api('/api/remove-download', { method: 'POST', body: JSON.stringify({ photoId: id }) }); loadMyPhotos(); }
     catch (e) { alert(e.message); }
   });
