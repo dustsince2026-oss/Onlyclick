@@ -140,11 +140,13 @@ const fileStore = {
   // ---- Notificaciones: avisos del dueño a los fotógrafos + noticias
   // para atletas (audience: 'athletes' | 'photographers' | 'all').
   // Sin audience (fila vieja) se trata como solo fotógrafos, como antes.
+  // Un aviso con userId es para UNA cuenta (pago confirmado): solo esa
+  // cuenta lo ve, sin importar el grupo.
   async createAnnouncement(a) {
     const db = loadDb();
     if (!db.announcements) db.announcements = [];
     if (!db.seq.announcement) db.seq.announcement = 1;
-    const row = { id: nextId(db, 'announcement'), title: a.title, body: a.body, audience: a.audience || 'photographers', createdBy: a.createdBy || null, createdAt: new Date().toISOString() };
+    const row = { id: nextId(db, 'announcement'), title: a.title, body: a.body, audience: a.audience || 'photographers', userId: a.userId != null ? Number(a.userId) : null, createdBy: a.createdBy || null, createdAt: new Date().toISOString() };
     db.announcements.push(row); saveDb(db); return row;
   },
   async listAnnouncements() { return (loadDb().announcements || []).slice().sort((a, b) => b.id - a.id); },
@@ -343,7 +345,7 @@ function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.p
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
-function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, audience: r.audience || 'photographers', createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
+function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, audience: r.audience || 'photographers', userId: r.user_id != null ? Number(r.user_id) : null, createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
 // Código de descuento: un evento, un % y maxUses usos (1 = un solo uso,
 // como antes). uses cuenta los pagos confirmados. Si la tabla aún no
 // existe en vivo (falta correr el SQL), las lecturas devuelven vacío/null.
@@ -575,12 +577,18 @@ const supabaseStore = {
   // devuelve vacío y la vista muestra "No hay avisos todavía".
   // Si la columna audience aún no existe (falta correr el SQL de
   // noticias), se reintenta sin ella y la noticia queda como aviso
-  // solo para fotógrafos, como antes.
+  // solo para fotógrafos, como antes. Si la columna user_id aún no
+  // existe (falta correr el SQL del aviso de pago), NO se crea el
+  // aviso: mandarlo como aviso de grupo lo vería gente que no pagó.
   async createAnnouncement(a) {
     const row = { title: a.title, body: a.body, created_by: a.createdBy || null };
     if (a.audience) row.audience = a.audience;
+    if (a.userId != null) row.user_id = Number(a.userId);
     const { data, error } = await supabase().from('announcements').insert(row).select().single();
     if (!error) return mapAnnouncement(data);
+    if (a.userId != null && /user_id/i.test(error.message || '')) {
+      throw new Error('Falta la columna announcements.user_id: corre sql/aviso-pago-confirmado.sql');
+    }
     if (a.audience && /audience/i.test(error.message || '')) {
       const retry = await supabase().from('announcements').insert({ title: a.title, body: a.body, created_by: a.createdBy || null }).select().single();
       if (retry.error) throw new Error(retry.error.message);
