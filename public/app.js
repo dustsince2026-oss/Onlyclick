@@ -709,7 +709,7 @@ async function handleSharedCart(ids) {
     const paid = r.photos.filter(p => p.freeMode === false && !p.owned);
     const free = r.photos.filter(p => p.freeMode !== false);
     box.innerHTML = `<div class="card"><h3>Fotos que te compartieron</h3>
-      <p class="muted">${r.photos.length} foto(s) para ti. ${paid.length ? 'Agrégalas a tu carrito y págalas con tarjeta.' : ''}${free.length ? ' Las gratis se guardan desde cada foto.' : ''}${missing.length ? ` ${missing.length} foto(s) ya no están disponibles.` : ''}${expired.length ? ` ${expired.length} foto(s) ya caducaron con su álbum (los álbumes se borran 60 días después del evento).` : ''}</p>
+      <p class="muted">${r.photos.length} foto(s) para ti. ${paid.length ? 'Agrégalas a tu carrito y págalas con tarjeta o en efectivo.' : ''}${free.length ? ' Las gratis se guardan desde cada foto.' : ''}${missing.length ? ` ${missing.length} foto(s) ya no están disponibles.` : ''}${expired.length ? ` ${expired.length} foto(s) ya caducaron con su álbum (los álbumes se borran 60 días después del evento).` : ''}</p>
       ${!r.photos.length && expired.length ? `<p>El álbum de esas fotos ya caducó y se borró, por eso el link ya no muestra nada. Pídele a quien te lo mandó que te comparta fotos de un evento vigente.</p>` : ''}
       ${paid.length ? `<div class="row"><button id="sharedAddAll" class="primary">Agregar todo a mi carrito</button></div><p id="sharedAddStatus" class="muted"></p>` : ''}
       <div class="grid" style="margin-top:12px">${r.photos.map(p => photoCard(p)).join('') || '<p>No hay fotos para mostrar.</p>'}</div></div>`;
@@ -871,10 +871,10 @@ function renderCartView() {
     <div class="row"><button id="cartPay" class="primary" ${t.total > CART_MAX_TOTAL ? 'disabled' : ''}>Pagar todo · $${t.total} MXN</button><button id="cartClear" class="secondary">Vaciar carrito</button></div>
     <div class="row"><button id="cartShare" class="secondary">Compartir carrito</button></div>
     <p id="cartShareStatus" class="muted"></p>
-    <p class="muted">Pagas una sola vez con Clip, con tarjeta de crédito o débito (la confirmación es al instante).</p>
+    <p class="muted">Pagas una sola vez con Clip.</p>
     <div class="pay-methods">
-      <div class="pay-row"><span>💳 Tarjeta de crédito o débito</span><span class="ok">Disponible</span></div>
-      <div class="pay-row pay-disabled"><span>💵 Efectivo en OXXO</span><span class="muted">No disponible por el momento</span></div>
+      <div class="pay-row"><span>💳 Tarjeta de crédito o débito</span><span class="pay-time ok">al instante</span></div>
+      <div class="pay-row"><span>💵 Efectivo en tienda (OXXO, 7-Eleven y más)</span><span class="pay-time">hasta 48 h</span></div>
     </div></div>`;
   box.querySelectorAll('[data-rmcart]').forEach(b => b.onclick = () => { removeFromCart(Number(b.dataset.rmcart)); renderCartView(); });
   box.querySelectorAll('[data-rmpackage]').forEach(b => b.onclick = () => {
@@ -963,7 +963,7 @@ async function handleCartReturn(pid, paid, pay) {
     try {
       const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
       if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
-      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
+      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
       const cv = $('#cartVerify');
       if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
       pollCartPayment(pid);
@@ -976,7 +976,7 @@ async function handleCartReturn(pid, paid, pay) {
     }
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos".');
+    alert('Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.');
     const box2 = $('#cartBox');
     if (box2) {
       const row = document.createElement('div');
