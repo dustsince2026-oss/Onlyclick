@@ -2197,7 +2197,7 @@ async function loadPhotographer() {
     <div class="sec-card">
     <p class="muted">Códigos únicos y aleatorios por evento: el corredor los mete al pagar y se lleva un descuento extra en toda su compra, aparte de los descuentos por volumen. Cada código sirve las veces que le pongas en "Usos por código" (1 = una sola vez) y cada cuenta solo lo puede usar una vez. Genera los que quieras y pásale la lista al organizador.</p>
     <div class="sec-field"><label class="sec-label" for="dcEvent">Evento</label><select id="dcEvent">${myEvents.filter(e => !e.freeMode && !e.isExclusive).map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
-    <div class="sec-row3">
+    <div class="sec-grid2">
       <div class="sec-field"><label class="sec-label" for="dcPercent">Descuento (%)</label><input id="dcPercent" type="number" value="20" min="1" max="100"></div>
       <div class="sec-field"><label class="sec-label" for="dcMaxUses">Usos por código</label><input id="dcMaxUses" type="number" value="1" min="1" max="1000"></div>
       <div class="sec-field"><label class="sec-label" for="dcQty">¿Cuántos códigos?</label><input id="dcQty" type="number" value="10" min="1" max="1000"></div>
