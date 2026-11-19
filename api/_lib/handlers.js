@@ -1674,27 +1674,30 @@ async function refreshPaymentFromClip(store, payment) {
   return { clip: r.clip, payment: mine, paid: r.paid };
 }
 
-// ---- Pago en efectivo en OXXO (Clip Checkout) — BLOQUEADO 2026-11-18 ----
-// El efectivo en OXXO YA NO SE OFRECE para pagos nuevos: Orlan lo pidió
-// el 2026-11-18 porque el cobro de $50 del 2026-11-17 (checkout
-// 10TIJ5OJGK) seguía sin reflejarse y no le gusta esperar. La opción
-// queda VISIBLE pero BLOQUEADA en la pantalla de pago (no se puede
-// elegir) y createClipLink solo pide tarjeta: payment_method_types
-// ["credit", "debit"] en TODOS los intentos.
+// ---- Pago en efectivo en tiendas (OXXO, 7-Eleven y más) — DESBLOQUEADO
+// 2026-11-19 ----
+// Orlan lo había bloqueado el 2026-11-18 porque el cobro de $50 del
+// 2026-11-17 (checkout 10TIJ5OJGK) seguía sin reflejarse y no le gusta
+// esperar. El 2026-11-19 se supo que Clip SÍ lo había confirmado el
+// mismo martes en la noche (recibo #PAufAwcr; en OnlyClick quedó
+// marcado como pagado y con las descargas liberadas). Orlan decidió
+// desbloquearlo con un aviso claro: el pago en efectivo tarda hasta
+// 48 horas en confirmarse. La pantalla de pago lo dice así.
 // El cobro de $50 YA CREADO no se cancela: sigue pendiente y se confirma
 // por webhook o con "Verificar pago" (checkout-status) igual que antes;
 // nada de eso se toca aquí.
-// Antes el efectivo funcionaba así: bastaba pedir payment_method_types
+// El efectivo funciona así: basta pedir payment_method_types
 // ["credit", "debit", "cash"] en custom_payment_options. El comprador
-// elegía "Efectivo" en la página de Clip, recibía su referencia y pagaba
-// en cualquier OXXO; Clip avisaba por webhook y el cobro se confirmaba
-// igual que con tarjeta (el GET /v2/checkout no dice cómo se pagó, y no
-// hace falta: la entrega es la misma). Comisión igual: 3.6% + IVA. SPEI
-// está desactivado por Clip por ahora ("temporalmente desactivado" en su
+// elige "Efectivo" en la página de Clip, recibe su referencia y paga
+// en OXXO, 7-Eleven o cualquiera de las tiendas que le muestre Clip;
+// Clip avisa por webhook y el cobro se confirma igual que con tarjeta
+// (el GET /v2/checkout no dice cómo se pagó, y no hace falta: la
+// entrega es la misma). Comisión igual: 3.6% + IVA. SPEI está
+// desactivado por Clip por ahora ("temporalmente desactivado" en su
 // centro de ayuda), así que no se ofrece.
 // La referencia vivía lo que vive el link: se ponía expires_at a 7 días
-// (el default de Clip son 72 h) para que el corredor alcanzara a ir al
-// OXXO.
+// (el default de Clip son 72 h) para que el corredor alcanzara a ir a
+// la tienda.
 // BUG 2026-11-17 (en vivo, no solo en la doc): Clip rechazaba TODOS los
 // cobros con 400 "Invalid input" (lo vio Orlan en su teléfono, foto y
 // carrito). La primera hipótesis fue expires_at con milisegundos (la doc
@@ -1707,13 +1710,13 @@ async function refreshPaymentFromClip(store, payment) {
 // credit|debit|cash|bank_transfer|wallet"}.
 // "card" NO es un valor válido en la API en vivo, aunque la doc
 // (developer.clip.mx ?page=cnp-mxn) lo sugiera: la API en vivo manda.
-// Por eso ahora se manda ["credit", "debit"] (tarjeta solamente).
-// El cobro del OXXO del 2026-11-17 ($50, checkout 10TIJ5OJGK) salió
-// gracias al intento 3 (payload mínimo, sin custom_payment_options):
-// era el fallback que salvaba el cobro si Clip volvía a rechazar un
-// campo opcional. Con el efectivo bloqueado, el intento 3 ya no puede ir
-// sin custom_payment_options (el default de Clip volvería a ofrecer
-// efectivo): lleva los mismos tipos de tarjeta, solo sin expires_at.
+// Por eso ahora se manda ["credit", "debit", "cash"] (tarjeta +
+// efectivo). El cobro del OXXO del 2026-11-17 ($50, checkout
+// 10TIJ5OJGK) salió gracias al intento 3 (payload mínimo, sin
+// custom_payment_options): era el fallback que salvaba el cobro si
+// Clip volvía a rechazar un campo opcional. El intento 3 sigue
+// llevando custom_payment_options con los mismos tipos, solo sin
+// expires_at (así el listado de métodos queda explícito).
 // expires_at en el formato EXACTO de la doc (sin milisegundos).
 function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'); }
 // ¿Es un 400 de Clip? clipRequest pone e.clipStatus = status; el mensaje
@@ -1721,15 +1724,15 @@ function clipExpiresAt() { return new Date(Date.now() + 7 * 24 * 3600 * 1000).to
 // 500 o fallo de red se lanza tal cual).
 function isClip400(e) { return !!e && (e.clipStatus === 400 || /Clip \(400\)/.test(String(e.message || ''))); }
 // Crea el link de Clip con cadena de reintentos: (1) completo (tarjeta +
-// expires_at en formato de la doc); (2) sin expires_at; (3) solo tipos de
-// tarjeta, sin expires_at. Así el cobro con tarjeta nunca se rompe por un
+// efectivo + expires_at en formato de la doc); (2) sin expires_at;
+// (3) mismos tipos, sin expires_at. Así el cobro nunca se rompe por un
 // campo opcional. Cada reintento se registra en el log del servidor.
 async function createClipLink(opts) {
-  const cardOnly = { payment_method_types: ['credit', 'debit'] };
+  const payMethods = { payment_method_types: ['credit', 'debit', 'cash'] };
   const attempts = [
-    { ...opts, custom_payment_options: cardOnly, expires_at: clipExpiresAt() },
-    { ...opts, custom_payment_options: cardOnly },
-    { ...opts, custom_payment_options: cardOnly },
+    { ...opts, custom_payment_options: payMethods, expires_at: clipExpiresAt() },
+    { ...opts, custom_payment_options: payMethods },
+    { ...opts, custom_payment_options: payMethods },
   ];
   let lastErr = null;
   for (let i = 0; i < attempts.length; i++) {
@@ -1773,7 +1776,7 @@ async function createCheckout(store, user, body) {
     discountRow = await validateDiscountCodeRow(store, rawCode, ev.id, user.id);
     codeDiscount = Math.round(price * (Number(discountRow.discountPercent) / 100) * 100) / 100;
     amount = Math.round((price - codeDiscount) * 100) / 100;
-    if (amount <= 0) throw err(400, 'Ese código deja la foto en $0 y no se puede cobrar con tarjeta. Pídele a Orlan un código con menos descuento.');
+    if (amount <= 0) throw err(400, 'Ese código deja la foto en $0 y no se puede cobrar. Pídele a Orlan un código con menos descuento.');
   }
   // Reutilizar un link pendiente vigente para no crear links de más.
   // Con código: solo si el pendiente ya lleva EL MISMO monto con
