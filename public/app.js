@@ -2195,10 +2195,11 @@ async function loadPhotographer() {
     </div>
     ${me.isOwner ? `<div class="panel-sec">Códigos de descuento</div>
     <div class="sec-card">
-    <p class="muted">Códigos únicos y aleatorios por evento: el corredor los mete al pagar y se lleva un descuento extra en toda su compra, aparte de los descuentos por volumen. Cada código sirve una sola vez. Genera los que quieras y pásale la lista al organizador.</p>
+    <p class="muted">Códigos únicos y aleatorios por evento: el corredor los mete al pagar y se lleva un descuento extra en toda su compra, aparte de los descuentos por volumen. Cada código sirve las veces que le pongas en "Usos por código" (1 = una sola vez) y cada cuenta solo lo puede usar una vez. Genera los que quieras y pásale la lista al organizador.</p>
     <div class="sec-field"><label class="sec-label" for="dcEvent">Evento</label><select id="dcEvent">${myEvents.filter(e => !e.freeMode && !e.isExclusive).map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
     <div class="sec-row3">
       <div class="sec-field"><label class="sec-label" for="dcPercent">Descuento (%)</label><input id="dcPercent" type="number" value="20" min="1" max="100"></div>
+      <div class="sec-field"><label class="sec-label" for="dcMaxUses">Usos por código</label><input id="dcMaxUses" type="number" value="1" min="1" max="1000"></div>
       <div class="sec-field"><label class="sec-label" for="dcQty">¿Cuántos códigos?</label><input id="dcQty" type="number" value="10" min="1" max="1000"></div>
       <div class="sec-field"><label class="sec-label" for="dcNote">Nota (solo para uno)</label><input id="dcNote" placeholder="Ej. Para Ana, dorsal 12" maxlength="120"></div>
     </div>
@@ -2300,8 +2301,14 @@ async function loadPhotographer() {
     if (!codes.length) { list.innerHTML = '<p class="muted">Todavía no hay códigos para este evento.</p>'; return; }
     const used = codes.filter(c => c.used).length;
     list.innerHTML = `<p class="muted">${codes.length} código(s) · ${used} usado(s) · ${codes.length - used} disponible(s)</p>` + codes.map(c => {
-      const status = !c.active ? '<span class="error">Desactivado</span>' : (c.used ? '<span class="muted">Usado' + (c.usedByName ? ' por ' + esc(c.usedByName) : '') + '</span>' : '<span class="ok">Disponible</span>');
-      return `<div class="sec-kv"><span><strong>${esc(c.code)}</strong> · -${c.discountPercent}% · ${status}${c.note ? `<br><span class="muted">${esc(c.note)}</span>` : ''}</span><span class="row"><button data-dccopy="${esc(c.code)}">Copiar</button>${(!c.used && c.active) ? ` <button data-dcdeact="${c.id}">Desactivar</button>` : ''}</span></div>`;
+      // "Usos: 3/50". Estado: Desactivado / Agotado (llegó al tope; en
+      // códigos de un solo uso se sigue diciendo "Usado por X", como
+      // antes) / Disponible (todavía le quedan usos).
+      const maxUses = Number(c.maxUses || 1);
+      const uses = Number(c.uses || 0);
+      const exhausted = !!c.used || uses >= maxUses;
+      const status = !c.active ? '<span class="error">Desactivado</span>' : (exhausted ? (maxUses > 1 ? '<span class="muted">Agotado</span>' : '<span class="muted">Usado' + (c.usedByName ? ' por ' + esc(c.usedByName) : '') + '</span>') : '<span class="ok">Disponible</span>');
+      return `<div class="sec-kv"><span><strong>${esc(c.code)}</strong> · -${c.discountPercent}% · Usos: ${uses}/${maxUses} · ${status}${c.note ? `<br><span class="muted">${esc(c.note)}</span>` : ''}</span><span class="row"><button data-dccopy="${esc(c.code)}">Copiar</button>${(!c.used && c.active) ? ` <button data-dcdeact="${c.id}">Desactivar</button>` : ''}</span></div>`;
     }).join('');
     list.querySelectorAll('[data-dccopy]').forEach(b => b.onclick = async () => {
       try { await navigator.clipboard.writeText(b.dataset.dccopy); b.textContent = 'Copiado ✓'; setTimeout(() => { b.textContent = 'Copiar'; }, 2000); }
@@ -2324,13 +2331,15 @@ async function loadPhotographer() {
     if (!eventId) { if (st) st.textContent = 'Crea primero un evento de pago: los códigos solo sirven para eventos donde se cobra por foto.'; return; }
     const qty = Math.floor(Number(($('#dcQty') || {}).value));
     const pct = Math.floor(Number(($('#dcPercent') || {}).value));
+    const maxUses = Math.floor(Number(($('#dcMaxUses') || {}).value));
     if (!qty || qty < 1 || qty > 1000) { if (st) st.textContent = '¿Cuántos códigos? Pon un número entre 1 y 1000.'; return; }
     if (!pct || pct < 1 || pct > 100) { if (st) st.textContent = 'El descuento debe ser entre 1% y 100%.'; return; }
+    if (!maxUses || maxUses < 1 || maxUses > 1000) { if (st) st.textContent = '¿Usos por código? Pon un número entre 1 y 1000.'; return; }
     dcGenBtn.disabled = true;
     if (st) st.textContent = 'Generando ' + qty + ' códigos…';
     try {
-      const r = await api('/api/generate-discount-codes', { method: 'POST', body: JSON.stringify({ eventId, quantity: qty, discountPercent: pct }) });
-      if (st) st.textContent = 'Listo: ' + r.count + ' códigos nuevos con -' + pct + '% para este evento.';
+      const r = await api('/api/generate-discount-codes', { method: 'POST', body: JSON.stringify({ eventId, quantity: qty, discountPercent: pct, maxUses }) });
+      if (st) st.textContent = 'Listo: ' + r.count + ' códigos nuevos con -' + pct + '% para este evento.' + (maxUses > 1 ? ' Cada código se puede usar ' + maxUses + ' veces (una por cuenta).' : '');
       loadDcList();
     } catch (e) { if (st) st.textContent = e.message; }
     dcGenBtn.disabled = false;
@@ -2342,12 +2351,14 @@ async function loadPhotographer() {
     const eventId = sel ? Number(sel.value) : 0;
     if (!eventId) { if (st) st.textContent = 'Crea primero un evento de pago: los códigos solo sirven para eventos donde se cobra por foto.'; return; }
     const pct = Math.floor(Number(($('#dcPercent') || {}).value));
+    const maxUses = Math.floor(Number(($('#dcMaxUses') || {}).value));
     if (!pct || pct < 1 || pct > 100) { if (st) st.textContent = 'El descuento debe ser entre 1% y 100%.'; return; }
+    if (!maxUses || maxUses < 1 || maxUses > 1000) { if (st) st.textContent = '¿Usos por código? Pon un número entre 1 y 1000.'; return; }
     dcOneBtn.disabled = true;
     if (st) st.textContent = 'Generando un código…';
     try {
-      const r = await api('/api/create-discount-code', { method: 'POST', body: JSON.stringify({ eventId, discountPercent: pct, note: ($('#dcNote') || {}).value || '' }) });
-      if (st) st.textContent = 'Listo: tu código es ' + r.code.code + ' (-' + pct + '%).';
+      const r = await api('/api/create-discount-code', { method: 'POST', body: JSON.stringify({ eventId, discountPercent: pct, maxUses, note: ($('#dcNote') || {}).value || '' }) });
+      if (st) st.textContent = 'Listo: tu código es ' + r.code.code + ' (-' + pct + '%).' + (maxUses > 1 ? ' Se puede usar ' + maxUses + ' veces (una por cuenta).' : '');
       loadDcList();
     } catch (e) { if (st) st.textContent = e.message; }
     dcOneBtn.disabled = false;
@@ -2360,7 +2371,7 @@ async function loadPhotographer() {
     if (!eventId) { if (st) st.textContent = 'Elige un evento primero.'; return; }
     try {
       const r = await api('/api/list-discount-codes', { method: 'POST', body: JSON.stringify({ eventId }) });
-      const avail = (r.codes || []).filter(c => !c.used && c.active !== false);
+      const avail = (r.codes || []).filter(c => !c.used && c.active !== false && Number(c.uses || 0) < Number(c.maxUses || 1));
       if (!avail.length) { if (st) st.textContent = 'No hay códigos disponibles para descargar en este evento.'; return; }
       const evName = (sel.options[sel.selectedIndex] || {}).text || ('evento-' + eventId);
       const blob = new Blob([avail.map(c => c.code).join('\n') + '\n'], { type: 'text/plain' });
