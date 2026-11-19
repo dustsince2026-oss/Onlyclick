@@ -101,6 +101,8 @@
   .price-pill { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.78); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 800; font-size: 13px; pointer-events: none; }
   /* ---------- Modal de búsqueda: 3 métodos en tarjetas grandes ---------- */
   #searchModal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 60; }
+  .ev-pick-btn { display: block; width: 100%; text-align: left; background: #26262c; color: #fff; border: 1px solid #4d4d57; border-radius: 10px; padding: 10px 12px; margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+  .ev-pick-btn.sel { border-color: #d4af37; background: #2e2610; color: #d4af37; }
   /* ---------- Modal de documentos legales ---------- */
   #legalModal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 70; }
   .legal-card { background: #17171c; border: 1px solid #4d4d57; border-radius: 16px; max-width: 560px; width: 100%; max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -505,6 +507,10 @@
   <div class="card" style="max-width:480px;width:100%;margin:0">
     <h3>¿Cómo quieres buscar tus fotos?</h3>
     <p class="muted">Elige un método para encontrar tus fotos en el evento.</p>
+    <div id="searchModalEventWrap" style="display:none;margin:0 0 12px">
+      <p class="muted" style="margin:0 0 8px">Carrera:</p>
+      <div id="searchModalEventButtons"></div>
+    </div>
     <div id="searchModalCards"></div>
     <div id="searchModalBib" style="display:none">
       <div class="row"><input id="modalBibInput" type="search" inputmode="numeric" autocomplete="one-time-code" name="dorsal-modal" autocapitalize="off" autocorrect="off" placeholder="# de dorsal" style="flex:1"><button id="modalBibBtn" class="primary">Buscar</button></div>
