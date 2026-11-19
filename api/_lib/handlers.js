@@ -899,16 +899,15 @@ async function setTip(store, user, body) {
 // Quitar una foto de "Mis fotos": solo borra el registro de descarga de
 // ese usuario y esa foto, así ya no sale en su lista. La foto del álbum
 // NO se borra (sigue en el evento y otros la pueden comprar).
-// Solo se pueden quitar las fotos GRATIS (amount 0): si se borrara el
-// registro de una foto de pago, el comprador perdería el acceso a una
-// foto que ya pagó y tendría que volver a pagarla.
+// También se pueden quitar las fotos DE PAGO (Orlan, 2026-11-19): la
+// pantalla avisa antes que si la quita, ya no la podrá descargar sin
+// volver a pagarla. El que quita es el comprador, con el aviso enfrente.
 async function removeDownload(store, user, body) {
   requireUser(user);
   const photoId = Number(body.photoId);
   if (!photoId) throw err(400, 'Falta la foto.');
   const mine = (await store.listDownloadsByUser(user.id)).filter(d => d.photoId === photoId);
   if (!mine.length) throw err(404, 'Esa foto no está en tus fotos.');
-  if (mine.some(d => Number(d.amount || 0) > 0)) throw err(400, 'Esa foto es de pago y no se puede quitar de Mis fotos: si se quitara, perderías el acceso a una foto que ya pagaste.');
   await store.removeDownloadsByUserPhoto(user.id, photoId);
   return { status: 200, data: { ok: true } };
 }
@@ -1639,6 +1638,34 @@ async function notifySale(store, newlyPaid) {
   }
 }
 
+// Aviso al COMPRADOR cuando su pago se confirma (Orlan, 2026-11-19):
+// le llega a su campanita que ya puede descargar sus fotos. Es lo que
+// necesita el que pagó en efectivo y esperó hasta 48 h: sin esto, solo
+// se enteraba entrando a "Mis fotos".
+// Se crea UN aviso por comprador y evento: solo con las filas que en
+// ESTA llamada pasaron a pagadas (newlyPaid), así un reintento del
+// webhook o un segundo "Verificar pago" no duplica el aviso. Si crear
+// el aviso falla, el pago no se rompe: se registra y se sigue.
+async function notifyBuyer(store, newlyPaid) {
+  const byBuyerEvent = new Map();
+  for (const p of newlyPaid) {
+    const ev = await store.getEvent(p.eventId).catch(() => null);
+    const key = p.userId + ':' + (ev ? ev.id : p.eventId);
+    if (!byBuyerEvent.has(key)) byBuyerEvent.set(key, { userId: p.userId, event: ev, eventId: p.eventId, count: 0 });
+    byBuyerEvent.get(key).count++;
+  }
+  for (const g of byBuyerEvent.values()) {
+    const n = g.count;
+    const eventName = g.event ? g.event.name : 'el evento';
+    const title = '¡Tu pago se confirmó!';
+    const body = n === 1
+      ? 'Ya puedes descargar tu foto de ' + eventName + '. Está en Mis fotos.'
+      : 'Ya puedes descargar tus ' + n + ' fotos de ' + eventName + '. Están en Mis fotos.';
+    try { await store.createAnnouncement({ title, body, userId: g.userId, createdBy: null }); }
+    catch (e) { console.error('[aviso-pago] no se pudo avisar al comprador ' + g.userId + ': ' + (e.message || e)); }
+  }
+}
+
 async function refreshPaymentsByClipId(store, clipId) {
   const payments = await store.getPaymentsByClipId(clipId);
   if (!payments.length) return { clip: null, payments, paid: false };
@@ -1651,7 +1678,9 @@ async function refreshPaymentsByClipId(store, clipId) {
       if (!r.already) newlyPaid.push(p);
     }
     if (newlyPaid.length) {
-      try { await Promise.race([notifySale(store, newlyPaid), new Promise(r => setTimeout(r, 4000))]); } catch (_) { /* el aviso nunca rompe el pago */ }
+      // Avisos (nunca rompen el pago): al fotógrafo por correo y al
+      // comprador a su campanita. Máximo 4 s entre los dos.
+      try { await Promise.race([Promise.allSettled([notifySale(store, newlyPaid), notifyBuyer(store, newlyPaid)]), new Promise(r => setTimeout(r, 4000))]); } catch (_) { /* el aviso nunca rompe el pago */ }
     }
     // El código de descuento se quema SOLO ahora que el pago se confirmó
     // (idempotente: si ya estaba usado, no hace nada). Un pago fallido o
@@ -2176,6 +2205,9 @@ async function listAnnouncements(store, user) {
   const isPhotog = user.role === 'photographer' && user.approved !== false;
   const isAthlete = user.role === 'athlete';
   const visible = (a) => {
+    // Aviso para UNA cuenta (pago confirmado): solo esa cuenta lo ve,
+    // sin importar el grupo.
+    if (a.userId != null) return Number(a.userId) === Number(user.id);
     const aud = a.audience || 'photographers';
     if (aud === 'all') return isPhotog || isAthlete;
     if (aud === 'athletes') return isAthlete;
