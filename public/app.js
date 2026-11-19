@@ -1805,6 +1805,12 @@ async function loadEventDetail(eventId, push) {
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
   trackView('event', null, eventId);
+  // Al abrir el álbum, bajar directo a la primera foto: el detalle se
+  // dibuja DEBAJO de la lista de eventos y sin esto la persona se queda
+  // mirando arriba sin ver las fotos (Orlan 2026-11-18). Si el álbum
+  // aún no tiene fotos, bajar al inicio del detalle.
+  const scrollTarget = document.getElementById(r.photos.length ? 'evGrid' : 'eventDetail');
+  if (scrollTarget && scrollTarget.scrollIntoView) scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
   const notifyBtn = $('#notifyBtn');
   if (notifyBtn) notifyBtn.onclick = async () => {
     const email = ($('#notifyEmail').value || '').trim();
