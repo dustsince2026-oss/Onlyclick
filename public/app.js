@@ -2574,6 +2574,10 @@ function showView(v) {
   });
   document.querySelectorAll('button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
   if (v !== currentView) { currentView = v; lastBackAtHome = 0; pushNav({ view: v }); }
+  // Ir a Inicio siempre deja arriba del todo, como volver a entrar a
+  // la página: el scroll se quedaba donde estaba y se caía a media
+  // página, en la sección de organizadores (Orlan 2026-11-18).
+  if (v === 'home' && window.scrollTo) window.scrollTo(0, 0);
   if (v === 'home') loadHome();
   if (v === 'events') loadEvents();
   if (v === 'myphotos') loadMyPhotos();
