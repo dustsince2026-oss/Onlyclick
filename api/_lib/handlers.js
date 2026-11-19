@@ -1355,6 +1355,15 @@ function validDiscountPercent(p) {
   if (r < 1 || r > 100) return null;
   return r;
 }
+// Usos por código (multiuso): cuántas veces se puede usar en total.
+// 1 = un solo uso (como antes). 2-1000 = código compartido.
+function validMaxUses(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return null;
+  const r = Math.floor(n);
+  if (r < 1 || r > 1000) return null;
+  return r;
+}
 // Genera un código único para el evento: reintenta si choca con uno que
 // ya existe (con 32^6 combinaciones por prefijo, el choque es casi
 // imposible; el reintento es por si dos generaciones corren a la vez).
@@ -1367,29 +1376,48 @@ async function generateUniqueDiscountCode(store, eventName) {
   throw err(500, 'No se pudo generar un código único. Inténtalo de nuevo.');
 }
 function publicDiscountCode(c) {
-  return c ? { id: c.id, code: c.code, eventId: c.eventId, discountPercent: c.discountPercent, note: c.note || '', used: !!c.used, usedBy: c.usedBy != null ? c.usedBy : null, usedAt: c.usedAt || null, active: c.active !== false, createdAt: c.createdAt || null } : null;
+  return c ? { id: c.id, code: c.code, eventId: c.eventId, discountPercent: c.discountPercent, note: c.note || '', used: !!c.used, usedBy: c.usedBy != null ? c.usedBy : null, usedAt: c.usedAt || null, active: c.active !== false, maxUses: Number(c.maxUses || 1), uses: Number(c.uses || 0), createdAt: c.createdAt || null } : null;
 }
 // Valida un código para un evento y devuelve la fila. Errores claros
-// para que el corredor sepa qué pasó (no existe / otro evento / usado /
-// desactivado). Sin tabla en la base (falta correr el SQL), el código no
-// se encuentra y se dice que no existe.
-async function validateDiscountCodeRow(store, rawCode, eventId) {
+// para que el corredor sepa qué pasó (no existe / otro evento /
+// agotado / desactivado / ya lo usó esta cuenta). Sin tabla en la base
+// (falta correr el SQL), el código no se encuentra y se dice que no
+// existe. userId es opcional: sin él no se revisa el uso por cuenta
+// (solo el tope total).
+async function validateDiscountCodeRow(store, rawCode, eventId, userId) {
   const code = String(rawCode || '').trim().toUpperCase();
   if (!code) throw err(400, 'Escribe tu código de descuento.');
   const row = typeof store.getDiscountCodeByCode === 'function' ? await store.getDiscountCodeByCode(code).catch(() => null) : null;
   if (!row) throw err(404, 'Ese código no existe. Revísalo y escríbelo de nuevo.');
   if (row.active === false) throw err(400, 'Ese código ya no está activo.');
-  if (row.used) throw err(400, 'Ese código ya se usó.');
+  const maxUses = Number(row.maxUses || 1);
+  const uses = Number(row.uses || 0);
+  if (row.used || uses >= maxUses) throw err(400, maxUses > 1 ? 'Ese código ya se acabó.' : 'Ese código ya se usó.');
   if (Number(row.eventId) !== Number(eventId)) {
     const ev = await store.getEvent(row.eventId).catch(() => null);
     throw err(400, 'Ese código es solo para fotos de ' + (ev ? ev.name : 'otro evento') + '.');
   }
+  if (userId != null && typeof store.hasDiscountCodeRedemption === 'function') {
+    const already = await store.hasDiscountCodeRedemption(row.id, Number(userId)).catch(() => false);
+    if (already) throw err(400, 'Ya usaste este código.');
+  }
   return row;
 }
-// Marca el código del checkout como usado cuando el pago se confirma.
-// No rompe nunca el pago: si falla, solo se registra en el log.
+// Marca el canje del checkout cuando el pago se confirma. No rompe
+// nunca el pago: si falla, solo se registra en el log.
+// Camino nuevo (multiuso): el checkout lleva el código en sus pagos
+// (discountCodeId), así muchos checkouts del mismo código compartido
+// no se pisan entre sí; el canje registra el uso de ESTA cuenta y suma
+// 1, y apaga el código al llegar al tope. Camino viejo: checkouts
+// creados antes de este cambio, atados por payment_request_id en la
+// fila del código (un solo uso).
 async function markDiscountCodeUsedForCheckout(store, clipId, userId) {
   try {
+    if (typeof store.redeemDiscountCode === 'function' && typeof store.getPaymentsByClipId === 'function') {
+      const pays = await store.getPaymentsByClipId(String(clipId)).catch(() => []);
+      const withCode = (pays || []).find(p => p.discountCodeId != null);
+      if (withCode) return await store.redeemDiscountCode(Number(withCode.discountCodeId), Number(userId), String(clipId));
+    }
     if (typeof store.markDiscountCodeUsedByClipId !== 'function') return null;
     return await store.markDiscountCodeUsedByClipId(String(clipId), Number(userId));
   } catch (e) {
@@ -1404,37 +1432,43 @@ async function validateDiscountCode(store, user, body) {
   requireUser(user);
   const eventId = Number(body.eventId);
   if (!eventId) throw err(400, 'Falta el evento del código.');
-  const row = await validateDiscountCodeRow(store, body.code, eventId);
-  return { status: 200, data: { valid: true, code: row.code, eventId: row.eventId, discountPercent: row.discountPercent } };
+  const row = await validateDiscountCodeRow(store, body.code, eventId, user.id);
+  const maxUses = Number(row.maxUses || 1);
+  return { status: 200, data: { valid: true, code: row.code, eventId: row.eventId, discountPercent: row.discountPercent, maxUses, usesLeft: Math.max(0, maxUses - Number(row.uses || 0)) } };
 }
 
-// POST /api/create-discount-code { eventId, discountPercent?, note? } —
-// un solo código (para regalar a una persona). Solo el dueño.
+// POST /api/create-discount-code { eventId, discountPercent?, note?, maxUses? } —
+// un solo código (para regalar a una persona, o un código compartido
+// con tope de usos). Solo el dueño.
 async function createDiscountCode(store, user, body) {
   requireOwner(user);
   const ev = await store.getEvent(Number(body.eventId));
   if (!ev) throw err(404, 'Evento no encontrado.');
   const pct = validDiscountPercent(body.discountPercent == null ? 20 : body.discountPercent);
   if (pct == null) throw err(400, 'El descuento debe ser entre 1% y 100%.');
+  const maxUses = validMaxUses(body.maxUses == null ? 1 : body.maxUses);
+  if (maxUses == null) throw err(400, 'Los usos por código deben ser entre 1 y 1000.');
   const note = String(body.note || '').trim().slice(0, 120);
   const code = await generateUniqueDiscountCode(store, ev.name);
   let row;
   try {
-    row = await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note, createdBy: user.id });
+    row = await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note, maxUses, createdBy: user.id });
   } catch (e) {
     // Carrera con otra generación a la vez (índice único): reintentar
     // una vez con otro código.
     if (/unique|duplicate/i.test(e.message || '')) {
       const code2 = await generateUniqueDiscountCode(store, ev.name);
-      row = await store.createDiscountCode({ code: code2, eventId: ev.id, discountPercent: pct, note, createdBy: user.id });
+      row = await store.createDiscountCode({ code: code2, eventId: ev.id, discountPercent: pct, note, maxUses, createdBy: user.id });
     } else throw e;
   }
   return { status: 201, data: { code: publicDiscountCode(row) } };
 }
 
-// POST /api/generate-discount-codes { eventId, quantity, discountPercent? }
+// POST /api/generate-discount-codes { eventId, quantity, discountPercent?, maxUses? }
 // — genera N códigos de golpe (para dárselos a un organizador: 500-800
-// corredores). Solo el dueño. quantity 1-1000.
+// corredores). Solo el dueño. quantity 1-1000. maxUses es por código
+// (1 = un solo uso, como antes; N = cada código se puede usar N veces,
+// una por cuenta).
 async function generateDiscountCodes(store, user, body) {
   requireOwner(user);
   const ev = await store.getEvent(Number(body.eventId));
@@ -1443,6 +1477,8 @@ async function generateDiscountCodes(store, user, body) {
   if (!Number.isFinite(qty) || qty < 1 || qty > 1000) throw err(400, 'La cantidad debe ser entre 1 y 1000 códigos.');
   const pct = validDiscountPercent(body.discountPercent == null ? 20 : body.discountPercent);
   if (pct == null) throw err(400, 'El descuento debe ser entre 1% y 100%.');
+  const maxUses = validMaxUses(body.maxUses == null ? 1 : body.maxUses);
+  if (maxUses == null) throw err(400, 'Los usos por código deben ser entre 1 y 1000.');
   // Unicidad sin N consultas: se cargan los códigos que ya existen una
   // sola vez y se generan los nuevos fuera de ese conjunto. El índice
   // único de la base sigue siendo el respaldo si dos generaciones
@@ -1455,7 +1491,7 @@ async function generateDiscountCodes(store, user, body) {
     if (!existing.has(code) && !codes.includes(code)) { codes.push(code); existing.add(code); }
   }
   if (codes.length < qty) throw err(500, 'No se pudieron generar ' + qty + ' códigos únicos. Inténtalo con menos.');
-  const payload = codes.map(code => ({ code, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+  const payload = codes.map(code => ({ code, eventId: ev.id, discountPercent: pct, note: '', maxUses, createdBy: user.id }));
   let rows;
   try {
     rows = typeof store.createDiscountCodes === 'function'
@@ -1467,15 +1503,15 @@ async function generateDiscountCodes(store, user, body) {
     rows = [];
     for (const code of codes) {
       try {
-        rows.push(await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+        rows.push(await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note: '', maxUses, createdBy: user.id }));
       } catch (e2) {
         if (!/unique|duplicate/i.test(e2.message || '')) throw e2;
         const alt = await generateUniqueDiscountCode(store, ev.name);
-        rows.push(await store.createDiscountCode({ code: alt, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+        rows.push(await store.createDiscountCode({ code: alt, eventId: ev.id, discountPercent: pct, note: '', maxUses, createdBy: user.id }));
       }
     }
   }
-  return { status: 201, data: { eventId: ev.id, discountPercent: pct, count: rows.length, codes: rows.map(publicDiscountCode) } };
+  return { status: 201, data: { eventId: ev.id, discountPercent: pct, maxUses, count: rows.length, codes: rows.map(publicDiscountCode) } };
 }
 
 // POST /api/list-discount-codes { eventId? } — solo el dueño. Con
@@ -1496,8 +1532,9 @@ async function listDiscountCodes(store, user, body) {
   return { status: 200, data: { codes: out } };
 }
 
-// POST /api/deactivate-discount-code { codeId } — solo el dueño, solo
-// códigos sin usar (uno usado ya no se puede desactivar).
+// POST /api/deactivate-discount-code { codeId } — solo el dueño. Un
+// código agotado (usado) ya no se puede desactivar; uno con usos
+// parciales (ej. 3/50) sí: se apaga y los usos que quedaban se pierden.
 async function deactivateDiscountCode(store, user, body) {
   requireOwner(user);
   const row = typeof store.getDiscountCodeById === 'function'
@@ -1733,7 +1770,7 @@ async function createCheckout(store, user, body) {
   let codeDiscount = 0;
   const rawCode = String(body.code || '').trim();
   if (rawCode) {
-    discountRow = await validateDiscountCodeRow(store, rawCode, ev.id);
+    discountRow = await validateDiscountCodeRow(store, rawCode, ev.id, user.id);
     codeDiscount = Math.round(price * (Number(discountRow.discountPercent) / 100) * 100) / 100;
     amount = Math.round((price - codeDiscount) * 100) / 100;
     if (amount <= 0) throw err(400, 'Ese código deja la foto en $0 y no se puede cobrar con tarjeta. Pídele a Orlan un código con menos descuento.');
@@ -1772,6 +1809,7 @@ async function createCheckout(store, user, body) {
     externalReference: ref,
     userId: user.id, photoId: photo.id, eventId: ev.id,
     amount, currency: 'MXN', status: 'pending',
+    discountCodeId: discountRow ? discountRow.id : null,
   });
   // Atar el checkout al código (sin quemarlo todavía: solo se marca
   // usado cuando Clip confirme el pago, en refreshPaymentsByClipId).
@@ -1828,7 +1866,7 @@ async function createCartCheckout(store, user, body) {
   if (rawCode) {
     const eventIds = [...new Set(toPay.map(t => Number(t.eventId)))];
     if (eventIds.length !== 1) throw err(400, 'El código es solo para las fotos de un evento. Quita las fotos de otros eventos o paga por separado.');
-    discountRow = await validateDiscountCodeRow(store, rawCode, eventIds[0]);
+    discountRow = await validateDiscountCodeRow(store, rawCode, eventIds[0], user.id);
   }
   const totals = cartTotals(toPay.map(t => ({ id: t.id, price: t.price })), discountRow ? Number(discountRow.discountPercent) : 0);
   if (totals.total <= 0) throw err(400, 'El total no es válido.');
@@ -1862,6 +1900,7 @@ async function createCartCheckout(store, user, body) {
       externalReference: refIndex === 0 ? firstRef : makeCartRef(user.id, refIndex),
       userId: user.id, photoId, eventId: it.eventId,
       amount, currency: 'MXN', status: 'pending',
+      discountCodeId: discountRow ? discountRow.id : null,
     }));
     refIndex++;
   };
@@ -2600,4 +2639,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
