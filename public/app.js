@@ -31,6 +31,7 @@ let currentTipName = '';
 let currentPhotos = [];
 let latestEventId = null; // evento más reciente CON fotos (el del hero): ahí busca la selfie/dorsal del inicio; null = búsqueda global
 let latestEventName = '';
+let homeEvents = []; // eventos CON fotos para el selector de carrera del modal de búsqueda (más reciente primero)
 let lightboxPhoto = null;
 let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
@@ -1194,9 +1195,39 @@ async function verifyCartPayment(pid, btn) {
 // (La tercera tarjeta es "Ver todas las fotos": Orlan NO quiso buscar
 // por color de ropa, así que el tercer método es recorrer el álbum.)
 function onEventDetail() { return currentView === 'events' && !!currentEvent && !!((document.getElementById('eventDetail').innerHTML || '').trim()); }
+// Botones de carrera del modal de búsqueda (Orlan 2026-11-18, opción 3):
+// en el inicio la persona pica en QUÉ carrera buscar (por defecto la más
+// reciente con fotos); dentro de un evento, el evento es fijo y los
+// botones se esconden. Sin esto, un dorsal que existe en dos carreras
+// distintas era ambiguo: la búsqueda solo miraba la más reciente.
+let pickedEventId = null; // carrera elegida con los botones (null = la más reciente con fotos)
+function pickedSearchEvent() {
+  const id = pickedEventId || latestEventId;
+  const ev = (homeEvents || []).find(e => String(e.id) === String(id));
+  if (ev) return { id: ev.id, name: ev.name || '' };
+  return { id: latestEventId, name: latestEventName || '' };
+}
 function searchModalEvent() {
   if (onEventDetail()) return { id: currentEvent, name: currentEventName || '' };
-  return { id: latestEventId, name: latestEventName || '' };
+  return pickedSearchEvent();
+}
+function populateSearchEventButtons() {
+  const wrap = document.getElementById('searchModalEventWrap');
+  const box = document.getElementById('searchModalEventButtons');
+  if (!wrap || !box) return;
+  // Dentro de un evento no se elige: el evento ya está fijo.
+  if (onEventDetail()) { wrap.style.display = 'none'; return; }
+  const evs = homeEvents || [];
+  if (!evs.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  if (!pickedEventId || !evs.some(e => String(e.id) === String(pickedEventId))) pickedEventId = latestEventId || evs[0].id;
+  box.innerHTML = evs.map(e => `<button type="button" class="ev-pick-btn${String(e.id) === String(pickedEventId) ? ' sel' : ''}" data-ev="${e.id}">${esc(e.name || ('Evento ' + e.id))}${String(e.id) === String(pickedEventId) ? ' ✓' : ''}</button>`).join('');
+  box.querySelectorAll('.ev-pick-btn').forEach(b => b.onclick = () => {
+    pickedEventId = Number(b.dataset.ev);
+    populateSearchEventButtons();
+    const p = pickedSearchEvent();
+    document.getElementById('searchModalEvent').textContent = p.id ? 'Evento: ' + (p.name || '') : 'Aún no hay eventos publicados.';
+  });
 }
 function searchTargets() {
   // Dónde mostrar el avance y los resultados de la búsqueda por selfie:
@@ -1219,6 +1250,7 @@ function showModalBib() {
 function openSearchModal(pref) {
   const modal = $('#searchModal');
   if (!modal) return;
+  populateSearchEventButtons();
   const ev = searchModalEvent();
   const cards = $('#searchModalCards');
   $('#searchModalEvent').textContent = ev.id ? 'Evento: ' + (ev.name || '') : 'Aún no hay eventos publicados.';
@@ -1231,15 +1263,17 @@ function openSearchModal(pref) {
     const m = b.dataset.method;
     if (m === 'selfie') {
       closeSearchModal();
-      if (!ev.id) { alert('Aún no hay eventos para buscar.'); return; }
+      const p = searchModalEvent();
+      if (!p.id) { alert('Aún no hay eventos para buscar.'); return; }
       const t = searchTargets();
-      pickSelfieAndSearch(ev.id, ev.name, t.statusEl, t.resultsEl);
+      pickSelfieAndSearch(p.id, p.name, t.statusEl, t.resultsEl);
     } else if (m === 'bib') {
       showModalBib();
     } else if (m === 'all') {
       closeSearchModal();
-      if (!ev.id) { showView('events'); return; }
-      loadEventDetail(ev.id, true);
+      const p = searchModalEvent();
+      if (!p.id) { showView('events'); return; }
+      loadEventDetail(p.id, true);
     }
   });
   const bibBtn = $('#modalBibBtn');
@@ -1428,7 +1462,8 @@ function emptySearchCtx(eventId, eventName, statusEl, resultsEl) {
 }
 
 // Buscar por dorsal desde el formulario del modal. En el inicio busca
-// en todos los eventos; dentro de un evento, solo en ese evento. Los
+// en la carrera elegida con los botones del modal (por defecto la más
+// reciente con fotos); dentro de un evento, solo en ese evento. Los
 // resultados se muestran donde corresponde (inicio o detalle) y el modal
 // se cierra al buscar.
 async function runBibSearch(bib) {
@@ -1659,15 +1694,18 @@ async function loadHome() {
       // los "Próximo evento" (sin fotos todavía) y los ocultos no cuentan.
       // Si ninguno califica, queda en null y la búsqueda es global.
       const searchable = evs.filter(e => !e.isUpcoming && !e.isHidden && (e.photoCount || 0) > 0);
-      const ev = [...searchable].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
+      // Lista para el selector de carrera del modal (más reciente primero).
+      homeEvents = [...searchable].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')));
+      const ev = homeEvents[0];
       latestEventId = ev ? ev.id : null; latestEventName = ev ? ev.name : '';
     } else {
-      latestEventId = null; latestEventName = '';
+      latestEventId = null; latestEventName = ''; homeEvents = [];
     }
     $('#homeEvents').innerHTML = evs.length ? evs.map(e => eventCard(e)).join('') : '<p class="muted">Aún no hay eventos publicados.</p>';
     bindEventCards();
     buildPhotoStrip(evs);
   } catch (e) {
+    homeEvents = []; latestEventId = null; latestEventName = '';
     $('#homeEvents').innerHTML = '<p class="muted">No se pudieron cargar los eventos.</p>';
   }
 }
