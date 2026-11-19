@@ -824,10 +824,13 @@ function renderCartView() {
     $('#cartGoHome').onclick = () => showView('home');
     return;
   }
-  const t = cartTotals(cart, cartCode ? cartCode.percent : 0);
   // Si el carrito cambió y el código ya no cuadra (fotos de otro evento
   // o carrito vacío), se quita solo: el servidor lo volvería a rechazar.
+  // PRIMERO se quita y DESPUÉS se calculan los totales: al revés, los
+  // totales se calculaban con el descuento y luego la línea del
+  // descuento leía cartCode.code ya en null y la vista se trababa.
   if (cartCode && !cartCodeStillValid()) cartCode = null;
+  const t = cartTotals(cart, cartCode ? cartCode.percent : 0);
   const byId = {};
   cart.forEach(it => { byId[it.id] = it; });
   const lineById = {};
