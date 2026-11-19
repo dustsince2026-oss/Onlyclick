@@ -274,25 +274,72 @@ function splitAmount(total, n) {
   return out;
 }
 // items: [{ id, priceMxn }] — misma fórmula que api/_lib/handlers.js.
-function cartTotals(items) {
+// codePercent (opcional): descuento EXTRA de un código, DESPUÉS de los
+// descuentos por volumen y sobre el total final (cada paquete y cada
+// línea se rebajan en ese %, en centavos). Sin código es idéntico a antes.
+function cartTotals(items, codePercent) {
+  const pct = Math.min(100, Math.max(0, Number(codePercent) || 0)) / 100;
   const sorted = items.slice().sort((a, b) => (Number(b.priceMxn || b.price || 0) - Number(a.priceMxn || a.price || 0)) || (Number(a.id) - Number(b.id)));
   const numPackages = Math.floor(sorted.length / PACKAGE_SIZE);
   const packages = [];
+  let preCodeTotal = 0;
   for (let p = 0; p < numPackages; p++) {
     const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
     const subtotal = group.reduce((s, it) => s + Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100, 0);
-    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
-    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
+    const preCode = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
+    const total = Math.round(preCode * (1 - pct) * 100) / 100;
+    preCodeTotal += preCode;
+    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, amounts: splitAmount(total, group.length) });
   }
   const singles = sorted.slice(numPackages * PACKAGE_SIZE);
   const lines = singles.map((it, i) => {
     const price = Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100;
     const discount = singleDiscountForPosition(i + 1);
-    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount) * 100) / 100 };
+    const preCode = Math.round(price * (1 - discount) * 100) / 100;
+    preCodeTotal += preCode;
+    return { id: it.id, price, discount, lineTotal: Math.round(preCode * (1 - pct) * 100) / 100 };
   });
   const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
   const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
-  return { packages, lines, subtotal, discount: subtotal - total, total };
+  const codeDiscount = Math.round((preCodeTotal - total) * 100) / 100;
+  return { packages, lines, subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, codePercent: pct * 100, codeDiscount, volumeDiscount: Math.round((subtotal - preCodeTotal) * 100) / 100 };
+}
+// ---- Código de descuento en el carrito ----
+// El código lo mete el corredor y se valida en el servidor (el % nunca
+// sale del cliente: lo que se cobra es lo que calcula el servidor).
+// cartCode: { code, percent, eventId } o null. Solo vale si TODAS las
+// fotos del carrito son del evento del código; si el carrito cambia y ya
+// no cuadra, se quita solo (ver renderCartView).
+let cartCode = null;
+function cartCodeStillValid() {
+  if (!cartCode) return false;
+  if (!cart.length) return false;
+  return cart.every(x => Number(x.eventId) === Number(cartCode.eventId));
+}
+async function applyCartCode() {
+  const input = $('#dcCodeInput');
+  const msg = $('#dcCodeMsg');
+  if (!input) return;
+  const code = input.value.trim().toUpperCase();
+  if (!code) { if (msg) msg.textContent = 'Escribe tu código de descuento.'; return; }
+  if (!cart.length) return;
+  // El código es por evento: si el carrito trae fotos de varios
+  // eventos, se valida contra el primero y el servidor rechaza si no
+  // todas son de ese evento.
+  const eventId = Number(cart[0].eventId);
+  if (msg) msg.textContent = 'Revisando tu código…';
+  try {
+    const r = await api('/api/validate-discount-code', { method: 'POST', body: JSON.stringify({ code, eventId }) });
+    cartCode = { code: r.code, percent: Number(r.discountPercent), eventId: Number(r.eventId) };
+    renderCartView();
+    showToast('Código aplicado: -' + cartCode.percent + '% en tu compra.');
+  } catch (e) {
+    if (msg) msg.textContent = e.message || 'Ese código no es válido.';
+  }
+}
+function clearCartCode(silent) {
+  cartCode = null;
+  if (!silent) renderCartView();
 }
 // Precio del paquete de 10 si el carrito (6-9 fotos) llegara a 10: se
 // supone que las fotos que faltan son del mismo precio que la más cara
@@ -341,7 +388,7 @@ function removeFromCart(id) {
   // $20 MXN"): al quitarla se restaura con su precio, no en blanco.
   if (lb && Number(lb.dataset.cart) === Number(id)) { lb.textContent = (lightboxPhoto && lightboxPhoto.id === Number(id) && lightboxPriceMxn) ? 'Agregar al carrito · $' + lightboxPriceMxn + ' MXN' : 'Agregar al carrito'; lb.disabled = false; }
 }
-function clearCart() { cart = []; saveCart(); }
+function clearCart() { cart = []; cartCode = null; saveCart(); }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -777,7 +824,10 @@ function renderCartView() {
     $('#cartGoHome').onclick = () => showView('home');
     return;
   }
-  const t = cartTotals(cart);
+  const t = cartTotals(cart, cartCode ? cartCode.percent : 0);
+  // Si el carrito cambió y el código ya no cuadra (fotos de otro evento
+  // o carrito vacío), se quita solo: el servidor lo volvería a rechazar.
+  if (cartCode && !cartCodeStillValid()) cartCode = null;
   const byId = {};
   cart.forEach(it => { byId[it.id] = it; });
   const lineById = {};
@@ -803,10 +853,17 @@ function renderCartView() {
       <button data-rmcart="${it.id}" class="secondary">Quitar</button>
     </div>`;
   }).join('');
+  const discountLines = t.codeDiscount
+    ? `<p>Descuento por volumen: -$${t.volumeDiscount} MXN</p><p>Código ${esc(cartCode.code)} (-${cartCode.percent}%): -$${t.codeDiscount} MXN</p>`
+    : `<p>Descuento: -$${t.discount} MXN</p>`;
+  const codeBox = cartCode
+    ? `<p>Código aplicado: <strong>${esc(cartCode.code)}</strong> (-${cartCode.percent}%) <button id="dcCodeRemove" class="secondary">Quitar</button></p>`
+    : `<div class="row"><input id="dcCodeInput" placeholder="Tengo un código de descuento" style="flex:1" maxlength="20"><button id="dcCodeApply" class="secondary">Aplicar</button></div><p id="dcCodeMsg" class="muted"></p>`;
   box.innerHTML = '<p class="muted">' + cart.length + ' foto(s) · Individuales: 1-3 a precio normal, 4a y 5a con -20%. Cada 10 fotos forman un Paquete de 10 con -25%.</p>' +
     (upsell ? `<p class="cart-upsell">Agrega ${upsell.missing} foto(s) más y llévate el paquete de 10 por $${upsell.packageTotal}.</p>` : '') +
     packageRows + singleRows +
-    `<div class="card"><p>Subtotal: $${t.subtotal} MXN</p><p>Descuento: -$${t.discount} MXN</p><p><strong>Total a pagar: $${t.total} MXN</strong></p>
+    `<div class="card"><p>Subtotal: $${t.subtotal} MXN</p>${discountLines}<p><strong>Total a pagar: $${t.total} MXN</strong></p>
+    ${codeBox}
     ${t.total > CART_MAX_TOTAL ? `<p class="error">El total supera el límite de $${CART_MAX_TOTAL} MXN por pago de Clip. Quita fotos o divide tu compra en dos.</p>` : ''}
     <div class="row"><button id="cartPay" class="primary" ${t.total > CART_MAX_TOTAL ? 'disabled' : ''}>Pagar todo · $${t.total} MXN</button><button id="cartClear" class="secondary">Vaciar carrito</button></div>
     <div class="row"><button id="cartShare" class="secondary">Compartir carrito</button></div>
@@ -826,6 +883,12 @@ function renderCartView() {
   });
   $('#cartPay').onclick = checkoutCart;
   $('#cartClear').onclick = () => { if (confirm('¿Vaciar el carrito?')) { clearCart(); renderCartView(); } };
+  const applyBtn = $('#dcCodeApply');
+  if (applyBtn) applyBtn.onclick = applyCartCode;
+  const codeInput = $('#dcCodeInput');
+  if (codeInput) codeInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); applyCartCode(); } };
+  const removeBtn = $('#dcCodeRemove');
+  if (removeBtn) removeBtn.onclick = () => clearCartCode();
   const cartShareBtn = $('#cartShare');
   if (cartShareBtn) cartShareBtn.onclick = shareCart;
 }
@@ -834,16 +897,19 @@ async function checkoutCart() {
   if (!cart.length) return;
   // Pagar exige sesión, igual que comprar una foto suelta.
   if (!token) { alert('Inicia sesión para pagar tu carrito.'); showView('account'); return; }
-  const t = cartTotals(cart);
+  const t = cartTotals(cart, cartCode ? cartCode.percent : 0);
   if (t.total > CART_MAX_TOTAL) { alert('El total supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos.'); return; }
   const btn = $('#cartPay');
   if (btn) { btn.disabled = true; btn.textContent = 'Abriendo pago seguro…'; }
   try {
-    const r = await api('/api/checkout-create-cart', { method: 'POST', body: JSON.stringify({ photoIds: cart.map(x => x.id) }) });
+    const r = await api('/api/checkout-create-cart', { method: 'POST', body: JSON.stringify({ photoIds: cart.map(x => x.id), code: cartCode ? cartCode.code : undefined }) });
     if (r.paid) { clearCart(); alert('¡Listo! Esas fotos ya eran tuyas.'); showView('myphotos'); return; }
     if (r.checkoutUrl) { location.href = r.checkoutUrl; return; }
     throw new Error('No se pudo crear el pago con Clip.');
   } catch (e) {
+    // El código dejó de valer entre que se aplicó y se pagó (alguien lo
+    // usó antes, o el carrito cambió): se quita y se vuelve a pintar.
+    if (/código/i.test(e.message || '')) { clearCartCode(true); renderCartView(); alert(e.message); return; }
     // La foto ya no existe o pasó a gratis: se quita sola del carrito.
     const gone = /Foto no encontrada: (\d+)/.exec(e.message);
     const freeNow = /La foto (\d+) es de un evento gratis/.exec(e.message);
@@ -2123,6 +2189,19 @@ async function loadPhotographer() {
     <div id="revList"></div>
     <p class="muted">Revisar dorsales muestra las fotos ya subidas de un evento: corrige el número o vuelve a leerlo con IA sin volver a subir la foto.</p>
     </div>
+    ${me.isOwner ? `<div class="panel-sec">Códigos de descuento</div>
+    <div class="sec-card">
+    <p class="muted">Códigos únicos y aleatorios por evento: el corredor los mete al pagar y se lleva un descuento extra en toda su compra, aparte de los descuentos por volumen. Cada código sirve una sola vez. Genera los que quieras y pásale la lista al organizador.</p>
+    <div class="sec-field"><label class="sec-label" for="dcEvent">Evento</label><select id="dcEvent">${myEvents.filter(e => !e.freeMode && !e.isExclusive).map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div>
+    <div class="sec-row3">
+      <div class="sec-field"><label class="sec-label" for="dcPercent">Descuento (%)</label><input id="dcPercent" type="number" value="20" min="1" max="100"></div>
+      <div class="sec-field"><label class="sec-label" for="dcQty">¿Cuántos códigos?</label><input id="dcQty" type="number" value="10" min="1" max="1000"></div>
+      <div class="sec-field"><label class="sec-label" for="dcNote">Nota (solo para uno)</label><input id="dcNote" placeholder="Ej. Para Ana, dorsal 12" maxlength="120"></div>
+    </div>
+    <div class="row"><button id="dcGenerate" class="primary sec-btn-gold">Generar códigos</button><button id="dcGenerateOne" class="secondary">Generar un código</button><button id="dcDownload" class="secondary">Descargar lista</button></div>
+    <p id="dcStatus" class="muted"></p>
+    <div id="dcList"></div>
+    </div>` : ''}
     </section>
     <section data-tabpanel="ventas">
     <h2 class="sec-title">Fotos vendidas</h2>
@@ -2195,6 +2274,100 @@ async function loadPhotographer() {
     </div>`
       : '<p class="muted">Todavía no hay vistas registradas. Se empiezan a contar desde hoy.</p>'}
     </section>`;
+  // ---- Códigos de descuento (solo el dueño, sección en Gestión) ----
+  // Los códigos se generan en el servidor (aleatorios, nunca en serie)
+  // y se guardan por evento; aquí solo se piden, se listan y se
+  // descargan. La lista se carga al abrir el panel y al cambiar de evento.
+  async function loadDcList() {
+    const sel = $('#dcEvent');
+    const list = $('#dcList');
+    if (!sel || !list) return;
+    const eventId = Number(sel.value);
+    if (!eventId) { list.innerHTML = '<p class="muted">Crea primero un evento de pago: los códigos solo sirven para eventos donde se cobra por foto.</p>'; return; }
+    list.innerHTML = '<p class="muted">Cargando códigos…</p>';
+    try {
+      const r = await api('/api/list-discount-codes', { method: 'POST', body: JSON.stringify({ eventId }) });
+      renderDcList(r.codes || []);
+    } catch (e) { list.innerHTML = '<p class="error">No se pudieron cargar los códigos: ' + esc(e.message || '') + '</p>'; }
+  }
+  function renderDcList(codes) {
+    const list = $('#dcList');
+    if (!list) return;
+    if (!codes.length) { list.innerHTML = '<p class="muted">Todavía no hay códigos para este evento.</p>'; return; }
+    const used = codes.filter(c => c.used).length;
+    list.innerHTML = `<p class="muted">${codes.length} código(s) · ${used} usado(s) · ${codes.length - used} disponible(s)</p>` + codes.map(c => {
+      const status = !c.active ? '<span class="error">Desactivado</span>' : (c.used ? '<span class="muted">Usado' + (c.usedByName ? ' por ' + esc(c.usedByName) : '') + '</span>' : '<span class="ok">Disponible</span>');
+      return `<div class="sec-kv"><span><strong>${esc(c.code)}</strong> · -${c.discountPercent}% · ${status}${c.note ? `<br><span class="muted">${esc(c.note)}</span>` : ''}</span><span class="row"><button data-dccopy="${esc(c.code)}">Copiar</button>${(!c.used && c.active) ? ` <button data-dcdeact="${c.id}">Desactivar</button>` : ''}</span></div>`;
+    }).join('');
+    list.querySelectorAll('[data-dccopy]').forEach(b => b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.dccopy); b.textContent = 'Copiado ✓'; setTimeout(() => { b.textContent = 'Copiar'; }, 2000); }
+      catch (_) { alert('No se pudo copiar, cópialo a mano: ' + b.dataset.dccopy); }
+    });
+    list.querySelectorAll('[data-dcdeact]').forEach(b => b.onclick = async () => {
+      if (!confirm('¿Desactivar este código? Ya nadie lo podrá usar.')) return;
+      b.disabled = true;
+      try { await api('/api/deactivate-discount-code', { method: 'POST', body: JSON.stringify({ codeId: Number(b.dataset.dcdeact) }) }); loadDcList(); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+  }
+  const dcSel = $('#dcEvent');
+  if (dcSel) { dcSel.onchange = loadDcList; loadDcList(); }
+  const dcGenBtn = $('#dcGenerate');
+  if (dcGenBtn) dcGenBtn.onclick = async () => {
+    const sel = $('#dcEvent');
+    const st = $('#dcStatus');
+    const eventId = sel ? Number(sel.value) : 0;
+    if (!eventId) { if (st) st.textContent = 'Crea primero un evento de pago: los códigos solo sirven para eventos donde se cobra por foto.'; return; }
+    const qty = Math.floor(Number(($('#dcQty') || {}).value));
+    const pct = Math.floor(Number(($('#dcPercent') || {}).value));
+    if (!qty || qty < 1 || qty > 1000) { if (st) st.textContent = '¿Cuántos códigos? Pon un número entre 1 y 1000.'; return; }
+    if (!pct || pct < 1 || pct > 100) { if (st) st.textContent = 'El descuento debe ser entre 1% y 100%.'; return; }
+    dcGenBtn.disabled = true;
+    if (st) st.textContent = 'Generando ' + qty + ' códigos…';
+    try {
+      const r = await api('/api/generate-discount-codes', { method: 'POST', body: JSON.stringify({ eventId, quantity: qty, discountPercent: pct }) });
+      if (st) st.textContent = 'Listo: ' + r.count + ' códigos nuevos con -' + pct + '% para este evento.';
+      loadDcList();
+    } catch (e) { if (st) st.textContent = e.message; }
+    dcGenBtn.disabled = false;
+  };
+  const dcOneBtn = $('#dcGenerateOne');
+  if (dcOneBtn) dcOneBtn.onclick = async () => {
+    const sel = $('#dcEvent');
+    const st = $('#dcStatus');
+    const eventId = sel ? Number(sel.value) : 0;
+    if (!eventId) { if (st) st.textContent = 'Crea primero un evento de pago: los códigos solo sirven para eventos donde se cobra por foto.'; return; }
+    const pct = Math.floor(Number(($('#dcPercent') || {}).value));
+    if (!pct || pct < 1 || pct > 100) { if (st) st.textContent = 'El descuento debe ser entre 1% y 100%.'; return; }
+    dcOneBtn.disabled = true;
+    if (st) st.textContent = 'Generando un código…';
+    try {
+      const r = await api('/api/create-discount-code', { method: 'POST', body: JSON.stringify({ eventId, discountPercent: pct, note: ($('#dcNote') || {}).value || '' }) });
+      if (st) st.textContent = 'Listo: tu código es ' + r.code.code + ' (-' + pct + '%).';
+      loadDcList();
+    } catch (e) { if (st) st.textContent = e.message; }
+    dcOneBtn.disabled = false;
+  };
+  const dcDlBtn = $('#dcDownload');
+  if (dcDlBtn) dcDlBtn.onclick = async () => {
+    const sel = $('#dcEvent');
+    const st = $('#dcStatus');
+    const eventId = sel ? Number(sel.value) : 0;
+    if (!eventId) { if (st) st.textContent = 'Elige un evento primero.'; return; }
+    try {
+      const r = await api('/api/list-discount-codes', { method: 'POST', body: JSON.stringify({ eventId }) });
+      const avail = (r.codes || []).filter(c => !c.used && c.active !== false);
+      if (!avail.length) { if (st) st.textContent = 'No hay códigos disponibles para descargar en este evento.'; return; }
+      const evName = (sel.options[sel.selectedIndex] || {}).text || ('evento-' + eventId);
+      const blob = new Blob([avail.map(c => c.code).join('\n') + '\n'], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'codigos-' + String(evName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.txt';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      if (st) st.textContent = 'Lista descargada: ' + avail.length + ' código(s) disponible(s).';
+    } catch (e) { if (st) st.textContent = e.message; }
+  };
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value, isExclusive: !!($('#evExclusive') && $('#evExclusive').checked), isUpcoming: !!($('#evUpcoming') && $('#evUpcoming').checked) }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
