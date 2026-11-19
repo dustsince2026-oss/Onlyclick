@@ -29,7 +29,7 @@ let currentEventName = ''; // nombre del evento abierto (para el modal de búsqu
 let currentTipClabe = '';
 let currentTipName = '';
 let currentPhotos = [];
-let latestEventId = null; // evento más reciente (el del hero): ahí busca la selfie del inicio
+let latestEventId = null; // evento más reciente CON fotos (el del hero): ahí busca la selfie/dorsal del inicio; null = búsqueda global
 let latestEventName = '';
 let lightboxPhoto = null;
 let lightboxFreeMode = true;
@@ -265,10 +265,11 @@ function singleDiscountForPosition(pos) {
 }
 // Reparte `total` en n partes enteras que suman exactamente total.
 function splitAmount(total, n) {
-  const base = Math.floor(total / n);
-  const rem = total - base * n;
+  const cents = Math.round(total * 100);
+  const base = Math.floor(cents / n);
+  const rem = cents - base * n;
   const out = [];
-  for (let i = 0; i < n; i++) out.push(base + (i < rem ? 1 : 0));
+  for (let i = 0; i < n; i++) out.push((base + (i < rem ? 1 : 0)) / 100);
   return out;
 }
 // items: [{ id, priceMxn }] — misma fórmula que api/_lib/handlers.js.
@@ -279,14 +280,14 @@ function cartTotals(items) {
   for (let p = 0; p < numPackages; p++) {
     const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
     const subtotal = group.reduce((s, it) => s + Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100, 0);
-    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT));
+    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
     packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
   }
   const singles = sorted.slice(numPackages * PACKAGE_SIZE);
   const lines = singles.map((it, i) => {
     const price = Math.round(Number(it.priceMxn || it.price || 0) * 100) / 100;
     const discount = singleDiscountForPosition(i + 1);
-    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount)) };
+    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount) * 100) / 100 };
   });
   const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
   const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
@@ -300,7 +301,7 @@ function packageUpsell() {
   const missing = PACKAGE_SIZE - cart.length;
   const maxPrice = Math.max(...cart.map(x => Number(x.priceMxn || x.price || 0)));
   const currentSum = cart.reduce((s, x) => s + Math.round(Number(x.priceMxn || x.price || 0) * 100) / 100, 0);
-  const packageTotal = Math.round((currentSum + missing * maxPrice) * (1 - PACKAGE_DISCOUNT));
+  const packageTotal = Math.round((currentSum + missing * maxPrice) * (1 - PACKAGE_DISCOUNT) * 100) / 100;
   return { missing, packageTotal };
 }
 function cartHas(id) { return cart.some(x => x.id === Number(id)); }
@@ -1654,8 +1655,12 @@ async function loadHome() {
     const r = await api('/api/events');
     const evs = r.events || [];
     if (evs.length) {
-      const ev = [...evs].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
-      latestEventId = ev.id; latestEventName = ev.name;
+      // La búsqueda del inicio apunta al evento más reciente CON fotos:
+      // los "Próximo evento" (sin fotos todavía) y los ocultos no cuentan.
+      // Si ninguno califica, queda en null y la búsqueda es global.
+      const searchable = evs.filter(e => !e.isUpcoming && !e.isHidden && (e.photoCount || 0) > 0);
+      const ev = [...searchable].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || '')))[0];
+      latestEventId = ev ? ev.id : null; latestEventName = ev ? ev.name : '';
     } else {
       latestEventId = null; latestEventName = '';
     }
