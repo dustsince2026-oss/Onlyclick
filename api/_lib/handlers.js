@@ -1289,27 +1289,225 @@ function splitAmount(total, n) {
 
 // items: [{ id, price }] — devuelve { packages: [{ photoIds, subtotal,
 // discount, total, amounts }], lines: [{ id, price, discount, lineTotal
-// }] (fotos individuales), subtotal, discount, total }.
+// }] (fotos individuales), subtotal, discount, total, codePercent,
+// codeDiscount, volumeDiscount }.
 // Misma fórmula que el cliente (public/app.js).
-function cartTotals(items) {
+// codePercent (opcional): descuento EXTRA de un código, DESPUÉS de los
+// descuentos por volumen y sobre el total final: cada paquete y cada
+// línea individual se rebajan en ese % (en centavos), así las filas de
+// pago siguen sumando exactamente el total. Sin código el resultado es
+// idéntico al de antes (codeDiscount 0, volumeDiscount = discount).
+function cartTotals(items, codePercent) {
+  const pct = Math.min(100, Math.max(0, Number(codePercent) || 0)) / 100;
   const sorted = items.slice().sort((a, b) => (Number(b.price) - Number(a.price)) || (Number(a.id) - Number(b.id)));
   const numPackages = Math.floor(sorted.length / PACKAGE_SIZE);
   const packages = [];
+  let preCodeTotal = 0;
   for (let p = 0; p < numPackages; p++) {
     const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
     const subtotal = group.reduce((s, it) => s + Math.round(Number(it.price) * 100) / 100, 0);
-    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
-    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
+    const preCode = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
+    const total = Math.round(preCode * (1 - pct) * 100) / 100;
+    preCodeTotal += preCode;
+    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, amounts: splitAmount(total, group.length) });
   }
   const singles = sorted.slice(numPackages * PACKAGE_SIZE);
   const lines = singles.map((it, i) => {
     const price = Math.round(Number(it.price) * 100) / 100;
     const discount = singleDiscountForPosition(i + 1);
-    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount) * 100) / 100 };
+    const preCode = Math.round(price * (1 - discount) * 100) / 100;
+    preCodeTotal += preCode;
+    return { id: it.id, price, discount, lineTotal: Math.round(preCode * (1 - pct) * 100) / 100 };
   });
   const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
   const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
-  return { packages, lines, subtotal, discount: subtotal - total, total };
+  const codeDiscount = Math.round((preCodeTotal - total) * 100) / 100;
+  return { packages, lines, subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, codePercent: pct * 100, codeDiscount, volumeDiscount: Math.round((subtotal - preCodeTotal) * 100) / 100 };
+}
+
+// ---- Códigos de descuento (2026-11-18) ----
+// Un código único por corredor, aleatorio (NUNCA en serie: en serie
+// cualquiera adivina el código de otro). Formato PREFIX-XXXXXX: PREFIX
+// son las 6 primeras letras del nombre del evento en mayúsculas (sin
+// acentos ni números; si el nombre tiene menos de 6 letras se completa
+// con X) y XXXXXX son 6 caracteres aleatorios sin caracteres que se
+// confunden (sin 0/O, 1/I/L). La unicidad se revisa contra la base
+// antes de guardar (y el índice único la garantiza si dos generaciones
+// corren a la vez).
+const DISCOUNT_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const DISCOUNT_CODE_SUFFIX_LEN = 6;
+const DISCOUNT_CODE_PREFIX_LEN = 6;
+function discountCodePrefix(eventName) {
+  const letters = String(eventName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, DISCOUNT_CODE_PREFIX_LEN);
+  return (letters + 'XXXXXX').slice(0, DISCOUNT_CODE_PREFIX_LEN);
+}
+function randomDiscountSuffix() {
+  const bytes = crypto.randomBytes(DISCOUNT_CODE_SUFFIX_LEN);
+  let out = '';
+  for (let i = 0; i < DISCOUNT_CODE_SUFFIX_LEN; i++) out += DISCOUNT_CODE_CHARS[bytes[i] % DISCOUNT_CODE_CHARS.length];
+  return out;
+}
+function makeDiscountCode(eventName) { return discountCodePrefix(eventName) + '-' + randomDiscountSuffix(); }
+function validDiscountPercent(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return null;
+  const r = Math.round(n);
+  if (r < 1 || r > 100) return null;
+  return r;
+}
+// Genera un código único para el evento: reintenta si choca con uno que
+// ya existe (con 32^6 combinaciones por prefijo, el choque es casi
+// imposible; el reintento es por si dos generaciones corren a la vez).
+async function generateUniqueDiscountCode(store, eventName) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const code = makeDiscountCode(eventName);
+    const exists = typeof store.getDiscountCodeByCode === 'function' ? await store.getDiscountCodeByCode(code).catch(() => null) : null;
+    if (!exists) return code;
+  }
+  throw err(500, 'No se pudo generar un código único. Inténtalo de nuevo.');
+}
+function publicDiscountCode(c) {
+  return c ? { id: c.id, code: c.code, eventId: c.eventId, discountPercent: c.discountPercent, note: c.note || '', used: !!c.used, usedBy: c.usedBy != null ? c.usedBy : null, usedAt: c.usedAt || null, active: c.active !== false, createdAt: c.createdAt || null } : null;
+}
+// Valida un código para un evento y devuelve la fila. Errores claros
+// para que el corredor sepa qué pasó (no existe / otro evento / usado /
+// desactivado). Sin tabla en la base (falta correr el SQL), el código no
+// se encuentra y se dice que no existe.
+async function validateDiscountCodeRow(store, rawCode, eventId) {
+  const code = String(rawCode || '').trim().toUpperCase();
+  if (!code) throw err(400, 'Escribe tu código de descuento.');
+  const row = typeof store.getDiscountCodeByCode === 'function' ? await store.getDiscountCodeByCode(code).catch(() => null) : null;
+  if (!row) throw err(404, 'Ese código no existe. Revísalo y escríbelo de nuevo.');
+  if (row.active === false) throw err(400, 'Ese código ya no está activo.');
+  if (row.used) throw err(400, 'Ese código ya se usó.');
+  if (Number(row.eventId) !== Number(eventId)) {
+    const ev = await store.getEvent(row.eventId).catch(() => null);
+    throw err(400, 'Ese código es solo para fotos de ' + (ev ? ev.name : 'otro evento') + '.');
+  }
+  return row;
+}
+// Marca el código del checkout como usado cuando el pago se confirma.
+// No rompe nunca el pago: si falla, solo se registra en el log.
+async function markDiscountCodeUsedForCheckout(store, clipId, userId) {
+  try {
+    if (typeof store.markDiscountCodeUsedByClipId !== 'function') return null;
+    return await store.markDiscountCodeUsedByClipId(String(clipId), Number(userId));
+  } catch (e) {
+    console.error('[codigos] no se pudo marcar el código del checkout ' + clipId + ': ' + (e.message || e));
+    return null;
+  }
+}
+
+// POST /api/validate-discount-code { code, eventId } — el corredor
+// comprueba su código antes de pagar. No marca nada como usado.
+async function validateDiscountCode(store, user, body) {
+  requireUser(user);
+  const eventId = Number(body.eventId);
+  if (!eventId) throw err(400, 'Falta el evento del código.');
+  const row = await validateDiscountCodeRow(store, body.code, eventId);
+  return { status: 200, data: { valid: true, code: row.code, eventId: row.eventId, discountPercent: row.discountPercent } };
+}
+
+// POST /api/create-discount-code { eventId, discountPercent?, note? } —
+// un solo código (para regalar a una persona). Solo el dueño.
+async function createDiscountCode(store, user, body) {
+  requireOwner(user);
+  const ev = await store.getEvent(Number(body.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const pct = validDiscountPercent(body.discountPercent == null ? 20 : body.discountPercent);
+  if (pct == null) throw err(400, 'El descuento debe ser entre 1% y 100%.');
+  const note = String(body.note || '').trim().slice(0, 120);
+  const code = await generateUniqueDiscountCode(store, ev.name);
+  let row;
+  try {
+    row = await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note, createdBy: user.id });
+  } catch (e) {
+    // Carrera con otra generación a la vez (índice único): reintentar
+    // una vez con otro código.
+    if (/unique|duplicate/i.test(e.message || '')) {
+      const code2 = await generateUniqueDiscountCode(store, ev.name);
+      row = await store.createDiscountCode({ code: code2, eventId: ev.id, discountPercent: pct, note, createdBy: user.id });
+    } else throw e;
+  }
+  return { status: 201, data: { code: publicDiscountCode(row) } };
+}
+
+// POST /api/generate-discount-codes { eventId, quantity, discountPercent? }
+// — genera N códigos de golpe (para dárselos a un organizador: 500-800
+// corredores). Solo el dueño. quantity 1-1000.
+async function generateDiscountCodes(store, user, body) {
+  requireOwner(user);
+  const ev = await store.getEvent(Number(body.eventId));
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const qty = Math.floor(Number(body.quantity));
+  if (!Number.isFinite(qty) || qty < 1 || qty > 1000) throw err(400, 'La cantidad debe ser entre 1 y 1000 códigos.');
+  const pct = validDiscountPercent(body.discountPercent == null ? 20 : body.discountPercent);
+  if (pct == null) throw err(400, 'El descuento debe ser entre 1% y 100%.');
+  // Unicidad sin N consultas: se cargan los códigos que ya existen una
+  // sola vez y se generan los nuevos fuera de ese conjunto. El índice
+  // único de la base sigue siendo el respaldo si dos generaciones
+  // corren a la vez (ese choque se reintenta código por código).
+  const existing = new Set((await store.listDiscountCodes().catch(() => [])).map(c => String(c.code || '').toUpperCase()));
+  const codes = [];
+  let guard = 0;
+  while (codes.length < qty && guard++ < qty * 50) {
+    const code = makeDiscountCode(ev.name);
+    if (!existing.has(code) && !codes.includes(code)) { codes.push(code); existing.add(code); }
+  }
+  if (codes.length < qty) throw err(500, 'No se pudieron generar ' + qty + ' códigos únicos. Inténtalo con menos.');
+  const payload = codes.map(code => ({ code, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+  let rows;
+  try {
+    rows = typeof store.createDiscountCodes === 'function'
+      ? await store.createDiscountCodes(payload)
+      : await (async () => { const out = []; for (const p of payload) out.push(await store.createDiscountCode(p)); return out; })();
+  } catch (e) {
+    if (!/unique|duplicate/i.test(e.message || '')) throw e;
+    // Choque con una generación paralela: reintentar código por código.
+    rows = [];
+    for (const code of codes) {
+      try {
+        rows.push(await store.createDiscountCode({ code, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+      } catch (e2) {
+        if (!/unique|duplicate/i.test(e2.message || '')) throw e2;
+        const alt = await generateUniqueDiscountCode(store, ev.name);
+        rows.push(await store.createDiscountCode({ code: alt, eventId: ev.id, discountPercent: pct, note: '', createdBy: user.id }));
+      }
+    }
+  }
+  return { status: 201, data: { eventId: ev.id, discountPercent: pct, count: rows.length, codes: rows.map(publicDiscountCode) } };
+}
+
+// POST /api/list-discount-codes { eventId? } — solo el dueño. Con
+// eventId filtra; sin él devuelve todos (para revisar).
+async function listDiscountCodes(store, user, body) {
+  requireOwner(user);
+  const eventId = body.eventId != null ? Number(body.eventId) : null;
+  const rows = await store.listDiscountCodes(eventId).catch(() => []);
+  const out = [];
+  for (const c of rows) {
+    const pub = publicDiscountCode(c);
+    if (c.used && c.usedBy != null) {
+      const u = await store.findUserById(c.usedBy).catch(() => null);
+      pub.usedByName = u ? (u.name || '') : '';
+    } else pub.usedByName = '';
+    out.push(pub);
+  }
+  return { status: 200, data: { codes: out } };
+}
+
+// POST /api/deactivate-discount-code { codeId } — solo el dueño, solo
+// códigos sin usar (uno usado ya no se puede desactivar).
+async function deactivateDiscountCode(store, user, body) {
+  requireOwner(user);
+  const row = typeof store.getDiscountCodeById === 'function'
+    ? await store.getDiscountCodeById(Number(body.codeId)).catch(() => null)
+    : (await store.listDiscountCodes().catch(() => [])).find(c => c.id === Number(body.codeId)) || null;
+  if (!row) throw err(404, 'Código no encontrado.');
+  if (row.used) throw err(400, 'Ese código ya se usó, no se puede desactivar.');
+  if (row.active === false) return { status: 200, data: { code: publicDiscountCode(row) } };
+  const updated = await store.updateDiscountCode(row.id, { active: false });
+  return { status: 200, data: { code: publicDiscountCode(updated) } };
 }
 
 // Referencia externa de Clip (metadata.external_reference): máx 36
@@ -1418,6 +1616,12 @@ async function refreshPaymentsByClipId(store, clipId) {
     if (newlyPaid.length) {
       try { await Promise.race([notifySale(store, newlyPaid), new Promise(r => setTimeout(r, 4000))]); } catch (_) { /* el aviso nunca rompe el pago */ }
     }
+    // El código de descuento se quema SOLO ahora que el pago se confirmó
+    // (idempotente: si ya estaba usado, no hace nada). Un pago fallido o
+    // vencido nunca llega aquí, así que no quema el código. Cubre el
+    // webhook, "Verificar pago" y el regreso desde Clip: todos pasan por
+    // aquí.
+    await markDiscountCodeUsedForCheckout(store, clipId, payments[0].userId);
     return { clip: cur, payments: await store.getPaymentsByClipId(clipId), paid: true };
   }
   for (const p of payments) {
@@ -1521,13 +1725,29 @@ async function createCheckout(store, user, body) {
   if (user.role === 'photographer' && photoOwnerId(photo, ev) === user.id) throw err(400, 'No puedes comprar tus propias fotos.');
   if (await store.hasDownload(user.id, photo.id)) return { status: 200, data: { paid: true, photoId: photo.id } };
   const price = await photoPrice(store, photo, ev);
+  // Código de descuento (opcional): se valida contra ESTE evento y se
+  // aplica sobre el precio por foto, en centavos. Un código de 100% no
+  // se puede cobrar (Clip no cobra $0): se avisa claro.
+  let discountRow = null;
+  let amount = price;
+  let codeDiscount = 0;
+  const rawCode = String(body.code || '').trim();
+  if (rawCode) {
+    discountRow = await validateDiscountCodeRow(store, rawCode, ev.id);
+    codeDiscount = Math.round(price * (Number(discountRow.discountPercent) / 100) * 100) / 100;
+    amount = Math.round((price - codeDiscount) * 100) / 100;
+    if (amount <= 0) throw err(400, 'Ese código deja la foto en $0 y no se puede cobrar con tarjeta. Pídele a Orlan un código con menos descuento.');
+  }
   // Reutilizar un link pendiente vigente para no crear links de más.
+  // Con código: solo si el pendiente ya lleva EL MISMO monto con
+  // descuento (si se creó sin código, su monto es otro y se crea un link
+  // nuevo; el pendiente viejo vence solo).
   const pending = await store.getLatestPaymentByUserPhoto(user.id, photo.id);
   if (pending && pending.status === 'pending' && pending.clipPaymentRequestId) {
     try {
       const cur = await clip.getCheckout(pending.clipPaymentRequestId);
-      if (cur && (cur.status === 'CHECKOUT_CREATED' || cur.status === 'CHECKOUT_PENDING')) {
-        return { status: 200, data: { checkoutUrl: cur.payment_request_url, paymentRequestId: cur.payment_request_id, amount: pending.amount } };
+      if (cur && (cur.status === 'CHECKOUT_CREATED' || cur.status === 'CHECKOUT_PENDING') && Number(pending.amount) === amount) {
+        return { status: 200, data: { checkoutUrl: cur.payment_request_url, paymentRequestId: cur.payment_request_id, amount: pending.amount, discountCode: discountRow ? discountRow.code : null, codeDiscount } };
       }
       await store.updatePaymentStatus(pending.id, { status: clipStatusToPayment(cur.status) });
     } catch (_) { /* si Clip falla al consultar, se crea un link nuevo */ }
@@ -1535,7 +1755,7 @@ async function createCheckout(store, user, body) {
   const ref = makeExternalRef(photo.id, user.id);
   const base = publicBase();
   const created = await createClipLink({
-    amount: price,
+    amount,
     currency: 'MXN',
     purchase_description: ('Foto OnlyClick — ' + ev.name + ' — ' + displayNameFor(await store.findUserById(photoOwnerId(photo, ev))) + ' — dorsal ' + ((photo.bibs || []).join(', ') || 'sin dorsal')).slice(0, 255),
     redirection_url: {
@@ -1551,9 +1771,14 @@ async function createCheckout(store, user, body) {
     clipPaymentRequestId: created.payment_request_id,
     externalReference: ref,
     userId: user.id, photoId: photo.id, eventId: ev.id,
-    amount: price, currency: 'MXN', status: 'pending',
+    amount, currency: 'MXN', status: 'pending',
   });
-  return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentId: payment.id, amount: price } };
+  // Atar el checkout al código (sin quemarlo todavía: solo se marca
+  // usado cuando Clip confirme el pago, en refreshPaymentsByClipId).
+  if (discountRow) {
+    try { await store.setDiscountCodePaymentRequest(discountRow.id, created.payment_request_id); } catch (_) {}
+  }
+  return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentId: payment.id, amount, price, discountCode: discountRow ? discountRow.code : null, codeDiscount } };
 }
 
 // POST /api/checkout-create-cart { photoIds: [...] } — crea UN solo link
@@ -1592,7 +1817,20 @@ async function createCartCheckout(store, user, body) {
     else toPay.push(it);
   }
   if (!toPay.length) return { status: 200, data: { paid: true, photoIds: alreadyPaid, amount: 0 } };
-  const totals = cartTotals(toPay.map(t => ({ id: t.id, price: t.price })));
+  // Código de descuento (opcional): debe ser del evento de TODAS las
+  // fotos del carrito (un código es por evento). Se aplica DESPUÉS de
+  // los descuentos por volumen, sobre el total final (cartTotals lo
+  // reparte por paquete y por línea, así las filas de pago suman el
+  // total con descuento). Un código de 100% deja el total en $0 y el
+  // chequeo de abajo lo rechaza con el mensaje de siempre.
+  let discountRow = null;
+  const rawCode = String(body.code || '').trim();
+  if (rawCode) {
+    const eventIds = [...new Set(toPay.map(t => Number(t.eventId)))];
+    if (eventIds.length !== 1) throw err(400, 'El código es solo para las fotos de un evento. Quita las fotos de otros eventos o paga por separado.');
+    discountRow = await validateDiscountCodeRow(store, rawCode, eventIds[0]);
+  }
+  const totals = cartTotals(toPay.map(t => ({ id: t.id, price: t.price })), discountRow ? Number(discountRow.discountPercent) : 0);
   if (totals.total <= 0) throw err(400, 'El total no es válido.');
   if (totals.total > CART_MAX_TOTAL) throw err(400, 'El total ($' + totals.total + ' MXN) supera el límite de $' + CART_MAX_TOTAL + ' MXN por pago de Clip. Divide tu compra en dos carritos.');
   const base = publicBase();
@@ -1631,7 +1869,12 @@ async function createCartCheckout(store, user, body) {
     for (let i = 0; i < pkg.photoIds.length; i++) await addRow(pkg.photoIds[i], pkg.amounts[i]);
   }
   for (const line of totals.lines) await addRow(line.id, line.lineTotal);
-  return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentIds: rows.map(r => r.id), amount: totals.total, subtotal: totals.subtotal, discount: totals.discount, photoIds: toPay.map(t => t.id), alreadyPaid, packages: totals.packages, lines: totals.lines } };
+  // Atar el checkout al código (sin quemarlo todavía: solo se marca
+  // usado cuando Clip confirme el pago, en refreshPaymentsByClipId).
+  if (discountRow) {
+    try { await store.setDiscountCodePaymentRequest(discountRow.id, created.payment_request_id); } catch (_) {}
+  }
+  return { status: 200, data: { checkoutUrl: created.payment_request_url, paymentRequestId: created.payment_request_id, paymentIds: rows.map(r => r.id), amount: totals.total, subtotal: totals.subtotal, discount: totals.discount, codeDiscount: totals.codeDiscount, codePercent: totals.codePercent, discountCode: discountRow ? discountRow.code : null, photoIds: toPay.map(t => t.id), alreadyPaid, packages: totals.packages, lines: totals.lines } };
 }
 
 // GET /api/checkout-return?ref=...&photoId=... — Clip redirige aquí
@@ -2327,6 +2570,11 @@ async function dispatch(route, req) {
     case 'checkout-return': return checkoutReturn(store, req.query);
     case 'checkout-status': return checkoutStatus(store, user, b);
     case 'clip-webhook': return clipWebhook(store, b, req.query);
+    case 'validate-discount-code': return validateDiscountCode(store, user, b);
+    case 'create-discount-code': return createDiscountCode(store, user, b);
+    case 'generate-discount-codes': return generateDiscountCodes(store, user, b);
+    case 'list-discount-codes': return listDiscountCodes(store, user, b);
+    case 'deactivate-discount-code': return deactivateDiscountCode(store, user, b);
     case 'set-event-price': return setEventPrice(store, user, b);
     case 'approve-photographer': return approvePhotographer(store, user, b);
     case 'list-photographers': return listPhotographers(store, user);
@@ -2352,4 +2600,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN };
