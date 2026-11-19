@@ -1988,14 +1988,18 @@ async function loadPhotographer() {
   // Todas las peticiones del panel salen A LA VEZ: antes iban una por
   // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
   // Ahora el tiempo total es más o menos el de la petición más lenta.
-  // Cada llamada del panel tiene su propio tiempo límite (10 s) y su
+  // Cada llamada del panel tiene su propio tiempo límite (25 s) y su
   // respaldo: el 2026-11-18 /api/events no contestó en 300 s y, como era
   // la única llamada sin respaldo, el Promise.all nunca se resolvió y
   // todas las secciones se quedaron en "Cargando…". Ahora una llamada
-  // atorada ya no puede congelar el panel: vence a los 10 s, usa su
+  // atorada ya no puede congelar el panel: vence a los 25 s, usa su
   // respaldo y la sección afectada avisa con Reintentar.
+  // Por qué 25 s (2026-11-18 noche): tras el arranque en frío las
+  // llamadas del panel tardan 10-17 s en el teléfono (events 12-17 s,
+  // stats ~12 s, sales ~11 s) y el límite de 10 s las mataba antes de
+  // que el servidor contestara. 25 s cubre el peor caso visto.
   const panelFailed = {};
-  const panelApi = (path, fallback, key) => api(path, { timeoutMs: 10000 }).catch(() => { panelFailed[key] = true; return fallback; });
+  const panelApi = (path, fallback, key) => api(path, { timeoutMs: 25000 }).catch(() => { panelFailed[key] = true; return fallback; });
   const panelResults = await Promise.all([
     panelApi('/api/events', { events: [] }, 'events'),
     panelApi('/api/sales', { sales: [], totalDownloads: 0, freeDownloads: 0, revenue: 0 }, 'sales'),
