@@ -149,14 +149,19 @@ const fileStore = {
   },
   async listAnnouncements() { return (loadDb().announcements || []).slice().sort((a, b) => b.id - a.id); },
   // ---- Códigos de descuento (2026-11-18) ----
-  // Un código = un evento + un % + un solo uso. La unicidad del código
-  // la garantiza el índice único en Supabase (y la revisión previa en
-  // handlers.js); aquí el insert solo guarda.
+  // Un código = un evento + un % + maxUses usos. maxUses=1 es el código
+  // de un solo uso de antes; maxUses=N (hasta 1000) es el código
+  // compartido: cada cuenta solo una vez (lo fuerza UNIQUE en
+  // discount_code_redemptions) y se apaga solo al llegar a N usos
+  // confirmados. La unicidad del código la garantiza el índice único
+  // en Supabase (y la revisión previa en handlers.js); aquí el insert
+  // solo guarda.
   async createDiscountCode(c) {
     const db = loadDb();
     if (!db.discountCodes) db.discountCodes = [];
     if (!db.seq.discountCode) db.seq.discountCode = 1;
-    const row = { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, createdAt: new Date().toISOString() };
+    const maxUses = Math.min(1000, Math.max(1, Math.floor(Number(c.maxUses || 1)) || 1));
+    const row = { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, createdAt: new Date().toISOString() };
     db.discountCodes.push(row); saveDb(db); return row;
   },
   // Alta en lote (generar 500-800 códigos de golpe): un solo guardado
@@ -165,7 +170,7 @@ const fileStore = {
     const db = loadDb();
     if (!db.discountCodes) db.discountCodes = [];
     if (!db.seq.discountCode) db.seq.discountCode = 1;
-    const rows = (list || []).map(c => ({ id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, createdAt: new Date().toISOString() }));
+    const rows = (list || []).map(c => { const maxUses = Math.min(1000, Math.max(1, Math.floor(Number(c.maxUses || 1)) || 1)); return { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, createdAt: new Date().toISOString() }; });
     db.discountCodes.push(...rows); saveDb(db); return rows;
   },
   async getDiscountCodeById(id) { return (loadDb().discountCodes || []).find(x => x.id === Number(id)) || null; },
@@ -187,9 +192,38 @@ const fileStore = {
     if (patch.usedAt !== undefined) row.usedAt = patch.usedAt;
     if (patch.paymentRequestId !== undefined) row.paymentRequestId = patch.paymentRequestId || null;
     if (patch.active !== undefined) row.active = !!patch.active;
+    if (patch.maxUses !== undefined) row.maxUses = Math.min(1000, Math.max(1, Math.floor(Number(patch.maxUses)) || 1));
+    if (patch.uses !== undefined) row.uses = Math.max(0, Math.floor(Number(patch.uses)) || 0);
     saveDb(db); return row;
   },
   async setDiscountCodePaymentRequest(id, clipId) { return this.updateDiscountCode(id, { paymentRequestId: clipId }); },
+  // ¿Esta cuenta ya usó este código? (canje multiuso: una cuenta, un uso).
+  async hasDiscountCodeRedemption(codeId, userId) {
+    const db = loadDb();
+    return (db.discountCodeRedemptions || []).some(r => Number(r.codeId) === Number(codeId) && Number(r.userId) === Number(userId));
+  },
+  // Canje multiuso: registra el uso de ESTA cuenta y suma 1 a uses, solo
+  // si el código sigue activo, no está agotado y la cuenta no lo ha
+  // usado antes. Cuando uses llega a maxUses, el código queda agotado
+  // (used=true, como el quemado de un solo uso: para maxUses=1 esto ES
+  // el comportamiento de antes). Devuelve { redeemed, reason, code }.
+  // Nunca suma dos veces el mismo pago: si la cuenta ya tiene canje,
+  // devuelve already sin tocar nada. Un pago fallido nunca llega aquí.
+  async redeemDiscountCode(codeId, userId, clipId) {
+    const db = loadDb();
+    const code = (db.discountCodes || []).find(x => x.id === Number(codeId));
+    if (!code) return { redeemed: false, reason: 'not-found', code: null };
+    if (code.active === false) return { redeemed: false, reason: 'inactive', code };
+    const maxUses = Math.max(1, Number(code.maxUses || 1));
+    if (code.used || Number(code.uses || 0) >= maxUses) return { redeemed: false, reason: 'exhausted', code };
+    if (!db.discountCodeRedemptions) db.discountCodeRedemptions = [];
+    if (!db.seq.discountCodeRedemption) db.seq.discountCodeRedemption = 1;
+    if (db.discountCodeRedemptions.some(r => Number(r.codeId) === code.id && Number(r.userId) === Number(userId))) return { redeemed: false, reason: 'already', code };
+    db.discountCodeRedemptions.push({ id: nextId(db, 'discountCodeRedemption'), codeId: code.id, userId: Number(userId), paymentRequestId: String(clipId || ''), createdAt: new Date().toISOString() });
+    code.uses = Number(code.uses || 0) + 1;
+    if (code.uses >= maxUses) { code.used = true; code.usedBy = Number(userId); code.usedAt = new Date().toISOString(); }
+    saveDb(db); return { redeemed: true, reason: null, code };
+  },
   // Marca usado el código atado a un checkout de Clip, solo si sigue
   // sin usar (el primero que confirma gana; un segundo intento no lo
   // vuelve a marcar). Devuelve el código o null.
@@ -310,10 +344,13 @@ function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
 function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.body, audience: r.audience || 'photographers', createdBy: r.created_by != null ? Number(r.created_by) : null, createdAt: r.created_at } : null; }
-// Código de descuento: un evento, un % y un solo uso. Si la tabla aún no
+// Código de descuento: un evento, un % y maxUses usos (1 = un solo uso,
+// como antes). uses cuenta los pagos confirmados. Si la tabla aún no
 // existe en vivo (falta correr el SQL), las lecturas devuelven vacío/null.
-function mapDiscountCode(r) { return r ? { id: r.id, code: r.code, eventId: r.event_id, discountPercent: Number(r.discount_percent || 20), note: r.note || '', createdBy: r.created_by != null ? Number(r.created_by) : null, used: !!r.used, usedBy: r.used_by != null ? Number(r.used_by) : null, usedAt: r.used_at || null, paymentRequestId: r.payment_request_id || null, active: r.active !== false, createdAt: r.created_at } : null; }
-function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', createdAt: r.created_at, updatedAt: r.updated_at } : null; }
+// Si faltan las columnas nuevas (SQL viejo), uses=0 y maxUses=1: el
+// código se comporta como uno de un solo uso.
+function mapDiscountCode(r) { return r ? { id: r.id, code: r.code, eventId: r.event_id, discountPercent: Number(r.discount_percent || 20), note: r.note || '', createdBy: r.created_by != null ? Number(r.created_by) : null, used: !!r.used, usedBy: r.used_by != null ? Number(r.used_by) : null, usedAt: r.used_at || null, paymentRequestId: r.payment_request_id || null, active: r.active !== false, maxUses: Number(r.max_uses || 1), uses: Number(r.uses || 0), createdAt: r.created_at } : null; }
+function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', discountCodeId: r.discount_code_id != null ? Number(r.discount_code_id) : null, createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
   kind: 'supabase',
@@ -579,13 +616,18 @@ const supabaseStore = {
   // Lecturas tolerantes (tabla sin crear → vacío/null, como
   // listAnnouncements); escrituras sí fallan y avisan.
   async createDiscountCode(c) {
-    const { data, error } = await supabase().from('discount_codes').insert({ code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null }).select().single();
+    // max_uses solo se manda cuando es >1: si falta correr el SQL nuevo,
+    // la columna no existe y el insert fallaría; con maxUses=1 el default
+    // de la base (1) ya es lo correcto y crear códigos viejos no se rompe.
+    const row = { code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null };
+    if (Math.floor(Number(c.maxUses || 1)) > 1) row.max_uses = Math.min(1000, Math.floor(Number(c.maxUses)));
+    const { data, error } = await supabase().from('discount_codes').insert(row).select().single();
     if (error) throw new Error(error.message);
     return mapDiscountCode(data);
   },
   // Alta en lote (generar 500-800 códigos de golpe): una sola petición.
   async createDiscountCodes(list) {
-    const rows = (list || []).map(c => ({ code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null }));
+    const rows = (list || []).map(c => { const row = { code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null }; if (Math.floor(Number(c.maxUses || 1)) > 1) row.max_uses = Math.min(1000, Math.floor(Number(c.maxUses))); return row; });
     const { data, error } = await supabase().from('discount_codes').insert(rows).select();
     if (error) throw new Error(error.message);
     return (data || []).map(mapDiscountCode);
@@ -620,11 +662,75 @@ const supabaseStore = {
     if (patch.usedAt !== undefined) p.used_at = patch.usedAt;
     if (patch.paymentRequestId !== undefined) p.payment_request_id = patch.paymentRequestId || null;
     if (patch.active !== undefined) p.active = !!patch.active;
+    if (patch.maxUses !== undefined) p.max_uses = Math.min(1000, Math.max(1, Math.floor(Number(patch.maxUses)) || 1));
+    if (patch.uses !== undefined) p.uses = Math.max(0, Math.floor(Number(patch.uses)) || 0);
     const { data, error } = await supabase().from('discount_codes').update(p).eq('id', Number(id)).select().single();
     if (error) throw new Error(error.message);
     return mapDiscountCode(data);
   },
   async setDiscountCodePaymentRequest(id, clipId) { return this.updateDiscountCode(id, { paymentRequestId: clipId }); },
+  // ¿Esta cuenta ya usó este código? Sin tabla de canjes (falta el SQL)
+  // devuelve false: el quemado viejo (used=true) sigue siendo el freno.
+  async hasDiscountCodeRedemption(codeId, userId) {
+    try {
+      const { data, error } = await supabase().from('discount_code_redemptions').select('id').eq('code_id', Number(codeId)).eq('user_id', Number(userId)).maybeSingle();
+      if (error) return false;
+      return !!data;
+    } catch (_) { return false; }
+  },
+  // Canje multiuso en Supabase (lo más atómico que permite supabase-js,
+  // que no tiene transacciones): 1) se revisa el tope; 2) se inserta el
+  // canje — UNIQUE(code_id, user_id) rechaza el segundo uso de la misma
+  // cuenta; 3) se suma el uso con control optimista (solo si uses sigue
+  // siendo el que se leyó; si otro canje corrió a la vez, se reintenta).
+  // Si el tope se alcanzó mientras tanto, se borra el canje recién
+  // insertado para no dejar uses inconsistente. Si faltan las columnas
+  // nuevas (SQL sin correr) y el código es de un solo uso, se quema
+  // como antes (used=true) para no romper los códigos viejos.
+  async redeemDiscountCode(codeId, userId, clipId) {
+    try {
+      const code = await this.getDiscountCodeById(codeId);
+      if (!code) return { redeemed: false, reason: 'not-found', code: null };
+      if (code.active === false) return { redeemed: false, reason: 'inactive', code };
+      const maxUses = Math.max(1, Number(code.maxUses || 1));
+      if (code.used || Number(code.uses || 0) >= maxUses) return { redeemed: false, reason: 'exhausted', code };
+      const { error: insErr } = await supabase().from('discount_code_redemptions').insert({ code_id: Number(codeId), user_id: Number(userId), payment_request_id: String(clipId || '') });
+      if (insErr) {
+        if (/duplicate|unique/i.test(insErr.message || '')) return { redeemed: false, reason: 'already', code };
+        if (maxUses === 1) return this._legacyMarkDiscountCodeUsed(codeId, userId);
+        throw new Error(insErr.message);
+      }
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const cur = await this.getDiscountCodeById(codeId);
+        if (!cur) break;
+        if (Number(cur.uses || 0) >= maxUses || cur.used) {
+          await supabase().from('discount_code_redemptions').delete().eq('code_id', Number(codeId)).eq('user_id', Number(userId));
+          return { redeemed: false, reason: 'exhausted', code: cur };
+        }
+        const nextUses = Number(cur.uses || 0) + 1;
+        const upd = { uses: nextUses };
+        if (nextUses >= maxUses) { upd.used = true; upd.used_by = Number(userId); upd.used_at = new Date().toISOString(); }
+        const { data, error } = await supabase().from('discount_codes').update(upd).eq('id', Number(codeId)).eq('uses', Number(cur.uses || 0)).select().single();
+        if (!error && data) return { redeemed: true, reason: null, code: mapDiscountCode(data) };
+        if (error && /does not exist|42703/i.test(error.message || '') && maxUses === 1) {
+          return this._legacyMarkDiscountCodeUsed(codeId, userId);
+        }
+        // Sin fila o error de carrera: otro canje incrementó a la vez;
+        // se reintenta leyendo de nuevo.
+      }
+      await supabase().from('discount_code_redemptions').delete().eq('code_id', Number(codeId)).eq('user_id', Number(userId));
+      return { redeemed: false, reason: 'retry', code };
+    } catch (_) { return { redeemed: false, reason: 'error', code: null }; }
+  },
+  // Quemado viejo (un solo uso) sin depender de las columnas nuevas:
+  // solo marca used=true si sigue sin usar. Respaldo cuando falta el SQL.
+  async _legacyMarkDiscountCodeUsed(codeId, userId) {
+    try {
+      const { data, error } = await supabase().from('discount_codes').update({ used: true, used_by: Number(userId), used_at: new Date().toISOString() }).eq('id', Number(codeId)).eq('used', false).select().single();
+      if (error) return { redeemed: false, reason: 'error', code: null };
+      return { redeemed: true, reason: null, code: mapDiscountCode(data), legacy: true };
+    } catch (_) { return { redeemed: false, reason: 'error', code: null }; }
+  },
   // Atómico en Postgres: solo marca si sigue sin usar (used=false); el
   // segundo intento no encuentra fila y devuelve null.
   async markDiscountCodeUsedByClipId(clipId, userId) {
@@ -688,7 +794,23 @@ const supabaseStore = {
   // venta: esa foto no se puede borrar (el comprador perdería lo que
   // pagó). Las descargas gratis (amount 0) no bloquean el borrado.
   async hasPaidDownload(photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('photo_id', photoId).gt('amount', 0); return (count || 0) > 0; },
-  async createPayment(p) { const { data, error } = await supabase().from('payments').insert({ clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' }).select().single(); if (error) throw new Error(error.message); return mapPayment(data); },
+  async createPayment(p) {
+    // discount_code_id ata el pago al código que usó (multiuso: un
+    // código compartido tiene muchos checkouts a la vez y el campo
+    // payment_request_id del código solo guarda uno). Si falta correr
+    // el SQL nuevo, la columna no existe: se reintenta sin ella para
+    // no romper NINGÚN pago (el canje de ese pago simplemente no se
+    // registra, igual que cuando falta la tabla de códigos).
+    const row = { clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' };
+    if (p.discountCodeId != null) row.discount_code_id = Number(p.discountCodeId);
+    let res = await supabase().from('payments').insert(row).select().single();
+    if (res.error && row.discount_code_id != null && /discount_code_id|does not exist|42703/i.test(res.error.message || '')) {
+      delete row.discount_code_id;
+      res = await supabase().from('payments').insert(row).select().single();
+    }
+    if (res.error) throw new Error(res.error.message);
+    return mapPayment(res.data);
+  },
   async getPaymentByClipId(id) { const { data } = await supabase().from('payments').select().eq('clip_payment_request_id', id).maybeSingle(); return mapPayment(data); },
   // Todas las filas de un checkout (un carrito = varias filas con el
   // mismo payment_request_id), en orden de creación.
