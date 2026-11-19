@@ -630,6 +630,9 @@ async function claimPhotos(store, user, body, paid) {
     if (!ev) continue;
     // Descarga gratis de un álbum oculto: solo el dueño.
     if (isEventHiddenFor(user, ev)) continue;
+    // Álbum "Próximo evento": tampoco se registra descarga (salvo al dueño);
+    // si no, se podría pagar una foto que luego no se puede descargar.
+    if (ev.isUpcoming && !(user && user.isOwner)) continue;
     if (paid && ev.freeMode) throw err(400, 'Ese evento es gratis, no se cobra.');
     if (!paid && !ev.freeMode) throw err(400, 'Ese evento es de pago.');
     if (await store.hasDownload(user.id, id)) { claimed.push(id); continue; }
@@ -1272,12 +1275,15 @@ function singleDiscountForPosition(pos) {
   return 0;
 }
 
-// Reparte `total` en n partes enteras que suman exactamente total.
+// Reparte `total` en n partes (con centavos) que suman exactamente total.
+// Antes era solo en pesos enteros: un paquete de 10 a $25 ($187.50) se
+// repartía como 8×$19 + 2×$18 = $188, un peso más que el cobro.
 function splitAmount(total, n) {
-  const base = Math.floor(total / n);
-  const rem = total - base * n;
+  const cents = Math.round(total * 100);
+  const base = Math.floor(cents / n);
+  const rem = cents - base * n;
   const out = [];
-  for (let i = 0; i < n; i++) out.push(base + (i < rem ? 1 : 0));
+  for (let i = 0; i < n; i++) out.push((base + (i < rem ? 1 : 0)) / 100);
   return out;
 }
 
@@ -1292,14 +1298,14 @@ function cartTotals(items) {
   for (let p = 0; p < numPackages; p++) {
     const group = sorted.slice(p * PACKAGE_SIZE, p * PACKAGE_SIZE + PACKAGE_SIZE);
     const subtotal = group.reduce((s, it) => s + Math.round(Number(it.price) * 100) / 100, 0);
-    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT));
+    const total = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
     packages.push({ photoIds: group.map(g => g.id), subtotal, discount: subtotal - total, total, amounts: splitAmount(total, group.length) });
   }
   const singles = sorted.slice(numPackages * PACKAGE_SIZE);
   const lines = singles.map((it, i) => {
     const price = Math.round(Number(it.price) * 100) / 100;
     const discount = singleDiscountForPosition(i + 1);
-    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount)) };
+    return { id: it.id, price, discount, lineTotal: Math.round(price * (1 - discount) * 100) / 100 };
   });
   const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
   const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
@@ -1508,6 +1514,9 @@ async function createCheckout(store, user, body) {
   if (!ev) throw err(404, 'Evento no encontrado.');
   // No se cobra una foto de un álbum oculto (salvo al dueño).
   assertEventVisible(user, ev);
+  // Ni de un álbum "Próximo evento" (salvo al dueño): la foto no se
+  // podría descargar después de pagar.
+  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
   if (ev.freeMode) throw err(400, 'Ese evento es gratis, no se cobra.');
   if (user.role === 'photographer' && photoOwnerId(photo, ev) === user.id) throw err(400, 'No puedes comprar tus propias fotos.');
   if (await store.hasDownload(user.id, photo.id)) return { status: 200, data: { paid: true, photoId: photo.id } };
@@ -1566,6 +1575,9 @@ async function createCartCheckout(store, user, body) {
     if (!ev) throw err(404, 'Evento no encontrado.');
     // No se cobra una foto de un álbum oculto (salvo al dueño).
     assertEventVisible(user, ev);
+    // Ni de un álbum "Próximo evento" (salvo al dueño): la foto no se
+    // podría descargar después de pagar.
+    if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
     if (ev.freeMode) throw err(400, 'La foto ' + id + ' es de un evento gratis: quítala del carrito y descárgala gratis.');
     // Un fotógrafo no puede comprar sus PROPIAS fotos; las de otros
     // fotógrafos sí las puede comprar como cualquier corredor.
