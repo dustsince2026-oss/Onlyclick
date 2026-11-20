@@ -6,7 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { dispatch } = require('./api/_lib/handlers');
+const { dispatch, ogMetaForRef } = require('./api/_lib/handlers');
 const { tokenFromReq } = require('./api/_lib/auth');
 
 const PORT = process.env.PORT || 3000;
@@ -31,7 +31,7 @@ const ROUTES = {
   'create-announcement': 'create-announcement', 'list-announcements': 'list-announcements',
   'mark-announcements-read': 'mark-announcements-read',
   // Recompensas (2026-11-20): referidos + primeros 100 atletas.
-  'rewards': 'rewards', 'referral-info': 'referral-info',
+  'rewards': 'rewards', 'rewards-check': 'rewards-check', 'referral-info': 'referral-info',
   'set-payout-clabe': 'set-payout-clabe', 'payouts-summary': 'payouts-summary',
   'payouts-mark-paid': 'payouts-mark-paid', 'payouts-history': 'payouts-history',
   'my-earnings': 'my-earnings',
@@ -50,6 +50,18 @@ function readBody(req) {
     req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); } });
     req.on('error', reject);
   });
+}
+
+function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+// Reemplaza las etiquetas Open Graph por defecto por las del referido
+// (og:title, og:description, og:url; la imagen es la misma siempre).
+// Si alguna etiqueta no está en el HTML, se deja como está (no rompe).
+function injectOg(html, og) {
+  let out = String(html);
+  out = out.replace(/(<meta property="og:title" content=")[^"]*(")/, (m, p1, p2) => p1 + escAttr(og.title) + p2);
+  out = out.replace(/(<meta property="og:description" content=")[^"]*(")/, (m, p1, p2) => p1 + escAttr(og.description) + p2);
+  out = out.replace(/(<meta property="og:url" content=")[^"]*(")/, (m, p1, p2) => p1 + escAttr(og.url) + p2);
+  return out;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -118,6 +130,20 @@ const server = http.createServer(async (req, res) => {
     let file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
     file = path.join(PUBLIC, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC, 'index.html');
+    // Vista previa Open Graph con ?ref= (2026-11-20): Facebook arma la
+    // vista previa del link con las etiquetas de la página. Solo se
+    // inyecta cuando viene ?ref=; sin ref, la página se sirve igual que
+    // siempre. Sin caché agresiva: cada link de referido tiene sus
+    // propias etiquetas y Facebook debe leer las nuevas. Si algo falla,
+    // cae al envío normal de abajo (la página nunca se rompe).
+    if (path.basename(file) === 'index.html' && query.ref) {
+      try {
+        const og = await ogMetaForRef(query.ref);
+        const html = injectOg(fs.readFileSync(file, 'utf8'), og);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, max-age=0, no-cache' });
+        return res.end(html);
+      } catch (_) { /* envío normal */ }
+    }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
