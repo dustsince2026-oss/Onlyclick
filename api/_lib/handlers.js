@@ -97,6 +97,153 @@ function splitSale(amount) {
   return { amount: totalCents / 100, clipFee: clipCents / 100, orlanFee: orlanCents / 100, photographerShare: photographerCents / 100 };
 }
 
+// ---- Reparto con cupón de recompensa (2026-11-20) ----
+// REGLA DURA de Orlan: el 10% sale de la comisión de OnlyClick, NUNCA
+// del fotógrafo. El fotógrafo cobra EXACTAMENTE lo que cobraría sin
+// descuento (splitSale sobre el precio base); la comisión de Clip se
+// calcula sobre lo que el comprador REALMENTE pagó; lo que falta lo
+// absorbe Orlan (su parte baja, nunca bajo cero).
+// Ejemplo exacto con foto de $25 y cupón 10% (pagó $22.50):
+//   splitSale(25)            -> Clip $1.04, Orlan $2.40, fotógrafo $21.56
+//   splitRewardSale(22.50, 25) -> Clip $0.94, Orlan $0.00, fotógrafo $21.56
+// Es EXACTAMENTE el ejemplo que Orlan calculó a mano: el fotógrafo
+// cobra lo mismo con y sin cupón y Orlan se queda en $0.00.
+// (Nota: 2500 × 0.0418 da 104.4999… en punto flotante, así que
+// Math.round lo baja a 104 centavos: Clip cobra $1.04, no $1.05.
+// Eso es lo que el código ya hacía antes de Recompensas y no se toca;
+// el total siempre cuadra al centavo: Clip + Orlan + fotógrafo = pagado.)
+function splitRewardSale(paidAmount, baseAmount) {
+  const paidCents = Math.round(Number(paidAmount || 0) * 100);
+  const baseCents = Math.round(Number(baseAmount != null ? baseAmount : paidAmount) * 100);
+  const clipCents = Math.round(paidCents * CLIP_FEE_RATE);
+  const photographerCents = splitSale(baseCents / 100).photographerShare * 100;
+  const orlanCents = Math.max(0, paidCents - clipCents - Math.round(photographerCents));
+  return { amount: paidCents / 100, clipFee: clipCents / 100, orlanFee: orlanCents / 100, photographerShare: Math.round(photographerCents) / 100 };
+}
+
+// Reparto de UNA descarga: si la venta tuvo cupón de recompensa, la
+// descarga guarda baseAmount (precio sin descuento) y el reparto usa
+// splitRewardSale; si no, el reparto normal.
+function splitDownload(d) {
+  const amt = Number(d.amount || 0);
+  if (d.baseAmount != null && Number(d.baseAmount) > amt) return splitRewardSale(amt, Number(d.baseAmount));
+  return splitSale(amt);
+}
+
+// ---- Recompensas: códigos y estrellas (2026-11-20) ----
+// Base del link de referido: el dominio propio (onlyclick.com.mx).
+const REFERRAL_BASE_URL = 'https://onlyclick.com.mx';
+const REWARD_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const REWARD_CODE_PREFIX = 'RECOMP-';
+
+function makeReferralCode() {
+  let code = '';
+  for (let i = 0; i < 6; i++) code += REWARD_ALPHABET[Math.floor(Math.random() * REWARD_ALPHABET.length)];
+  return code;
+}
+
+function referralLink(code) { return REFERRAL_BASE_URL + '/?ref=' + String(code || '').toUpperCase(); }
+
+// Genera el código de referido del usuario si aún no tiene (perezoso:
+// así cubre a los 97 que ya existen sin backfill). Nunca secuencial.
+async function ensureReferralCode(store, user) {
+  if (user && user.referralCode) return String(user.referralCode).toUpperCase();
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const code = makeReferralCode();
+    if (await store.getUserByReferralCode(code)) continue;
+    const updated = await store.updateUser(user.id, { referralCode: code });
+    if (updated) return code;
+    break;
+  }
+  throw err(500, 'No se pudo generar tu código de referido. Inténtalo de nuevo.');
+}
+
+// Resuelve un código de referido al invitador, o null si no vale.
+// El auto-referido (el código es del mismo usuario) se ignora: el que se
+// registra no puede invitarse a sí mismo.
+async function resolveReferrer(store, code, excludeUserId) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c || c.length !== 6) return null;
+  const inviter = await store.getUserByReferralCode(c);
+  if (!inviter) return null;
+  if (excludeUserId != null && Number(inviter.id) === Number(excludeUserId)) return null;
+  return inviter;
+}
+
+// Cupón de recompensa: 10%, un solo uso, vale para CUALQUIER evento
+// (eventId NULL), se genera una sola vez por usuario y por tipo.
+// code: 'RECOMP-XXXXXX' con 6 caracteres aleatorios (nunca en serie).
+async function generateRewardCoupon(store, userId, kind, note) {
+  const existing = await store.getRewardCoupon(userId, kind);
+  if (existing) return existing;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const code = REWARD_CODE_PREFIX + makeReferralCode();
+    if (await store.getDiscountCodeByCode(code)) continue;
+    return store.createDiscountCode({ code, eventId: null, discountPercent: 10, note, createdBy: Number(userId), maxUses: 1, isReward: true, rewardKind: kind });
+  }
+  return null;
+}
+
+// Al llegar a 3 referidos: cupón automático + aviso de campanita.
+// Se llama después de un registro con referido; si el cupón ya existe
+// (o el usuario ya tenía 3+), no se duplica ni se vuelve a avisar.
+async function maybeGrantReferralCoupon(store, inviterId) {
+  if (!inviterId) return null;
+  const stars = await store.countReferralsByUser(inviterId);
+  if (stars < 3) return null;
+  const existing = await store.getRewardCoupon(inviterId, 'referral');
+  if (existing) return existing;
+  const coupon = await generateRewardCoupon(store, inviterId, 'referral', 'Cupón por invitar a 3 amigos');
+  if (!coupon) return null;
+  try { await store.createAnnouncement({ authorId: Number(inviterId), userId: Number(inviterId), title: '¡Ganaste 10% de descuento!', body: 'Invitaste a 3 amigos a OnlyClick. Ya tienes tu cupón de 10% en tu próxima compra. Míralo en Recompensas.', kind: 'reward' }); } catch (_) {}
+  return coupon;
+}
+
+// Cupón de agradecimiento a los primeros 100 atletas: se genera la
+// primera vez que el atleta abre Recompensas (y solo si está entre los
+// primeros 100 por orden de registro).
+async function maybeGrantEarlyCoupon(store, user) {
+  if (!user || user.role !== 'athlete') return null;
+  if (await store.getRewardCoupon(user.id, 'early100')) return null;
+  if (!await store.isEarlyAthlete(user.id)) return null;
+  return generateRewardCoupon(store, user.id, 'early100', 'Gracias por ser de los primeros 100 atletas');
+}
+
+// Vista de Recompensas del usuario: link, estrellas, referidos y cupones.
+async function getRewards(store, user) {
+  const referralCode = await ensureReferralCode(store, user);
+  const [stars, referred, referralCoupon, earlyAthlete] = await Promise.all([
+    store.countReferralsByUser(user.id),
+    store.listReferredUsers(user.id),
+    store.getRewardCoupon(user.id, 'referral'),
+    store.isEarlyAthlete(user.id),
+  ]);
+  let earlyCoupon = null;
+  if (earlyAthlete) {
+    earlyCoupon = await maybeGrantEarlyCoupon(store, user);
+    if (!earlyCoupon) earlyCoupon = await store.getRewardCoupon(user.id, 'early100');
+  }
+  return {
+    referralCode,
+    referralLink: referralLink(referralCode),
+    stars,
+    starsNeeded: 3,
+    referred: (referred || []).map(r => ({ name: r.name })),
+    referralCoupon: referralCoupon ? publicDiscountCode(referralCoupon) : null,
+    earlyAthlete: !!earlyAthlete,
+    earlyCoupon: earlyCoupon ? publicDiscountCode(earlyCoupon) : null,
+  };
+}
+
+// Endpoint público: ¿quién invitó con este código? Solo el nombre
+// visible, sin datos sensibles. Sin sesión: el registro muestra
+// "Te invitó [nombre]".
+async function referralInfo(store, code) {
+  const inviter = await store.getUserByReferralCode(String(code || '').trim().toUpperCase());
+  if (!inviter) return { valid: false, inviterName: null };
+  return { valid: true, inviterName: displayNameFor(inviter) || String(inviter.name || '').trim().split(/\s+/)[0] || 'Un amigo' };
+}
+
 async function register(store, body) {
   const name = String(body.name || '').trim();
   const email = String(body.email || '').trim().toLowerCase();
@@ -118,13 +265,25 @@ async function register(store, body) {
   // su cuenta queda ligada a su solicitud. Los deportistas no necesitan
   // aprobación.
   const approved = role === 'photographer' ? !!inviteApp : true;
-  const user = await store.createUser({ name, email, passwordHash: hashPassword(password), role, approved, isOwner: false, payoutClabe: '' });
+  // Recompensas: ¿viene con link de referido (?ref=CODIGO)? Código
+  // inválido o auto-referido se ignora y se registra normal. El referido
+  // se fija UNA sola vez, al crear la cuenta.
+  let referredBy = null;
+  try {
+    const inviter = await resolveReferrer(store, body.referralCode);
+    if (inviter) referredBy = Number(inviter.id);
+  } catch (_) { referredBy = null; }
+  const user = await store.createUser({ name, email, passwordHash: hashPassword(password), role, approved, isOwner: false, payoutClabe: '', referredBy });
   if (inviteApp) {
     // Si otro registro ganó la carrera y ya ligó el link, la cuenta
     // recién creada vuelve a pendiente (Orlan la puede aprobar a mano).
     const linked = await store.linkApplication(inviteToken, user.id);
     if (!linked) await store.updateUser(user.id, { approved: false });
   }
+  // Si vino referido, el invitador suma una estrella; a las 3 se le
+  // genera el cupón automáticamente. Si esto falla, el registro ya
+  // quedó hecho: el referido se guardó en la cuenta.
+  if (referredBy) { try { await maybeGrantReferralCoupon(store, referredBy); } catch (_) {} }
   return { status: 201, data: { user: publicUser(user), token: signToken(user.id) } };
 }
 
@@ -1387,7 +1546,10 @@ function cartTotals(items, codePercent) {
     const preCode = Math.round(subtotal * (1 - PACKAGE_DISCOUNT) * 100) / 100;
     const total = Math.round(preCode * (1 - pct) * 100) / 100;
     preCodeTotal += preCode;
-    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, amounts: splitAmount(total, group.length) });
+    // baseAmounts: la parte de cada foto ANTES del código (después del
+    // descuento por volumen). Es la base del reparto con cupón de
+    // recompensa: el fotógrafo cobra como si no hubiera cupón.
+    packages.push({ photoIds: group.map(g => g.id), subtotal, discount: Math.round((subtotal - total) * 100) / 100, total, amounts: splitAmount(total, group.length), baseAmounts: splitAmount(preCode, group.length) });
   }
   const singles = sorted.slice(numPackages * PACKAGE_SIZE);
   const lines = singles.map((it, i) => {
@@ -1395,7 +1557,7 @@ function cartTotals(items, codePercent) {
     const discount = singleDiscountForPosition(i + 1);
     const preCode = Math.round(price * (1 - discount) * 100) / 100;
     preCodeTotal += preCode;
-    return { id: it.id, price, discount, lineTotal: Math.round(preCode * (1 - pct) * 100) / 100 };
+    return { id: it.id, price, discount, lineTotal: Math.round(preCode * (1 - pct) * 100) / 100, baseTotal: preCode };
   });
   const subtotal = packages.reduce((s, p) => s + p.subtotal, 0) + lines.reduce((s, l) => s + l.price, 0);
   const total = packages.reduce((s, p) => s + p.total, 0) + lines.reduce((s, l) => s + l.lineTotal, 0);
@@ -1454,7 +1616,7 @@ async function generateUniqueDiscountCode(store, eventName) {
   throw err(500, 'No se pudo generar un código único. Inténtalo de nuevo.');
 }
 function publicDiscountCode(c) {
-  return c ? { id: c.id, code: c.code, eventId: c.eventId, discountPercent: c.discountPercent, note: c.note || '', used: !!c.used, usedBy: c.usedBy != null ? c.usedBy : null, usedAt: c.usedAt || null, active: c.active !== false, maxUses: Number(c.maxUses || 1), uses: Number(c.uses || 0), createdAt: c.createdAt || null } : null;
+  return c ? { id: c.id, code: c.code, eventId: c.eventId != null ? c.eventId : null, discountPercent: c.discountPercent, note: c.note || '', used: !!c.used, usedBy: c.usedBy != null ? c.usedBy : null, usedAt: c.usedAt || null, active: c.active !== false, maxUses: Number(c.maxUses || 1), uses: Number(c.uses || 0), isReward: !!c.isReward, rewardKind: c.rewardKind || null, createdAt: c.createdAt || null } : null;
 }
 // Valida un código para un evento y devuelve la fila. Errores claros
 // para que el corredor sepa qué pasó (no existe / otro evento /
@@ -1471,7 +1633,8 @@ async function validateDiscountCodeRow(store, rawCode, eventId, userId) {
   const maxUses = Number(row.maxUses || 1);
   const uses = Number(row.uses || 0);
   if (row.used || uses >= maxUses) throw err(400, maxUses > 1 ? 'Ese código ya se acabó.' : 'Ese código ya se usó.');
-  if (Number(row.eventId) !== Number(eventId)) {
+  // Cupón de recompensa (eventId NULL): vale para CUALQUIER evento.
+  if (row.eventId != null && Number(row.eventId) !== Number(eventId)) {
     const ev = await store.getEvent(row.eventId).catch(() => null);
     throw err(400, 'Ese código es solo para fotos de ' + (ev ? ev.name : 'otro evento') + '.');
   }
@@ -1666,7 +1829,7 @@ async function markPaymentPaid(store, payment, clipData) {
     await store.updatePaymentStatus(payment.id, { status: 'completed', receiptNo: (clipData && clipData.receipt_no) || payment.receiptNo || '' });
   }
   if (!already) {
-    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount });
+    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount, baseAmount: payment.baseAmount != null ? payment.baseAmount : null });
   }
   return { already };
 }
@@ -1703,7 +1866,10 @@ async function notifySale(store, newlyPaid) {
     const ph = await store.findUserById(photographerId);
     if (!ph || !ph.email) continue;
     const total = items.reduce((s, it) => s + Number(it.payment.amount || 0), 0);
-    const share = items.reduce((s, it) => s + splitSale(it.payment.amount).photographerShare, 0);
+    // Con cupón de recompensa el fotógrafo cobra sobre el precio SIN
+    // descuento (splitDownload): el correo le muestra lo que REALMENTE
+    // le toca, no el total pagado.
+    const share = items.reduce((s, it) => s + splitDownload({ amount: it.payment.amount, baseAmount: it.payment.baseAmount }).photographerShare, 0);
     const lines = items.map(it => {
       const bib = (it.photo && it.photo.bibs && it.photo.bibs[0]) || '';
       return `• ${it.event ? it.event.name : 'Evento'} — foto${bib ? ' dorsal ' + bib : ''} — $${Number(it.payment.amount).toFixed(2)} MXN`;
@@ -1920,6 +2086,9 @@ async function createCheckout(store, user, body) {
     externalReference: ref,
     userId: user.id, photoId: photo.id, eventId: ev.id,
     amount, currency: 'MXN', status: 'pending',
+    // Cupón de recompensa: se guarda el precio SIN descuento para que
+    // el reparto le pague al fotógrafo como si no hubiera cupón.
+    baseAmount: discountRow && discountRow.eventId == null ? price : null,
     discountCodeId: discountRow ? discountRow.id : null,
   });
   // Atar el checkout al código (sin quemarlo todavía: solo se marca
@@ -1967,17 +2136,26 @@ async function createCartCheckout(store, user, body) {
   }
   if (!toPay.length) return { status: 200, data: { paid: true, photoIds: alreadyPaid, amount: 0 } };
   // Código de descuento (opcional): debe ser del evento de TODAS las
-  // fotos del carrito (un código es por evento). Se aplica DESPUÉS de
-  // los descuentos por volumen, sobre el total final (cartTotals lo
-  // reparte por paquete y por línea, así las filas de pago suman el
-  // total con descuento). Un código de 100% deja el total en $0 y el
-  // chequeo de abajo lo rechaza con el mensaje de siempre.
+  // fotos del carrito (un código es por evento) — EXCEPTO los cupones de
+  // recompensa (eventId NULL), que valen para CUALQUIER evento y hasta
+  // mezclan eventos. Se aplica DESPUÉS de los descuentos por volumen,
+  // sobre el total final (cartTotals lo reparte por paquete y por línea,
+  // así las filas de pago suman el total con descuento). Un código de
+  // 100% deja el total en $0 y el chequeo de abajo lo rechaza con el
+  // mensaje de siempre.
+  // UN SOLO CÓDIGO POR CARRITO (regla de Orlan 2026-11-20): el carrito
+  // acepta un único código; si el usuario tiene dos cupones de 10%
+  // (agradecimiento + referido), usa uno por compra y el otro queda
+  // vigente para la siguiente.
   let discountRow = null;
   const rawCode = String(body.code || '').trim();
   if (rawCode) {
-    const eventIds = [...new Set(toPay.map(t => Number(t.eventId)))];
-    if (eventIds.length !== 1) throw err(400, 'El código es solo para las fotos de un evento. Quita las fotos de otros eventos o paga por separado.');
-    discountRow = await validateDiscountCodeRow(store, rawCode, eventIds[0], user.id);
+    const probe = typeof store.getDiscountCodeByCode === 'function' ? await store.getDiscountCodeByCode(rawCode.toUpperCase()).catch(() => null) : null;
+    if (!(probe && probe.eventId == null)) {
+      const eventIds = [...new Set(toPay.map(t => Number(t.eventId)))];
+      if (eventIds.length !== 1) throw err(400, 'El código es solo para las fotos de un evento. Quita las fotos de otros eventos o paga por separado.');
+    }
+    discountRow = await validateDiscountCodeRow(store, rawCode, toPay[0].eventId, user.id);
   }
   const totals = cartTotals(toPay.map(t => ({ id: t.id, price: t.price })), discountRow ? Number(discountRow.discountPercent) : 0);
   if (totals.total <= 0) throw err(400, 'El total no es válido.');
@@ -2002,7 +2180,7 @@ async function createCartCheckout(store, user, body) {
   // las individuales llevan su precio con su descuento.
   const rows = [];
   let refIndex = 0;
-  const addRow = async (photoId, amount) => {
+  const addRow = async (photoId, amount, baseAmount) => {
     const it = toPay.find(t => t.id === photoId);
     rows.push(await store.createPayment({
       clipPaymentRequestId: created.payment_request_id,
@@ -2011,14 +2189,17 @@ async function createCartCheckout(store, user, body) {
       externalReference: refIndex === 0 ? firstRef : makeCartRef(user.id, refIndex),
       userId: user.id, photoId, eventId: it.eventId,
       amount, currency: 'MXN', status: 'pending',
+      // Cupón de recompensa: se guarda el precio SIN descuento para
+      // que el reparto le pague al fotógrafo como si no hubiera cupón.
+      baseAmount: discountRow && discountRow.eventId == null ? baseAmount : null,
       discountCodeId: discountRow ? discountRow.id : null,
     }));
     refIndex++;
   };
   for (const pkg of totals.packages) {
-    for (let i = 0; i < pkg.photoIds.length; i++) await addRow(pkg.photoIds[i], pkg.amounts[i]);
+    for (let i = 0; i < pkg.photoIds.length; i++) await addRow(pkg.photoIds[i], pkg.amounts[i], pkg.baseAmounts[i]);
   }
-  for (const line of totals.lines) await addRow(line.id, line.lineTotal);
+  for (const line of totals.lines) await addRow(line.id, line.lineTotal, line.baseTotal);
   // Atar el checkout al código (sin quemarlo todavía: solo se marca
   // usado cuando Clip confirme el pago, en refreshPaymentsByClipId).
   if (discountRow) {
@@ -2490,7 +2671,9 @@ async function photographerEarnings(store, photographerId, preloaded) {
     if (ownerByPhoto.get(d.photoId) !== photographerId) continue;
     const amt = Number(d.amount || 0);
     if (!amt) continue; // gratis: no genera comisión ni pago
-    const s = splitSale(amt);
+    // Con cupón de recompensa el fotógrafo cobra sobre el precio SIN
+    // descuento (splitDownload); la parte de Orlan absorbe el 10%.
+    const s = splitDownload(d);
     totalSoldC += Math.round(s.amount * 100);
     clipC += Math.round(s.clipFee * 100);
     orlanC += Math.round(s.orlanFee * 100);
@@ -2746,6 +2929,9 @@ async function dispatch(route, req) {
     case 'password-forgot': return requestPasswordReset(store, b);
     case 'password-reset': return resetPassword(store, b);
     case 'auth-status': return authStatus(store, req.token);
+    // Recompensas (2026-11-20): referidos + primeros 100 atletas.
+    case 'rewards': { requireUser(user); return { status: 200, data: await getRewards(store, user) }; }
+    case 'referral-info': return { status: 200, data: await referralInfo(store, req.query.code) };
     case 'list-events': return listEvents(store, user);
     case 'create-event': return createEvent(store, user, b);
     case 'get-event': return getEvent(store, user, req.query.eventId);
@@ -2810,4 +2996,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, getRewards, referralInfo, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
