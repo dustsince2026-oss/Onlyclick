@@ -30,6 +30,8 @@ const ROUTES = {
   'review-application': 'review-application', 'invite-status': 'invite-status',
   'create-announcement': 'create-announcement', 'list-announcements': 'list-announcements',
   'mark-announcements-read': 'mark-announcements-read',
+  // Recompensas (2026-11-20): referidos + primeros 100 atletas.
+  'rewards': 'rewards', 'referral-info': 'referral-info',
   'set-payout-clabe': 'set-payout-clabe', 'payouts-summary': 'payouts-summary',
   'payouts-mark-paid': 'payouts-mark-paid', 'payouts-history': 'payouts-history',
   'my-earnings': 'my-earnings',
