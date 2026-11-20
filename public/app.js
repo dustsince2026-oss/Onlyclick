@@ -2985,6 +2985,22 @@ function updatePhotogNotice() {
   n.style.display = show ? '' : 'none';
 }
 $('#authRole').onchange = updatePhotogNotice;
+// Ojito ver/ocultar contraseña (Orlan, 2026-11-20): alterna el tipo del
+// input entre password y text; el valor escrito se conserva. El botón es
+// type="button" en el HTML, así nunca envía el formulario.
+function bindPassEye(btnId, inputId) {
+  const btn = $(btnId), input = $(inputId);
+  if (!btn || !input) return;
+  btn.onclick = () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.textContent = show ? '🙈' : '👁️';
+    btn.setAttribute('aria-label', show ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    btn.title = show ? 'Ocultar contraseña' : 'Mostrar contraseña';
+  };
+}
+bindPassEye('#toggleAuthPass', '#authPass');
+bindPassEye('#toggleResetPass', '#resetPass');
 $('#authToggle').onclick = () => { mode = mode === 'login' ? 'register' : 'login'; $('#authTitle').textContent = mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'; $('#authSubmit').textContent = mode === 'login' ? 'Entrar' : 'Crear mi cuenta'; $('#authToggle').textContent = mode === 'login' ? '¿No tienes cuenta? Crear cuenta' : '¿Ya tienes cuenta? Iniciar sesión'; $('#authName').style.display = mode === 'register' ? '' : 'none'; $('#authRole').style.display = mode === 'register' ? '' : 'none'; updatePhotogNotice(); };
 $('#authSubmit').onclick = async () => {
   const body = { email: $('#authEmail').value, password: $('#authPass').value };
