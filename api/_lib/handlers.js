@@ -144,6 +144,46 @@ function makeReferralCode() {
 
 function referralLink(code) { return REFERRAL_BASE_URL + '/?ref=' + String(code || '').toUpperCase(); }
 
+// Texto para compartir la recompensa de los primeros 100 (palabras de
+// Orlan, 2026-11-20): "Obtuve una recompensa por ser de los primeros
+// cien" + "tú también crea tu cuenta y obtén recompensas en tus
+// primeras compras". Es el MISMO texto en el botón Compartir, en el
+// botón Copiar mensaje y en la descripción Open Graph del link de
+// referido. Mantener en sync con early100ShareText de public/app.js.
+function early100ShareText(link) {
+  return '¡Obtuve una recompensa por ser de las primeras 100 cuentas registradas en OnlyClick! 📸 Tú también crea tu cuenta y obtén recompensas en tus primeras compras. Regístrate con mi link: ' + String(link || '');
+}
+
+// ---- Vista previa Open Graph del link con ?ref= (2026-11-20) ----
+// Facebook no acepta texto prellenado de otras apps: cuando alguien
+// comparte el link, lo que se ve es la vista previa que Facebook arma
+// con las etiquetas Open Graph de la página. Con ref válido de un
+// early100: título y descripción de primeros 100; con ref válido
+// normal: invitación genérica; sin ref o inválido: OG por defecto.
+// Nunca tira error: si el lookup falla, OG por defecto.
+const OG_IMAGE_URL = REFERRAL_BASE_URL + '/icon-512.png';
+const DEFAULT_OG = {
+  title: 'OnlyClick — Encuentra tus fotos por dorsal',
+  description: 'Busca tus fotos de carrera con tu número de dorsal o una selfie, sin revisar foto por foto. Regístrate en OnlyClick.',
+  image: OG_IMAGE_URL,
+  url: REFERRAL_BASE_URL + '/',
+};
+async function ogMetaForRef(code, storeOverride) {
+  const def = { title: DEFAULT_OG.title, description: DEFAULT_OG.description, image: DEFAULT_OG.image, url: DEFAULT_OG.url };
+  try {
+    const c = String(code || '').trim().toUpperCase();
+    if (!c) return def;
+    const store = storeOverride || getStore();
+    const inviter = await resolveReferrer(store, c);
+    if (!inviter) return def;
+    const url = referralLink(c);
+    if (await store.isEarlyAthlete(inviter.id)) {
+      return { title: '¡Soy de los primeros 100 atletas en OnlyClick! 🎉', description: early100ShareText(url), image: OG_IMAGE_URL, url };
+    }
+    return { title: 'Te invito a OnlyClick 📸', description: 'Tus fotos de carrera con tu número de dorsal, sin revisar foto por foto. Crea tu cuenta en OnlyClick y busca tus fotos.', image: OG_IMAGE_URL, url };
+  } catch (_) { return def; }
+}
+
 // Genera el código de referido del usuario si aún no tiene (perezoso:
 // así cubre a los 97 que ya existen sin backfill). Nunca secuencial.
 async function ensureReferralCode(store, user) {
@@ -201,12 +241,47 @@ async function maybeGrantReferralCoupon(store, inviterId) {
 
 // Cupón de agradecimiento a los primeros 100 atletas: se genera la
 // primera vez que el atleta abre Recompensas (y solo si está entre los
-// primeros 100 por orden de registro).
+// primeros 100 por orden de registro). Al crearse, también le llega
+// su aviso de campanita (ver ensureEarly100Notice).
 async function maybeGrantEarlyCoupon(store, user) {
   if (!user || user.role !== 'athlete') return null;
   if (await store.getRewardCoupon(user.id, 'early100')) return null;
   if (!await store.isEarlyAthlete(user.id)) return null;
-  return generateRewardCoupon(store, user.id, 'early100', 'Gracias por ser de los primeros 100 atletas');
+  const coupon = await generateRewardCoupon(store, user.id, 'early100', 'Gracias por ser de los primeros 100 atletas');
+  if (!coupon) return null;
+  await ensureEarly100Notice(store, user);
+  return coupon;
+}
+
+// Aviso de campanita para los primeros 100 atletas (Orlan, 2026-11-20):
+// les dice que tienen su cupón de 10% y que lo reclamen en
+// Mi cuenta → Recompensas. El código del cupón NO va en el aviso.
+// Se crea UNA sola vez por atleta y se identifica por su título y el
+// usuario. Cubre los dos casos: (a) cupón recién generado, y (b) cupón
+// que ya existía sin aviso (se generó abriendo Recompensas antes de
+// que existiera el aviso) — Orlan lo pidió para los que YA tienen el
+// cupón, no solo para los que lo generen de aquí en adelante.
+const EARLY100_NOTIF_TITLE = '¡Eres de los primeros 100!';
+const EARLY100_NOTIF_BODY = '🎉 Gracias por ser parte de OnlyClick desde el inicio. Tienes 10% de descuento en tu próxima compra. Entra a Mi cuenta → Recompensas y reclama tu cupón.';
+async function ensureEarly100Notice(store, user) {
+  if (!user || user.role !== 'athlete') return false;
+  if (!await store.getRewardCoupon(user.id, 'early100')) return false;
+  const all = await store.listAnnouncements();
+  if ((all || []).some(a => Number(a.userId) === Number(user.id) && String(a.title || '') === EARLY100_NOTIF_TITLE)) return false;
+  try { await store.createAnnouncement({ authorId: Number(user.id), userId: Number(user.id), title: EARLY100_NOTIF_TITLE, body: EARLY100_NOTIF_BODY, kind: 'reward' }); } catch (_) { return false; }
+  return true;
+}
+
+// Revisión ligera al cargar la app (una vez por sesión, solo atletas
+// con sesión): asegura el cupón de agradecimiento de los primeros 100
+// y su aviso de campanita aunque el atleta nunca abra Recompensas.
+// Idempotente y barata; nunca rompe la carga.
+async function rewardsCheck(store, user) {
+  if (!user || user.role !== 'athlete') return { status: 200, data: { ok: true, early: false } };
+  const coupon = await maybeGrantEarlyCoupon(store, user);
+  if (coupon) return { status: 200, data: { ok: true, early: true } };
+  await ensureEarly100Notice(store, user);
+  return { status: 200, data: { ok: true, early: await store.isEarlyAthlete(user.id) } };
 }
 
 // Vista de Recompensas del usuario: link, estrellas, referidos y cupones.
@@ -2931,6 +3006,7 @@ async function dispatch(route, req) {
     case 'auth-status': return authStatus(store, req.token);
     // Recompensas (2026-11-20): referidos + primeros 100 atletas.
     case 'rewards': { requireUser(user); return { status: 200, data: await getRewards(store, user) }; }
+    case 'rewards-check': { requireUser(user); return rewardsCheck(store, user); }
     case 'referral-info': return { status: 200, data: await referralInfo(store, req.query.code) };
     case 'list-events': return listEvents(store, user);
     case 'create-event': return createEvent(store, user, b);
@@ -2996,4 +3072,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, getRewards, referralInfo, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, early100ShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
