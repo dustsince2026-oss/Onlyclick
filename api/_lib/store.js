@@ -46,6 +46,23 @@ const fileStore = {
   // Todos los fotógrafos (dueño incluido) con sus datos de aprobación.
   async listPhotographers() { return loadDb().users.filter(u => u.role === 'photographer').sort((a, b) => a.id - b.id); },
   async updateUser(id, patch) { const db = loadDb(); const u = db.users.find(x => x.id === Number(id)); if (!u) return null; Object.assign(u, patch); saveDb(db); return u; },
+  // ---- Recompensas (2026-11-20) ----
+  async getUserByReferralCode(code) {
+    const want = String(code || '').trim().toUpperCase();
+    if (!want) return null;
+    return loadDb().users.find(u => String(u.referralCode || '').toUpperCase() === want) || null;
+  },
+  async countReferralsByUser(userId) { return loadDb().users.filter(u => Number(u.referredBy) === Number(userId)).length; },
+  async listReferredUsers(userId) { return loadDb().users.filter(u => Number(u.referredBy) === Number(userId)).sort((a, b) => a.id - b.id).map(u => ({ id: u.id, name: u.name, createdAt: u.createdAt })); },
+  async getRewardCoupon(userId, kind) {
+    const db = loadDb();
+    return (db.discountCodes || []).find(x => Number(x.createdBy) === Number(userId) && x.isReward && String(x.rewardKind || '') === String(kind || '')) || null;
+  },
+  // ¿Está entre los primeros 100 atletas por orden de registro (id)?
+  async isEarlyAthlete(userId) {
+    const athletes = loadDb().users.filter(u => u.role === 'athlete').sort((a, b) => a.id - b.id).slice(0, 100);
+    return athletes.some(u => Number(u.id) === Number(userId));
+  },
   // ---- Eventos compartidos ----
   // Un fotógrafo entra a un evento creado por otro (o por el dueño) y
   // vende SUS fotos ahí a SU precio. Re-unirse solo actualiza el precio.
@@ -121,7 +138,7 @@ const fileStore = {
   async addDownload(d) {
     const db = loadDb();
     const old = db.downloads.find(x => x.userId === Number(d.userId) && x.photoId === Number(d.photoId) && x.removedAt);
-    if (old) { old.removedAt = null; if (d.amount !== undefined) old.amount = d.amount; if (d.eventId !== undefined) old.eventId = d.eventId; saveDb(db); return old; }
+    if (old) { old.removedAt = null; if (d.amount !== undefined) old.amount = d.amount; if (d.eventId !== undefined) old.eventId = d.eventId; if (d.baseAmount !== undefined) old.baseAmount = d.baseAmount; saveDb(db); return old; }
     const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), removedAt: null, ...d }; db.downloads.push(row); saveDb(db); return row;
   },
   // "Mis fotos" solo muestra las que NO se quitaron: las quitadas se
@@ -198,7 +215,8 @@ const fileStore = {
     if (!db.discountCodes) db.discountCodes = [];
     if (!db.seq.discountCode) db.seq.discountCode = 1;
     const maxUses = Math.min(1000, Math.max(1, Math.floor(Number(c.maxUses || 1)) || 1));
-    const row = { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, createdAt: new Date().toISOString() };
+    // eventId NULL = cupón de recompensa, vale para CUALQUIER evento.
+    const row = { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: c.eventId != null ? Number(c.eventId) : null, discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, isReward: !!c.isReward, rewardKind: c.rewardKind || null, createdAt: new Date().toISOString() };
     db.discountCodes.push(row); saveDb(db); return row;
   },
   // Alta en lote (generar 500-800 códigos de golpe): un solo guardado
@@ -207,7 +225,7 @@ const fileStore = {
     const db = loadDb();
     if (!db.discountCodes) db.discountCodes = [];
     if (!db.seq.discountCode) db.seq.discountCode = 1;
-    const rows = (list || []).map(c => { const maxUses = Math.min(1000, Math.max(1, Math.floor(Number(c.maxUses || 1)) || 1)); return { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: Number(c.eventId), discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, createdAt: new Date().toISOString() }; });
+    const rows = (list || []).map(c => { const maxUses = Math.min(1000, Math.max(1, Math.floor(Number(c.maxUses || 1)) || 1)); return { id: nextId(db, 'discountCode'), code: String(c.code || '').trim().toUpperCase(), eventId: c.eventId != null ? Number(c.eventId) : null, discountPercent: Number(c.discountPercent || 20), note: String(c.note || ''), createdBy: c.createdBy != null ? Number(c.createdBy) : null, used: false, usedBy: null, usedAt: null, paymentRequestId: null, active: true, maxUses, uses: 0, isReward: !!c.isReward, rewardKind: c.rewardKind || null, createdAt: new Date().toISOString() }; });
     db.discountCodes.push(...rows); saveDb(db); return rows;
   },
   async getDiscountCodeById(id) { return (loadDb().discountCodes || []).find(x => x.id === Number(id)) || null; },
@@ -375,13 +393,13 @@ function supabase() {
   return supabaseClient;
 }
 
-function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, createdAt: r.created_at } : null; }
+function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', referralCode: r.referral_code || null, referredBy: r.referred_by != null ? Number(r.referred_by) : null, lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', isHidden: !!r.is_hidden, isExclusive: !!r.is_exclusive, isUpcoming: !!r.is_upcoming, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', widthPx: r.width_px != null ? Number(r.width_px) : null, heightPx: r.height_px != null ? Number(r.height_px) : null, sizeKb: r.size_kb != null ? Number(r.size_kb) : null, createdAt: r.created_at } : null; }
 // Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
 // llena cuando se mandó el aviso (una sola vez por correo y evento).
 function mapPhotoAlert(r) { return r ? { id: r.id, eventId: r.event_id, email: r.email, notifiedAt: r.notified_at || null, createdAt: r.created_at } : null; }
-function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, removedAt: r.removed_at || null, createdAt: r.created_at } : null; }
+function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, payoutId: r.payout_id != null ? Number(r.payout_id) : null, removedAt: r.removed_at || null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
@@ -391,13 +409,30 @@ function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.bod
 // existe en vivo (falta correr el SQL), las lecturas devuelven vacío/null.
 // Si faltan las columnas nuevas (SQL viejo), uses=0 y maxUses=1: el
 // código se comporta como uno de un solo uso.
-function mapDiscountCode(r) { return r ? { id: r.id, code: r.code, eventId: r.event_id, discountPercent: Number(r.discount_percent || 20), note: r.note || '', createdBy: r.created_by != null ? Number(r.created_by) : null, used: !!r.used, usedBy: r.used_by != null ? Number(r.used_by) : null, usedAt: r.used_at || null, paymentRequestId: r.payment_request_id || null, active: r.active !== false, maxUses: Number(r.max_uses || 1), uses: Number(r.uses || 0), createdAt: r.created_at } : null; }
-function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', discountCodeId: r.discount_code_id != null ? Number(r.discount_code_id) : null, createdAt: r.created_at, updatedAt: r.updated_at } : null; }
+// RECOMPENSAS (2026-11-20): eventId NULL = vale para CUALQUIER evento;
+// isReward = cupón de recompensa (referidos / primeros 100), generado por
+// el sistema, no por el dueño; rewardKind = 'referral' | 'early100'.
+function mapDiscountCode(r) { return r ? { id: r.id, code: r.code, eventId: r.event_id != null ? r.event_id : null, discountPercent: Number(r.discount_percent || 20), note: r.note || '', createdBy: r.created_by != null ? Number(r.created_by) : null, used: !!r.used, usedBy: r.used_by != null ? Number(r.used_by) : null, usedAt: r.used_at || null, paymentRequestId: r.payment_request_id || null, active: r.active !== false, maxUses: Number(r.max_uses || 1), uses: Number(r.uses || 0), isReward: !!r.is_reward, rewardKind: r.reward_kind || null, createdAt: r.created_at } : null; }
+function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', discountCodeId: r.discount_code_id != null ? Number(r.discount_code_id) : null, createdAt: r.created_at, updatedAt: r.updated_at } : null; }
 
 const supabaseStore = {
   kind: 'supabase',
   async photographerExists() { const { count } = await supabase().from('users').select('id', { count: 'exact', head: true }).eq('role', 'photographer'); return (count || 0) > 0; },
-  async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role, is_owner: !!u.isOwner, approved: u.approved !== false, payout_clabe: u.payoutClabe || '' }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
+  async createUser(u) {
+    // referred_by (recompensas): si falta correr el SQL nuevo, la
+    // columna no existe y el insert fallaría; se reintenta sin ella
+    // para no romper NINGÚN registro (el referido simplemente no se
+    // registra, igual que cuando falta la tabla de códigos).
+    const row = { name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role, is_owner: !!u.isOwner, approved: u.approved !== false, payout_clabe: u.payoutClabe || '' };
+    if (u.referredBy != null) row.referred_by = Number(u.referredBy);
+    let res = await supabase().from('users').insert(row).select().single();
+    if (res.error && row.referred_by != null && /referred_by|does not exist|42703/i.test(res.error.message || '')) {
+      delete row.referred_by;
+      res = await supabase().from('users').insert(row).select().single();
+    }
+    if (res.error) throw new Error(res.error.message);
+    return mapUser(res.data);
+  },
   async findUserByEmail(email) { const { data } = await supabase().from('users').select().ilike('email', email).maybeSingle(); return mapUser(data); },
   async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); },
   // Lote (panel rápido 2026-11-19): varios usuarios en una sola
@@ -470,9 +505,48 @@ const supabaseStore = {
     if (patch.displayName !== undefined) p.display_name = patch.displayName;
     if (patch.lastAnnouncementsSeenAt !== undefined) p.last_announcements_seen_at = patch.lastAnnouncementsSeenAt;
     if (patch.tipClabe !== undefined) p.tip_clabe = patch.tipClabe;
+    if (patch.referralCode !== undefined) p.referral_code = patch.referralCode || null;
     const { data, error } = await supabase().from('users').update(p).eq('id', id).select().single();
     if (error) throw new Error(error.message);
     return mapUser(data);
+  },
+  // ---- Recompensas (2026-11-20) ----
+  async getUserByReferralCode(code) {
+    const want = String(code || '').trim().toUpperCase();
+    if (!want) return null;
+    try {
+      const { data, error } = await supabase().from('users').select().eq('referral_code', want).maybeSingle();
+      if (error) return null;
+      return mapUser(data);
+    } catch (_) { return null; }
+  },
+  async countReferralsByUser(userId) {
+    try {
+      const { count } = await supabase().from('users').select('id', { count: 'exact', head: true }).eq('referred_by', Number(userId));
+      return count || 0;
+    } catch (_) { return 0; }
+  },
+  async listReferredUsers(userId) {
+    try {
+      const { data, error } = await supabase().from('users').select('id,name,created_at').eq('referred_by', Number(userId)).order('id');
+      if (error) return [];
+      return (data || []).map(r => ({ id: r.id, name: r.name, createdAt: r.created_at }));
+    } catch (_) { return []; }
+  },
+  async getRewardCoupon(userId, kind) {
+    try {
+      const { data, error } = await supabase().from('discount_codes').select().eq('created_by', Number(userId)).eq('is_reward', true).eq('reward_kind', String(kind || '')).maybeSingle();
+      if (error) return null;
+      return mapDiscountCode(data);
+    } catch (_) { return null; }
+  },
+  // ¿Está entre los primeros 100 atletas por orden de registro (id)?
+  async isEarlyAthlete(userId) {
+    try {
+      const { data, error } = await supabase().from('users').select('id').eq('role', 'athlete').order('id').limit(100);
+      if (error) return false;
+      return (data || []).some(r => Number(r.id) === Number(userId));
+    } catch (_) { return false; }
   },
   // Panel rápido 2026-11-19 (D22): ANTES cada evento pedía su conteo de
   // fotos con una consulta count SEGUIDA (N consultas en serie: con 3
@@ -670,10 +744,23 @@ const supabaseStore = {
       const patch = { removed_at: null };
       if (d.amount !== undefined) patch.amount = d.amount;
       if (d.eventId !== undefined) patch.event_id = d.eventId;
+      if (d.baseAmount !== undefined) patch.base_amount = d.baseAmount != null ? Number(d.baseAmount) : null;
       const { data } = await supabase().from('downloads').update(patch).eq('id', old.id).select().single();
       return data;
     }
-    const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data;
+    // base_amount (recompensas): si falta correr el SQL nuevo, la
+    // columna no existe y el insert fallaría; se reintenta sin ella para
+    // no romper NINGUNA descarga (el reparto de esa venta cae al
+    // normal, sin el ajuste de recompensa).
+    const insertRow = { user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 };
+    if (d.baseAmount != null) insertRow.base_amount = Number(d.baseAmount);
+    let res = await supabase().from('downloads').insert(insertRow).select().single();
+    if (res.error && insertRow.base_amount != null && /base_amount|does not exist|42703/i.test(res.error.message || '')) {
+      delete insertRow.base_amount;
+      res = await supabase().from('downloads').insert(insertRow).select().single();
+    }
+    if (res.error) throw new Error(res.error.message);
+    return res.data;
   },
   // "Mis fotos" solo muestra las que NO se quitaron: las quitadas se
   // esconden de la lista pero el registro se queda (estadísticas).
@@ -760,15 +847,18 @@ const supabaseStore = {
     // max_uses solo se manda cuando es >1: si falta correr el SQL nuevo,
     // la columna no existe y el insert fallaría; con maxUses=1 el default
     // de la base (1) ya es lo correcto y crear códigos viejos no se rompe.
-    const row = { code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null };
+    // event_id NULL = cupón de recompensa, vale para CUALQUIER evento.
+    const row = { code: String(c.code || '').trim().toUpperCase(), event_id: c.eventId != null ? Number(c.eventId) : null, discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null };
     if (Math.floor(Number(c.maxUses || 1)) > 1) row.max_uses = Math.min(1000, Math.floor(Number(c.maxUses)));
+    if (c.isReward) row.is_reward = true;
+    if (c.rewardKind) row.reward_kind = String(c.rewardKind);
     const { data, error } = await supabase().from('discount_codes').insert(row).select().single();
     if (error) throw new Error(error.message);
     return mapDiscountCode(data);
   },
   // Alta en lote (generar 500-800 códigos de golpe): una sola petición.
   async createDiscountCodes(list) {
-    const rows = (list || []).map(c => { const row = { code: String(c.code || '').trim().toUpperCase(), event_id: Number(c.eventId), discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null }; if (Math.floor(Number(c.maxUses || 1)) > 1) row.max_uses = Math.min(1000, Math.floor(Number(c.maxUses))); return row; });
+    const rows = (list || []).map(c => { const row = { code: String(c.code || '').trim().toUpperCase(), event_id: c.eventId != null ? Number(c.eventId) : null, discount_percent: Number(c.discountPercent || 20), note: String(c.note || ''), created_by: c.createdBy != null ? Number(c.createdBy) : null }; if (Math.floor(Number(c.maxUses || 1)) > 1) row.max_uses = Math.min(1000, Math.floor(Number(c.maxUses))); if (c.isReward) row.is_reward = true; if (c.rewardKind) row.reward_kind = String(c.rewardKind); return row; });
     const { data, error } = await supabase().from('discount_codes').insert(rows).select();
     if (error) throw new Error(error.message);
     return (data || []).map(mapDiscountCode);
@@ -949,9 +1039,14 @@ const supabaseStore = {
     // registra, igual que cuando falta la tabla de códigos).
     const row = { clip_payment_request_id: p.clipPaymentRequestId, external_reference: p.externalReference, user_id: p.userId, photo_id: p.photoId, event_id: p.eventId, amount: p.amount, currency: p.currency || 'MXN', status: p.status || 'pending', receipt_no: p.receiptNo || '' };
     if (p.discountCodeId != null) row.discount_code_id = Number(p.discountCodeId);
+    if (p.baseAmount != null) row.base_amount = Number(p.baseAmount);
     let res = await supabase().from('payments').insert(row).select().single();
     if (res.error && row.discount_code_id != null && /discount_code_id|does not exist|42703/i.test(res.error.message || '')) {
       delete row.discount_code_id;
+      res = await supabase().from('payments').insert(row).select().single();
+    }
+    if (res.error && row.base_amount != null && /base_amount|does not exist|42703/i.test(res.error.message || '')) {
+      delete row.base_amount;
       res = await supabase().from('payments').insert(row).select().single();
     }
     if (res.error) throw new Error(res.error.message);
