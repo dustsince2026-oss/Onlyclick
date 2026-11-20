@@ -123,11 +123,22 @@ function splitRewardSale(paidAmount, baseAmount) {
 
 // Reparto de UNA descarga: si la venta tuvo cupón de recompensa, la
 // descarga guarda baseAmount (precio sin descuento) y el reparto usa
-// splitRewardSale; si no, el reparto normal.
+// splitRewardSale; si no, el reparto normal. Si la venta fue SIN
+// COMISIÓN (recompensa de fotógrafo, commissionFree): Orlan $0 y el
+// fotógrafo se queda con lo pagado menos Clip — pero NUNCA menos que
+// el reparto normal (por si un registro trajera cupón y sin-comisión
+// a la vez: con cupón el fotógrafo ya recibe lo máximo que queda
+// después de Clip, así que ahí el beneficio no suma nada).
 function splitDownload(d) {
   const amt = Number(d.amount || 0);
-  if (d.baseAmount != null && Number(d.baseAmount) > amt) return splitRewardSale(amt, Number(d.baseAmount));
-  return splitSale(amt);
+  const normal = (d.baseAmount != null && Number(d.baseAmount) > amt)
+    ? splitRewardSale(amt, Number(d.baseAmount))
+    : splitSale(amt);
+  if (!d.commissionFree) return normal;
+  const paidCents = Math.round(amt * 100);
+  const freeShareCents = paidCents - Math.round(normal.clipFee * 100);
+  if (freeShareCents <= Math.round(normal.photographerShare * 100)) return normal;
+  return { amount: amt, clipFee: normal.clipFee, orlanFee: 0, photographerShare: freeShareCents / 100 };
 }
 
 // ---- Recompensas: códigos y estrellas (2026-11-20) ----
@@ -144,6 +155,19 @@ function makeReferralCode() {
 
 function referralLink(code) { return REFERRAL_BASE_URL + '/?ref=' + String(code || '').toUpperCase(); }
 
+// Link de referido para COMPARTIR desde una tarjeta (Orlan, 2026-11-20
+// ~14:39): cada tarjeta lleva su propio parámetro `compartir` para que
+// la vista previa de Facebook sea distinta — `primeros100` para la
+// tarjeta de los primeros 100, `referidos` para la de invitar amigos.
+// Sin kind (o kind desconocido) devuelve el link pelón de siempre
+// (links viejos siguen funcionando igual). Mantener en sync con
+// referralShareLink de public/app.js.
+function referralShareLink(code, kind) {
+  const base = referralLink(code);
+  if (kind === 'primeros100' || kind === 'referidos') return base + '&compartir=' + kind;
+  return base;
+}
+
 // Texto para compartir la recompensa de los primeros 100 (palabras de
 // Orlan, 2026-11-20): "Obtuve una recompensa por ser de los primeros
 // cien" + "tú también crea tu cuenta y obtén recompensas en tus
@@ -154,13 +178,43 @@ function early100ShareText(link) {
   return '¡Obtuve una recompensa por ser de las primeras 100 cuentas registradas en OnlyClick! 📸 Tú también crea tu cuenta y obtén recompensas en tus primeras compras. Regístrate con mi link: ' + String(link || '');
 }
 
+// Texto para compartir de la tarjeta de REFERIDOS (invitar amigos;
+// palabras de Orlan, 2026-11-20 ~14:39): SOLO una invitación a la
+// página para conseguir recompensas, SIN mencionar los primeros 100
+// (ese texto es solo de la tarjeta de arriba). Es el MISMO texto en
+// el botón Compartir, en el botón Copiar mensaje y en la descripción
+// Open Graph del link con compartir=referidos. Mantener en sync con
+// referralInviteShareText de public/app.js.
+function referralInviteShareText(link) {
+  return '¡Te invito a OnlyClick! 📸 Crea tu cuenta y obtén recompensas en tus primeras compras. Regístrate con mi link: ' + String(link || '');
+}
+
+// Texto para compartir de fotógrafos (borrador; Orlan lo revisa en su
+// teléfono): invita a otros FOTÓGRAFOS a vender en OnlyClick. Es el
+// MISMO texto en Compartir, en Copiar mensaje y en la vista previa
+// Open Graph del link de un invitador fotógrafo. Mantener en sync con
+// photographerShareText de public/app.js.
+function photographerShareText(link) {
+  return '¡Vendo mis fotos de carrera en OnlyClick! 📸 ¿Eres fotógrafo deportivo? Únete con mi link y vende tus fotos en tus eventos. ' + String(link || '');
+}
+
 // ---- Vista previa Open Graph del link con ?ref= (2026-11-20) ----
 // Facebook no acepta texto prellenado de otras apps: cuando alguien
 // comparte el link, lo que se ve es la vista previa que Facebook arma
-// con las etiquetas Open Graph de la página. Con ref válido de un
-// early100: título y descripción de primeros 100; con ref válido
-// normal: invitación genérica; sin ref o inválido: OG por defecto.
-// Nunca tira error: si el lookup falla, OG por defecto.
+// con las etiquetas Open Graph de la página. La vista previa depende
+// del ROL del invitador y del PARÁMETRO `compartir` del link (Orlan,
+// 2026-11-20 ~14:39: las dos tarjetas de atleta NO deben decir lo
+// mismo):
+//   - invitador fotógrafo → invitación a FOTÓGRAFOS (su texto), con
+//     cualquier compartir o sin él.
+//   - compartir=referidos → invitación genérica ("¡Te invito a
+//     OnlyClick!"), AUNQUE el invitador sea de los primeros 100.
+//   - compartir=primeros100 → primeros 100 (solo si el invitador es
+//     early100; si no, la genérica de siempre).
+//   - sin parámetro (links viejos) → el comportamiento de siempre:
+//     early100 si el invitador es early100, si no la genérica.
+// Con ref inválido o sin ref: OG por defecto. Nunca tira error: si el
+// lookup falla, OG por defecto.
 const OG_IMAGE_URL = REFERRAL_BASE_URL + '/icon-512.png';
 const DEFAULT_OG = {
   title: 'OnlyClick — Encuentra tus fotos por dorsal',
@@ -168,7 +222,7 @@ const DEFAULT_OG = {
   image: OG_IMAGE_URL,
   url: REFERRAL_BASE_URL + '/',
 };
-async function ogMetaForRef(code, storeOverride) {
+async function ogMetaForRef(code, storeOverride, shareKind) {
   const def = { title: DEFAULT_OG.title, description: DEFAULT_OG.description, image: DEFAULT_OG.image, url: DEFAULT_OG.url };
   try {
     const c = String(code || '').trim().toUpperCase();
@@ -176,7 +230,14 @@ async function ogMetaForRef(code, storeOverride) {
     const store = storeOverride || getStore();
     const inviter = await resolveReferrer(store, c);
     if (!inviter) return def;
-    const url = referralLink(c);
+    const kind = shareKind === 'referidos' || shareKind === 'primeros100' ? shareKind : null;
+    const url = kind ? referralShareLink(c, kind) : referralLink(c);
+    if (inviter.role === 'photographer') {
+      return { title: '¡Vende tus fotos en OnlyClick! 📸', description: photographerShareText(url), image: OG_IMAGE_URL, url };
+    }
+    if (kind === 'referidos') {
+      return { title: '¡Te invito a OnlyClick! 📸', description: referralInviteShareText(url), image: OG_IMAGE_URL, url };
+    }
     if (await store.isEarlyAthlete(inviter.id)) {
       return { title: '¡Soy de los primeros 100 atletas en OnlyClick! 🎉', description: early100ShareText(url), image: OG_IMAGE_URL, url };
     }
@@ -229,6 +290,11 @@ async function generateRewardCoupon(store, userId, kind, note) {
 // (o el usuario ya tenía 3+), no se duplica ni se vuelve a avisar.
 async function maybeGrantReferralCoupon(store, inviterId) {
   if (!inviterId) return null;
+  // Los fotógrafos tienen SUS propias recompensas (2026-11-20): el
+  // cupón de 10% es para atletas que compran; un fotógrafo que invita
+  // no recibe cupón de atleta (sus recompensas son ventas sin comisión).
+  const inviter = await store.findUserById(inviterId).catch(() => null);
+  if (inviter && inviter.role === 'photographer') return null;
   const stars = await store.countReferralsByUser(inviterId);
   if (stars < 3) return null;
   const existing = await store.getRewardCoupon(inviterId, 'referral');
@@ -275,18 +341,130 @@ async function ensureEarly100Notice(store, user) {
 // Revisión ligera al cargar la app (una vez por sesión, solo atletas
 // con sesión): asegura el cupón de agradecimiento de los primeros 100
 // y su aviso de campanita aunque el atleta nunca abra Recompensas.
-// Idempotente y barata; nunca rompe la carga.
+// Idempotente y barata; nunca rompe la carga. Los fotógrafos también
+// pasan por aquí: les otorga las ventas sin comisión que ya se ganaron.
 async function rewardsCheck(store, user) {
-  if (!user || user.role !== 'athlete') return { status: 200, data: { ok: true, early: false } };
+  if (!user) return { status: 200, data: { ok: true, early: false } };
+  if (user.role === 'photographer') {
+    const state = await maybeGrantPhotographerRewards(store, user.id).catch(() => null);
+    return { status: 200, data: { ok: true, early: false, photographer: true, freeSalesBank: state ? state.bank : Number(user.freeSalesBank || 0) } };
+  }
+  if (user.role !== 'athlete') return { status: 200, data: { ok: true, early: false } };
   const coupon = await maybeGrantEarlyCoupon(store, user);
   if (coupon) return { status: 200, data: { ok: true, early: true } };
   await ensureEarly100Notice(store, user);
   return { status: 200, data: { ok: true, early: await store.isEarlyAthlete(user.id) } };
 }
 
+// ---- Recompensas para FOTÓGRAFOS (Orlan, 2026-11-20 ~14:24) ----
+// Los fotógrafos VENDEN, no compran: el cupón de 10% y lo de los 3
+// amigos no les sirve. Sus recompensas son VENTAS SIN COMISIÓN, dos
+// formas de ganarlas, cada una da +2 (ni 5 ni 10):
+//   A) REFERIR FOTÓGRAFOS: cada 3 fotógrafos invitados que hacen su
+//      primera venta pagada = +2. Repetible.
+//   B) HITOS DE VENTAS: cada 50 fotos vendidas = +2. Repetible
+//      (50, 100, 150...).
+// "Venta sin comisión" = la comisión de OnlyClick (10% después de
+// Clip) es $0 en esa venta: el fotógrafo se queda con lo pagado menos
+// Clip; Orlan $0. El banco se descuenta al CONFIRMARSE el pago (no
+// al pagarle al fotógrafo) y la venta queda marcada commissionFree en
+// la descarga y en el pago, para que el reparto la lea.
+// Los bloques ya otorgados se guardan en el usuario (así el otorgar
+// es idempotente: abrir Recompensas 10 veces no regala 10 veces).
+const PHOTOG_REWARD_MILESTONE = 50;
+const PHOTOG_REWARD_PER_BLOCK = 2;
+const PHOTOG_REWARD_REFERRAL_STARS = 3;
+
+// Otorga las ventas sin comisión que el fotógrafo ya se ganó (si hay
+// bloques nuevos) y devuelve su estado actual. Se llama al abrir
+// Recompensas y al confirmarse una venta. Idempotente: si no hay
+// bloques nuevos, no regala nada ni vuelve a avisar. Nunca rompe
+// nada: si el SQL nuevo no se ha corrido, el banco no se guarda y se
+// devuelve el estado guardado.
+async function maybeGrantPhotographerRewards(store, photographerId) {
+  const user = await store.findUserById(photographerId).catch(() => null);
+  if (!user || user.role !== 'photographer') return null;
+  const referred = (await tryStore(store, 'listReferredPhotographersWithSale', photographerId)) || [];
+  const stars = referred.filter(r => r.hasSold).length;
+  const soldCount = (await tryStore(store, 'countPaidSalesByPhotographer', photographerId)) || 0;
+  const wantRefBlocks = Math.floor(stars / PHOTOG_REWARD_REFERRAL_STARS);
+  const wantMsBlocks = Math.floor(soldCount / PHOTOG_REWARD_MILESTONE);
+  const haveRefBlocks = Number(user.freeSalesReferralBlocks || 0);
+  const haveMsBlocks = Number(user.freeSalesMilestoneBlocks || 0);
+  const newRefBlocks = Math.max(0, wantRefBlocks - haveRefBlocks);
+  const newMsBlocks = Math.max(0, wantMsBlocks - haveMsBlocks);
+  const grantedNow = (newRefBlocks + newMsBlocks) * PHOTOG_REWARD_PER_BLOCK;
+  let bank = Number(user.freeSalesBank || 0);
+  if (grantedNow > 0) {
+    bank += grantedNow;
+    try {
+      await store.updateUser(photographerId, { freeSalesBank: bank, freeSalesReferralBlocks: wantRefBlocks, freeSalesMilestoneBlocks: wantMsBlocks });
+    } catch (_) {
+      // SQL sin correr: no se guarda nada y no se avisa; en la próxima
+      // lectura se vuelve a intentar. Se devuelve el estado guardado.
+      return { bank: Number(user.freeSalesBank || 0), referralStars: stars, referralBlocks: haveRefBlocks, referred, soldCount, milestoneBlocks: haveMsBlocks, grantedNow: 0 };
+    }
+    if (newRefBlocks > 0) {
+      try { await store.createAnnouncement({ authorId: Number(photographerId), userId: Number(photographerId), title: '¡Ganaste ventas sin comisión! 🎉', body: 'Invitaste a ' + stars + ' fotógrafos que ya vendieron su primera foto. Tienes ' + (newRefBlocks * PHOTOG_REWARD_PER_BLOCK) + ' ventas sin comisión: en esas ventas la comisión de OnlyClick es $0.', kind: 'reward' }); } catch (_) {}
+    }
+    if (newMsBlocks > 0) {
+      try { await store.createAnnouncement({ authorId: Number(photographerId), userId: Number(photographerId), title: '¡Llegaste a ' + (wantMsBlocks * PHOTOG_REWARD_MILESTONE) + ' fotos vendidas! 🎉', body: 'Ya vendiste ' + soldCount + ' fotos en OnlyClick. Tienes ' + (newMsBlocks * PHOTOG_REWARD_PER_BLOCK) + ' ventas sin comisión: en esas ventas la comisión de OnlyClick es $0.', kind: 'reward' }); } catch (_) {}
+    }
+  }
+  return { bank, referralStars: stars, referralBlocks: wantRefBlocks, referred, soldCount, milestoneBlocks: wantMsBlocks, grantedNow };
+}
+
+// ¿Esta venta es sin comisión? Solo si: el fotógrafo tiene banco, la
+// venta es de precio completo (SIN cupón de recompensa) y la venta le
+// dejaría comisión a Orlan. Con cupón de recompensa el fotógrafo ya
+// recibe lo máximo que queda después de Clip (el reparto de recompensa
+// le paga sobre el precio base), así que ahí no hay extra que dar y el
+// banco NO se gasta. Con un código normal (20%) el fotógrafo NO está
+// protegido (cobra sobre lo pagado), así que ahí el banco SÍ da extra
+// y sí se gasta. El banco se descuenta aquí, al confirmarse el pago;
+// si ya se gastó, no se vuelve a gastar (la descarga guarda la marca).
+async function maybeApplyFreeSale(store, payment) {
+  const amt = Number(payment.amount || 0);
+  if (!amt) return false;
+  // Cupón de recompensa (baseAmount guardado): el fotógrafo ya cobra
+  // sobre el precio sin descuento; no hay extra que dar.
+  if (payment.baseAmount != null && Number(payment.baseAmount) > amt) return false;
+  if (!(splitSale(amt).orlanFee > 0)) return false;
+  let photographerId = null;
+  try {
+    const photo = await store.getPhoto(payment.photoId);
+    const ev = photo ? await store.getEvent(photo.eventId || payment.eventId) : null;
+    photographerId = photoOwnerId(photo, ev);
+  } catch (_) { return false; }
+  if (photographerId == null) return false;
+  return !!(await tryStore(store, 'consumeFreeSale', photographerId));
+}
+
 // Vista de Recompensas del usuario: link, estrellas, referidos y cupones.
+// POR ROL: el atleta ve lo de siempre (referidos + primeros 100); el
+// fotógrafo ve SU pantalla (referir fotógrafos + hitos + banco de
+// ventas sin comisión) y NUNCA el cupón de 10% ni la tarjeta de los
+// primeros 100.
 async function getRewards(store, user) {
   const referralCode = await ensureReferralCode(store, user);
+  if (user.role === 'photographer') {
+    const state = await maybeGrantPhotographerRewards(store, user.id).catch(() => null);
+    const referred = (state && state.referred) || [];
+    return {
+      role: 'photographer',
+      referralCode,
+      referralLink: referralLink(referralCode),
+      photographerStars: state ? state.referralStars : 0,
+      photographerStarsNeeded: PHOTOG_REWARD_REFERRAL_STARS,
+      referredPhotographers: referred.map(r => ({ name: r.name, hasSold: !!r.hasSold })),
+      freeSalesBank: state ? state.bank : Number(user.freeSalesBank || 0),
+      soldCount: state ? state.soldCount : 0,
+      milestoneSize: PHOTOG_REWARD_MILESTONE,
+      milestoneBlocks: state ? state.milestoneBlocks : 0,
+      stars: 0, starsNeeded: 3, referred: [], referralCoupon: null,
+      earlyAthlete: false, earlyCoupon: null,
+    };
+  }
   const [stars, referred, referralCoupon, earlyAthlete] = await Promise.all([
     store.countReferralsByUser(user.id),
     store.listReferredUsers(user.id),
@@ -299,6 +477,7 @@ async function getRewards(store, user) {
     if (!earlyCoupon) earlyCoupon = await store.getRewardCoupon(user.id, 'early100');
   }
   return {
+    role: 'athlete',
     referralCode,
     referralLink: referralLink(referralCode),
     stars,
@@ -312,11 +491,14 @@ async function getRewards(store, user) {
 
 // Endpoint público: ¿quién invitó con este código? Solo el nombre
 // visible, sin datos sensibles. Sin sesión: el registro muestra
-// "Te invitó [nombre]".
+// "Te invitó [nombre]". También devuelve el rol del invitador para
+// que el banner no prometa una estrella cuando el invitador es
+// fotógrafo (ahí la estrella solo llega con la primera venta del
+// referido, no con el registro).
 async function referralInfo(store, code) {
   const inviter = await store.getUserByReferralCode(String(code || '').trim().toUpperCase());
-  if (!inviter) return { valid: false, inviterName: null };
-  return { valid: true, inviterName: displayNameFor(inviter) || String(inviter.name || '').trim().split(/\s+/)[0] || 'Un amigo' };
+  if (!inviter) return { valid: false, inviterName: null, inviterRole: null };
+  return { valid: true, inviterName: displayNameFor(inviter) || String(inviter.name || '').trim().split(/\s+/)[0] || 'Un amigo', inviterRole: inviter.role || null };
 }
 
 async function register(store, body) {
@@ -1897,16 +2079,26 @@ function clipStatusToPayment(status) {
 }
 
 // Marca el pago como completado y registra la descarga (idempotente: si
-// ya estaba pagado o ya tenía la descarga, no duplica nada).
+// ya estaba pagado o ya tenía la descarga, no duplica nada). Si la venta
+// es sin comisión (el fotógrafo tenía banco), se descuenta UNA del
+// banco aquí y la descarga y el pago quedan marcados commissionFree;
+// si la descarga ya existía (re-verificación o reactivación de una
+// quitada), se conserva su marca y NO se vuelve a gastar el banco.
 async function markPaymentPaid(store, payment, clipData) {
   const already = await store.hasDownload(payment.userId, payment.photoId);
-  if (payment.status !== 'completed') {
-    await store.updatePaymentStatus(payment.id, { status: 'completed', receiptNo: (clipData && clipData.receipt_no) || payment.receiptNo || '' });
-  }
+  let commissionFree = false;
   if (!already) {
-    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount, baseAmount: payment.baseAmount != null ? payment.baseAmount : null });
+    const existing = await store.getDownloadByUserPhoto(payment.userId, payment.photoId).catch(() => null);
+    commissionFree = existing ? !!existing.commissionFree : await maybeApplyFreeSale(store, payment);
+    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount, baseAmount: payment.baseAmount != null ? payment.baseAmount : null, commissionFree });
+  } else {
+    const existing = await store.getDownloadByUserPhoto(payment.userId, payment.photoId).catch(() => null);
+    commissionFree = !!(existing && existing.commissionFree);
   }
-  return { already };
+  if (payment.status !== 'completed') {
+    await store.updatePaymentStatus(payment.id, { status: 'completed', receiptNo: (clipData && clipData.receipt_no) || payment.receiptNo || '', commissionFree });
+  }
+  return { already, commissionFree };
 }
 
 // Vuelve a consultar el estado real en Clip y actualiza TODAS las filas
@@ -1944,7 +2136,8 @@ async function notifySale(store, newlyPaid) {
     // Con cupón de recompensa el fotógrafo cobra sobre el precio SIN
     // descuento (splitDownload): el correo le muestra lo que REALMENTE
     // le toca, no el total pagado.
-    const share = items.reduce((s, it) => s + splitDownload({ amount: it.payment.amount, baseAmount: it.payment.baseAmount }).photographerShare, 0);
+    const share = items.reduce((s, it) => s + splitDownload({ amount: it.payment.amount, baseAmount: it.payment.baseAmount, commissionFree: !!it.payment.commissionFree }).photographerShare, 0);
+    const freeCount = items.filter(it => it.payment.commissionFree).length;
     const lines = items.map(it => {
       const bib = (it.photo && it.photo.bibs && it.photo.bibs[0]) || '';
       return `• ${it.event ? it.event.name : 'Evento'} — foto${bib ? ' dorsal ' + bib : ''} — $${Number(it.payment.amount).toFixed(2)} MXN`;
@@ -1953,7 +2146,7 @@ async function notifySale(store, newlyPaid) {
     await sendSaleEmail({
       to: ph.email,
       subject: `¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick! $${total.toFixed(2)} MXN`,
-      text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (después de la comisión de Clip y el 10% de OnlyClick). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
+      text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (${freeCount === n ? 'sin comisión de OnlyClick en esta venta: es una de tus ventas sin comisión 🎉' : freeCount > 0 ? 'incluye ' + freeCount + ' venta(s) sin comisión de OnlyClick 🎉; el resto, después de la comisión de Clip y el 10% de OnlyClick' : 'después de la comisión de Clip y el 10% de OnlyClick'}). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
     });
   }
 }
@@ -1995,12 +2188,31 @@ async function refreshPaymentsByClipId(store, clipId) {
     const newlyPaid = [];
     for (const p of payments) {
       const r = await markPaymentPaid(store, p, cur);
-      if (!r.already) newlyPaid.push(p);
+      if (!r.already) { p.commissionFree = r.commissionFree; newlyPaid.push(p); }
     }
     if (newlyPaid.length) {
       // Avisos (nunca rompen el pago): al fotógrafo por correo y al
       // comprador a su campanita. Máximo 4 s entre los dos.
       try { await Promise.race([Promise.allSettled([notifySale(store, newlyPaid), notifyBuyer(store, newlyPaid)]), new Promise(r => setTimeout(r, 4000))]); } catch (_) { /* el aviso nunca rompe el pago */ }
+      // Recompensas de fotógrafos (2026-11-20): cada venta confirmada
+      // puede completar un hito (50 fotos) del que vendió, o la
+      // primera venta de un fotógrafo referido (que da la estrella a
+      // quien lo invitó). Se otorgan aquí (y al abrir Recompensas);
+      // nunca rompen el pago.
+      try {
+        const owners = new Set();
+        for (const p of newlyPaid) {
+          const photo = await store.getPhoto(p.photoId).catch(() => null);
+          const ev = photo ? await store.getEvent(photo.eventId || p.eventId).catch(() => null) : null;
+          const ownerId = photoOwnerId(photo, ev);
+          if (ownerId != null) {
+            owners.add(ownerId);
+            const ownerUser = await store.findUserById(ownerId).catch(() => null);
+            if (ownerUser && ownerUser.referredBy != null) owners.add(Number(ownerUser.referredBy));
+          }
+        }
+        await Promise.allSettled([...owners].map(id => maybeGrantPhotographerRewards(store, id)));
+      } catch (_) {}
     }
     // El código de descuento se quema SOLO ahora que el pago se confirmó
     // (idempotente: si ya estaba usado, no hace nada). Un pago fallido o
@@ -3072,4 +3284,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, early100ShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, referralShareLink, early100ShareText, referralInviteShareText, photographerShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, maybeGrantPhotographerRewards, maybeApplyFreeSale, PHOTOG_REWARD_MILESTONE, PHOTOG_REWARD_PER_BLOCK, PHOTOG_REWARD_REFERRAL_STARS, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
