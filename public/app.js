@@ -2829,15 +2829,16 @@ async function refreshNotifBadge() {
   try { const r = await api('/api/list-announcements'); updateNotifBadge(r.unreadCount || 0); }
   catch (_) { updateNotifBadge(0); }
 }
-// Revisión de Recompensas una vez por sesión (solo atletas con sesión):
-// si el atleta es de los primeros 100, le asegura su cupón de
-// agradecimiento y su aviso de campanita aunque nunca abra
-// Recompensas. Fire-and-forget: no frena la carga ni muestra nada;
+// Revisión de Recompensas una vez por sesión (atletas y fotógrafos
+// con sesión): si el atleta es de los primeros 100, le asegura su
+// cupón de agradecimiento y su aviso de campanita aunque nunca abra
+// Recompensas; si es fotógrafo, le otorga las ventas sin comisión que
+// ya se ganó. Fire-and-forget: no frena la carga ni muestra nada;
 // si falla, no pasa nada. Al terminar refresca el numerito de la
 // campanita por si llegó un aviso nuevo.
 let rewardsCheckDone = false;
 function checkRewardsOnce() {
-  if (rewardsCheckDone || !me || me.role !== 'athlete') return;
+  if (rewardsCheckDone || !me || (me.role !== 'athlete' && me.role !== 'photographer')) return;
   rewardsCheckDone = true;
   api('/api/rewards-check').then(() => refreshNotifBadge()).catch(() => {});
 }
@@ -3028,7 +3029,12 @@ async function checkReferral() {
       $('#authName').style.display = '';
       $('#authRole').style.display = '';
       updatePhotogNotice();
-      if (banner) banner.innerHTML = `<p class="ok">Te invitó ${esc(r.inviterName)} 🎉 Crea tu cuenta y a ${esc(r.inviterName)} le llega una estrella.</p>`;
+      // Si el invitador es fotógrafo, NO se promete la estrella al
+      // registrarse: ahí la estrella solo llega cuando el fotógrafo
+      // referido hace su primera venta (recompensas de fotógrafos).
+      if (banner) banner.innerHTML = r.inviterRole === 'photographer'
+        ? `<p class="ok">Te invitó ${esc(r.inviterName)} 🎉 Crea tu cuenta en OnlyClick.</p>`
+        : `<p class="ok">Te invitó ${esc(r.inviterName)} 🎉 Crea tu cuenta y a ${esc(r.inviterName)} le llega una estrella.</p>`;
       showView('account');
     } else {
       referralCode = '';
@@ -3065,6 +3071,15 @@ function couponHtml(c, label) {
 function renderRewards(d) {
   const box = $('#rewardsBox');
   if (!box) return;
+  // El subtítulo de la vista cambia por rol (el de atletas no le
+  // sirve al fotógrafo); el id está en index.html (#rewardsSubtitle).
+  const sub = $('#rewardsSubtitle');
+  if (d && d.role === 'photographer') {
+    if (sub) sub.textContent = 'Como fotógrafo ganas de otra forma: invita a otros fotógrafos y vende tus fotos para ganar ventas sin comisión.';
+    renderPhotographerRewards(d);
+    return;
+  }
+  if (sub) sub.textContent = 'Invita a tus amigos a OnlyClick y gana. Por cada amigo que abra su cuenta con tu link, ganas 1 estrella. Con 3 estrellas te damos un cupón de 10% de descuento en tu próxima compra.';
   const stars = Math.min(Number(d.stars || 0), Number(d.starsNeeded || 3));
   const needed = Number(d.starsNeeded || 3);
   const referredNames = (d.referred || []).map(r => esc(r.name)).join(', ');
@@ -3076,7 +3091,7 @@ function renderRewards(d) {
   if (d.earlyAthlete) {
     html += `<div class="reward-gold" id="early100Card"><h3>¡Eres de los primeros 100! 🎉</h3><p class="big">Gracias por ser parte de OnlyClick desde el inicio.</p><p>Aquí tienes 10% en tu próxima compra.</p>${d.earlyCoupon ? couponHtml(d.earlyCoupon, 'Tu cupón de agradecimiento') : '<p class="muted">Tu cupón se está generando…</p>'}<button type="button" class="primary" id="shareEarlyBtn" style="width:100%">Compartir</button><button type="button" class="secondary" id="copyEarlyMsgBtn" style="width:100%;margin-top:8px">Copiar mensaje</button><p class="reward-note">En Facebook el texto no se comparte solo: pica "Copiar mensaje" y pégalo en tu publicación.</p></div>`;
   }
-  html += `<h3 style="margin-top:16px">Invita a tus amigos ⭐</h3><p class="muted">Manda tu link a tus amigos. Cuando un amigo abra su cuenta con tu link, ganas 1 estrella. Con ${needed} estrellas te damos un cupón de 10% en tu próxima compra.</p><div class="reward-stars" aria-label="${stars} de ${needed} estrellas">${rewardStars(stars, needed)}</div><p><strong>${stars} / ${needed} estrellas</strong>${referredNames ? ' — ya invitaste a: ' + referredNames : ''}</p><div class="reward-link"><input id="refLinkInput" readonly value="${esc(d.referralLink)}" aria-label="Tu link de referido"><button type="button" class="secondary" id="copyRefBtn">Copiar</button></div>`;
+  html += `<h3 style="margin-top:16px">Invita a tus amigos ⭐</h3><p class="muted">Manda tu link a tus amigos. Cuando un amigo abra su cuenta con tu link, ganas 1 estrella. Con ${needed} estrellas te damos un cupón de 10% en tu próxima compra.</p><div class="reward-stars" aria-label="${stars} de ${needed} estrellas">${rewardStars(stars, needed)}</div><p><strong>${stars} / ${needed} estrellas</strong>${referredNames ? ' — ya invitaste a: ' + referredNames : ''}</p><div class="reward-link"><input id="refLinkInput" readonly value="${esc(d.referralLink)}" aria-label="Tu link de referido"><button type="button" class="secondary" id="copyRefBtn">Copiar</button></div><button type="button" class="primary" id="shareReferralBtn" style="width:100%;margin-top:8px">Compartir</button><button type="button" class="secondary" id="copyReferralMsgBtn" style="width:100%;margin-top:8px">Copiar mensaje</button><p class="reward-note">En Facebook el texto no se comparte solo: pica "Copiar mensaje" y pégalo en tu publicación.</p>`;
   if (d.referralCoupon) html += couponHtml(d.referralCoupon, '¡Ya tienes tu cupón por invitar a 3 amigos! 🎉');
   else if (stars < needed) html += `<p class="reward-note">Te faltan ${needed - stars} ${needed - stars === 1 ? 'amigo' : 'amigos'} para tu cupón de 10%.</p>`;
   else html += `<p class="reward-note">Tu cupón se está generando… vuelve a abrir Recompensas.</p>`;
@@ -3088,7 +3103,73 @@ function renderRewards(d) {
   const shareBtn = $('#shareEarlyBtn');
   if (shareBtn) shareBtn.onclick = () => shareEarly100(d);
   const copyMsgBtn = $('#copyEarlyMsgBtn');
-  if (copyMsgBtn) copyMsgBtn.onclick = async () => { const ok = await copyTextToClipboard(early100ShareText(d.referralLink)); showToast(ok ? 'Copiado, pégalo en Facebook o Instagram' : 'No se pudo copiar; copia tu link de arriba.'); };
+  if (copyMsgBtn) copyMsgBtn.onclick = async () => { const ok = await copyTextToClipboard(early100ShareText(referralShareLinkFor(d, 'primeros100'))); showToast(ok ? 'Copiado, pégalo en Facebook o Instagram' : 'No se pudo copiar; copia tu link de arriba.'); };
+  const shareRefBtn = $('#shareReferralBtn');
+  if (shareRefBtn) shareRefBtn.onclick = () => shareReferral(d);
+  const copyRefMsgBtn = $('#copyReferralMsgBtn');
+  if (copyRefMsgBtn) copyRefMsgBtn.onclick = async () => { const ok = await copyTextToClipboard(referralInviteShareText(referralShareLinkFor(d, 'referidos'))); showToast(ok ? 'Copiado, pégalo en Facebook o Instagram' : 'No se pudo copiar; copia tu link de arriba.'); };
+}
+
+// Pantalla de Recompensas del FOTÓGRAFO (Orlan, 2026-11-20): NADA de
+// lo de atletas (sin cupón de 10% ni tarjeta de los primeros 100).
+// Tres cosas: su banco de ventas sin comisión, referir fotógrafos y
+// sus hitos de ventas.
+function renderPhotographerRewards(d) {
+  const box = $('#rewardsBox');
+  if (!box) return;
+  const bank = Math.max(0, Math.floor(Number(d.freeSalesBank || 0)));
+  const stars = Math.min(Number(d.photographerStars || 0), Number(d.photographerStarsNeeded || 3));
+  const needed = Number(d.photographerStarsNeeded || 3);
+  const sold = Math.max(0, Math.floor(Number(d.soldCount || 0)));
+  const milestoneSize = Math.max(1, Math.floor(Number(d.milestoneSize || 50)));
+  const blocks = Math.max(0, Math.floor(Number(d.milestoneBlocks || 0)));
+  const inBlock = sold - blocks * milestoneSize;
+  const nextAt = (blocks + 1) * milestoneSize;
+  const remaining = nextAt - sold;
+  const pct = Math.min(100, Math.round((inBlock / milestoneSize) * 100));
+  const referredList = (d.referredPhotographers || []).map(r => esc(r.name) + (r.hasSold ? ' ✓ ya vendió' : ' — aún no vende')).join(', ');
+  let html = '';
+  // Banco de ventas sin comisión.
+  html += `<div class="reward-gold" id="photogBankCard"><h3>${bank > 0 ? 'Tienes ' + bank + (bank === 1 ? ' venta' : ' ventas') + ' sin comisión 🎉' : 'Ventas sin comisión'}</h3>${bank > 0 ? `<p class="big">En tus próximas ${bank} ventas, la comisión de OnlyClick es $0.</p><p>Te quedas con lo pagado menos la comisión de Clip. Se descuentan solas al confirmarse cada pago.</p>` : `<p class="big">Aún no tienes ventas sin comisión.</p><p>Gánalas invitando fotógrafos o vendiendo fotos: cada 3 fotógrafos que invitaste y ya vendieron, y cada ${milestoneSize} fotos vendidas, te dan 2 ventas sin comisión.</p>`}</div>`;
+  // Referir fotógrafos.
+  html += `<h3 style="margin-top:16px">Invita fotógrafos 📸</h3><p class="muted">Manda tu link a otros fotógrafos deportivos. Cuando un fotógrafo que invitaste haga su primera venta, ganas 1 estrella. Con ${needed} estrellas te damos 2 ventas sin comisión.</p><div class="reward-stars" aria-label="${stars} de ${needed} estrellas">${rewardStars(stars, needed)}</div><p><strong>${stars} / ${needed} estrellas</strong>${referredList ? ' — ya invitaste a: ' + referredList : ''}</p><div class="reward-link"><input id="refLinkInput" readonly value="${esc(d.referralLink)}" aria-label="Tu link de referido"><button type="button" class="secondary" id="copyRefBtn">Copiar</button></div><button type="button" class="primary" id="sharePhotogBtn" style="width:100%;margin-top:8px">Compartir</button><button type="button" class="secondary" id="copyPhotogMsgBtn" style="width:100%;margin-top:8px">Copiar mensaje</button><p class="reward-note">En Facebook el texto no se comparte solo: pica "Copiar mensaje" y pégalo en tu publicación.</p>`;
+  if (stars < needed) html += `<p class="reward-note">Te faltan ${needed - stars} ${needed - stars === 1 ? 'fotógrafo' : 'fotógrafos'} que vendan para tus próximas 2 ventas sin comisión.</p>`;
+  // Hitos de ventas.
+  html += `<h3 style="margin-top:16px">Tus ventas 🏆</h3><p class="muted">Fotos vendidas: <strong>${sold}</strong></p><div style="background:#222;border-radius:8px;height:10px;overflow:hidden"><div style="width:${pct}%;height:10px;background:#d4af37"></div></div><p class="reward-note">Te faltan ${remaining} fotos para llegar a ${nextAt} vendidas y ganar 2 ventas sin comisión.</p>`;
+  box.innerHTML = html;
+  const copyBtn = $('#copyRefBtn');
+  if (copyBtn) copyBtn.onclick = async () => { await copyTextToClipboard(d.referralLink); showToast('Link copiado.'); };
+  const shareBtn = $('#sharePhotogBtn');
+  if (shareBtn) shareBtn.onclick = () => sharePhotographer(d);
+  const copyMsgBtn = $('#copyPhotogMsgBtn');
+  if (copyMsgBtn) copyMsgBtn.onclick = async () => { const ok = await copyTextToClipboard(photographerShareText(d.referralLink)); showToast(ok ? 'Copiado, pégalo en Facebook o Instagram' : 'No se pudo copiar; copia tu link de arriba.'); };
+}
+
+// Texto para compartir de fotógrafos (borrador; Orlan lo revisa en su
+// teléfono). Es el MISMO texto en Compartir, en Copiar mensaje y en la
+// vista previa del link (Open Graph). Mantener en sync con
+// photographerShareText de api/_lib/handlers.js.
+function photographerShareText(link) {
+  return '¡Vendo mis fotos de carrera en OnlyClick! 📸 ¿Eres fotógrafo deportivo? Únete con mi link y vende tus fotos en tus eventos. ' + (link || '');
+}
+
+// Compartir de fotógrafos: igual que el de los primeros 100, pero con
+// su texto. OJO: Facebook no acepta texto prellenado de otras apps —
+// al compartir ahí solo llega el link; por eso existe el botón
+// "Copiar mensaje".
+async function sharePhotographer(d) {
+  const data = d || rewardsData;
+  if (!data) return;
+  const link = data.referralLink || '';
+  const text = photographerShareText(link);
+  try {
+    if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url: link }); return; }
+    throw new Error('no-share');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // lo canceló, no hacer nada
+    const ok = await copyTextToClipboard(text);
+    showToast(ok ? 'Copiado, pégalo en Instagram o Facebook' : 'No se pudo copiar; copia tu link de arriba.');
+  }
 }
 
 // Copia texto al portapapeles; si no hay clipboard (navegador viejo),
@@ -3107,6 +3188,35 @@ async function copyTextToClipboard(text) {
   }
 }
 
+// Link de referido para COMPARTIR desde una tarjeta (Orlan, 2026-11-20
+// ~14:39): cada tarjeta lleva su propio parámetro `compartir` para que
+// la vista previa de Facebook sea distinta — `primeros100` para la
+// tarjeta de los primeros 100, `referidos` para la de invitar amigos.
+// Sin kind (o kind desconocido) devuelve el link pelón de siempre.
+// Mantener en sync con referralShareLink de api/_lib/handlers.js.
+function referralShareLink(code, kind) {
+  const base = 'https://onlyclick.com.mx/?ref=' + String(code || '').toUpperCase();
+  if (kind === 'primeros100' || kind === 'referidos') return base + '&compartir=' + kind;
+  return base;
+}
+
+// Link de la tarjeta que se está compartiendo (con su parámetro
+// `compartir`); si por algo no viene el código, usa el link pelón.
+function referralShareLinkFor(d, kind) {
+  const data = d || rewardsData;
+  if (!data) return '';
+  if (data.referralCode) return referralShareLink(data.referralCode, kind);
+  return data.referralLink || '';
+}
+
+// Texto para compartir de la tarjeta de REFERIDOS (invitar amigos;
+// palabras de Orlan, 2026-11-20 ~14:39): SOLO una invitación a la
+// página para conseguir recompensas, SIN mencionar los primeros 100.
+// Mantener en sync con referralInviteShareText de api/_lib/handlers.js.
+function referralInviteShareText(link) {
+  return '¡Te invito a OnlyClick! 📸 Crea tu cuenta y obtén recompensas en tus primeras compras. Regístrate con mi link: ' + (link || '');
+}
+
 // Texto para compartir la recompensa de los primeros 100 (palabras de
 // Orlan, 2026-11-20). Es el MISMO texto en Compartir, en Copiar mensaje
 // y en la vista previa del link (Open Graph). Mantener en sync con
@@ -3121,11 +3231,31 @@ function early100ShareText(link) {
 // estrella); sin él, se copia el texto y se avisa dónde pegarlo.
 // OJO: Facebook no acepta texto prellenado de otras apps — al compartir
 // ahí solo llega el link; por eso existe el botón "Copiar mensaje".
+// El link lleva &compartir=primeros100 para que la vista previa sea la
+// de los primeros 100 y no la de invitación.
 async function shareEarly100(d) {
   const data = d || rewardsData;
   if (!data) return;
-  const link = data.referralLink || '';
+  const link = referralShareLinkFor(data, 'primeros100');
   const text = early100ShareText(link);
+  try {
+    if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url: link }); return; }
+    throw new Error('no-share');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // lo canceló, no hacer nada
+    const ok = await copyTextToClipboard(text);
+    showToast(ok ? 'Copiado, pégalo en Instagram o Facebook' : 'No se pudo copiar; copia tu link de arriba.');
+  }
+}
+
+// Compartir la tarjeta de REFERIDOS (invitar amigos): igual que la de
+// los primeros 100, pero con el texto de invitación y el link con
+// &compartir=referidos (la vista previa NO menciona los primeros 100).
+async function shareReferral(d) {
+  const data = d || rewardsData;
+  if (!data) return;
+  const link = referralShareLinkFor(data, 'referidos');
+  const text = referralInviteShareText(link);
   try {
     if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url: link }); return; }
     throw new Error('no-share');
