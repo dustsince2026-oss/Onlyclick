@@ -207,6 +207,18 @@
   .to-top-btn.show { opacity: 1; pointer-events: auto; }
   .to-top-btn svg { width: 26px; height: 26px; display: block; }
   @media (min-width: 720px) { .to-top-btn { bottom: 16px; } }
+  /* ---------- Recompensas (2026-11-20) ---------- */
+  .reward-stars { font-size: 30px; letter-spacing: 6px; color: #d4af37; line-height: 1.2; }
+  .reward-link { display: flex; gap: 8px; align-items: center; }
+  .reward-link input { flex: 1; margin: 0; }
+  .reward-link button { flex: 0 0 auto; margin: 0; }
+  .reward-coupon { border: 1px dashed #d4af37; border-radius: 12px; padding: 14px; text-align: center; margin: 12px 0; background: #101014; }
+  .reward-coupon .code { font-size: 24px; font-weight: 800; letter-spacing: 2px; color: #f5c542; }
+  .reward-gold { background: linear-gradient(135deg, #141414 0%, #2b2205 60%, #4a3a08 100%); border: 1px solid #d4af37; border-radius: 16px; padding: 20px 16px; color: #f5f5f2; text-align: center; margin: 14px 0; box-shadow: 0 4px 24px rgba(212,175,55,.18); }
+  .reward-gold h3 { color: #f5c542; margin: 0 0 10px; font-size: 20px; }
+  .reward-gold p { margin: 8px 0; }
+  .reward-gold .big { font-size: 17px; font-weight: 700; }
+  .reward-note { font-size: 14px; color: #a7a7ad; }
 </style>
 </head>
 <body>
@@ -466,6 +478,7 @@
         <p id="profileInfo" class="muted"></p>
         <button id="profileLogout" class="secondary">Cerrar sesión</button>
       </div>
+      <button id="rewardsBtn" class="primary" style="width:100%;margin:0 0 16px">🎁 Recompensas</button>
       <section id="view-photographer" class="card" style="display:none">
         <h2>Panel fotógrafo</h2>
         <div id="photoPanel"></div>
@@ -476,6 +489,15 @@
     <div class="panel-list">
       <button type="button" class="panel-row" id="legalTermsRow"><span class="panel-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg></span><span class="panel-label">Términos y condiciones</span><span class="panel-chev">›</span></button>
       <button type="button" class="panel-row" id="legalPrivacyRow"><span class="panel-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><span class="panel-label">Aviso de privacidad</span><span class="panel-chev">›</span></button>
+    </div>
+  </section>
+
+  <section id="view-rewards" class="hidden">
+    <div class="card">
+      <button type="button" class="secondary" id="rewardsBack">‹ Volver a Mi cuenta</button>
+      <h2 style="margin-top:12px">🎁 Recompensas</h2>
+      <p class="muted">Invita a tus amigos a OnlyClick y gana. Por cada amigo que abra su cuenta con tu link, ganas 1 estrella. Con 3 estrellas te damos un cupón de 10% de descuento en tu próxima compra.</p>
+      <div id="rewardsBox"></div>
     </div>
   </section>
 </main>
