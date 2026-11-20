@@ -32,6 +32,7 @@ let me = null;
 let mode = 'login'; // login | register
 let resetToken = ''; // ?reset=... del enlace que llega por correo
 let inviteToken = ''; // ?invite=... del link de invitación aprobado
+let referralCode = ''; // ?ref=... del link de referido (Recompensas)
 let currentEvent = null;
 let currentEventName = ''; // nombre del evento abierto (para el modal de búsqueda y compartir)
 let currentTipClabe = '';
@@ -322,6 +323,8 @@ let cartCode = null;
 function cartCodeStillValid() {
   if (!cartCode) return false;
   if (!cart.length) return false;
+  // Cupón de recompensa (eventId NULL): vale para CUALQUIER evento.
+  if (cartCode.eventId == null) return true;
   return cart.every(x => Number(x.eventId) === Number(cartCode.eventId));
 }
 async function applyCartCode() {
@@ -338,7 +341,8 @@ async function applyCartCode() {
   if (msg) msg.textContent = 'Revisando tu código…';
   try {
     const r = await api('/api/validate-discount-code', { method: 'POST', body: JSON.stringify({ code, eventId }) });
-    cartCode = { code: r.code, percent: Number(r.discountPercent), eventId: Number(r.eventId) };
+    // eventId NULL = cupón de recompensa, vale para cualquier evento.
+    cartCode = { code: r.code, percent: Number(r.discountPercent), eventId: r.eventId != null ? Number(r.eventId) : null };
     renderCartView();
     showToast('Código aplicado: -' + cartCode.percent + '% en tu compra.');
   } catch (e) {
@@ -528,6 +532,10 @@ async function refreshAuth() {
       $('#avatarBtn').onclick = (e) => { e.stopPropagation(); $('#userMenu').classList.toggle('hidden'); };
       const pl = $('#profileLogout');
       if (pl) pl.onclick = doLogout;
+      const rb = $('#rewardsBtn');
+      if (rb) rb.onclick = () => showView('rewards');
+      const rback = $('#rewardsBack');
+      if (rback) rback.onclick = () => showView('account');
       updateNotificationsNav();
       refreshNotifBadge();
     } else {
@@ -738,6 +746,9 @@ async function handleSharedCart(ids) {
 // (foto compartida). No se procesan si la URL viene de un regreso de
 // pago de Clip (eso lo maneja handlePayReturn).
 async function handleDeepLinks() {
+  // Link de referido (?ref=...): se revisa primero, antes que el
+  // carrito compartido o la foto.
+  await checkReferral();
   const q = new URLSearchParams(location.search);
   const carrito = q.get('carrito');
   if (carrito) {
@@ -2768,11 +2779,13 @@ async function loadPhotographer() {
 function showView(v) {
   // Un estado viejo del historial (versión anterior) puede traer una vista
   // que ya no existe ('search', 'photographer'): caer al inicio.
-  if (!['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].includes(v)) v = 'home';
+  if (!['home', 'events', 'myphotos', 'account', 'cart', 'notifications', 'rewards'].includes(v)) v = 'home';
   // Notificaciones es para cualquier usuario con sesión (atletas
   // incluidos); sin sesión, caer al inicio.
   if (v === 'notifications' && !me) v = 'home';
-  ['home', 'events', 'myphotos', 'account', 'cart', 'notifications'].forEach(x => {
+  // Recompensas también necesita sesión.
+  if (v === 'rewards' && !me) v = 'home';
+  ['home', 'events', 'myphotos', 'account', 'cart', 'notifications', 'rewards'].forEach(x => {
     const el = $('#view-' + x);
     if (el) el.classList.toggle('hidden', x !== v);
   });
@@ -2787,6 +2800,7 @@ function showView(v) {
   if (v === 'myphotos') loadMyPhotos();
   if (v === 'cart') renderCartView();
   if (v === 'notifications') loadNotifications();
+  if (v === 'rewards') loadRewards();
   if (v === 'account' && me && me.role === 'photographer') loadPhotographer();
 }
 
@@ -2978,6 +2992,123 @@ async function checkInvite() {
   showView('account');
 }
 
+// ---- Recompensas (2026-11-20) ----
+// Si la URL trae ?ref=CODIGO (link de referido): sin sesión, el
+// registro muestra "Te invitó [nombre]" y el código viaja con el
+// registro (variable + localStorage, por si cambia de pantalla).
+// Con sesión, se ignora: el referido solo cuenta al crear la cuenta.
+async function checkReferral() {
+  const q = new URLSearchParams(location.search);
+  let code = (q.get('ref') || '').trim().toUpperCase();
+  if (!code) { try { code = (localStorage.getItem('oc_ref') || '').trim().toUpperCase(); } catch (_) {} }
+  if (!code || me) return;
+  referralCode = code;
+  try { localStorage.setItem('oc_ref', code); } catch (_) {}
+  const banner = $('#inviteBanner');
+  try {
+    const r = await api('/api/referral-info?code=' + encodeURIComponent(code));
+    if (r.valid) {
+      mode = 'register';
+      $('#authTitle').textContent = 'Crear cuenta';
+      $('#authSubmit').textContent = 'Crear mi cuenta';
+      $('#authToggle').textContent = '¿Ya tienes cuenta? Iniciar sesión';
+      $('#authName').style.display = '';
+      $('#authRole').style.display = '';
+      updatePhotogNotice();
+      if (banner) banner.innerHTML = `<p class="ok">Te invitó ${esc(r.inviterName)} 🎉 Crea tu cuenta y a ${esc(r.inviterName)} le llega una estrella.</p>`;
+      showView('account');
+    } else {
+      referralCode = '';
+      try { localStorage.removeItem('oc_ref'); } catch (_) {}
+    }
+  } catch (_) { /* sin conexión: el registro normal sigue funcionando */ }
+}
+
+let rewardsData = null;
+
+async function loadRewards() {
+  const box = $('#rewardsBox');
+  if (!box) return;
+  if (!me) { box.innerHTML = '<p class="muted">Entra a tu cuenta para ver tus recompensas.</p>'; return; }
+  box.innerHTML = '<p class="muted">Cargando tus recompensas…</p>';
+  try {
+    rewardsData = await api('/api/rewards');
+    renderRewards(rewardsData);
+  } catch (e) {
+    box.innerHTML = `<p class="error">${esc(e.message || 'No se pudieron cargar tus recompensas.')}</p>`;
+  }
+}
+
+function rewardStars(n, total) {
+  let s = '';
+  for (let i = 0; i < total; i++) s += i < n ? '★' : '☆';
+  return s;
+}
+
+function couponHtml(c, label) {
+  return `<div class="reward-coupon"><p style="margin:0 0 6px"><strong>${esc(label)}</strong></p><p class="code" style="margin:6px 0">${esc(c.code)}</p><p class="muted" style="margin:6px 0">10% en tu próxima compra, un solo uso.</p><button type="button" class="secondary" data-copy-code="${esc(c.code)}">Copiar código</button></div>`;
+}
+
+function renderRewards(d) {
+  const box = $('#rewardsBox');
+  if (!box) return;
+  const stars = Math.min(Number(d.stars || 0), Number(d.starsNeeded || 3));
+  const needed = Number(d.starsNeeded || 3);
+  const referredNames = (d.referred || []).map(r => esc(r.name)).join(', ');
+  let html = '';
+  // Tarjeta de agradecimiento a los primeros 100 (solo atletas de los
+  // primeros 100): diseño dorado/negro de OnlyClick, con botón Compartir.
+  if (d.earlyAthlete) {
+    html += `<div class="reward-gold" id="early100Card"><h3>¡Eres de los primeros 100! 🎉</h3><p class="big">Gracias por ser parte de OnlyClick desde el inicio.</p><p>Aquí tienes 10% en tu próxima compra.</p>${d.earlyCoupon ? couponHtml(d.earlyCoupon, 'Tu cupón de agradecimiento') : '<p class="muted">Tu cupón se está generando…</p>'}<button type="button" class="primary" id="shareEarlyBtn" style="width:100%">Compartir</button><p class="reward-note">Compártelo en Instagram o Facebook y más corredores conocerán OnlyClick.</p></div>`;
+  }
+  html += `<h3 style="margin-top:16px">Invita a tus amigos ⭐</h3><p class="muted">Manda tu link a tus amigos. Cuando un amigo abra su cuenta con tu link, ganas 1 estrella. Con ${needed} estrellas te damos un cupón de 10% en tu próxima compra.</p><div class="reward-stars" aria-label="${stars} de ${needed} estrellas">${rewardStars(stars, needed)}</div><p><strong>${stars} / ${needed} estrellas</strong>${referredNames ? ' — ya invitaste a: ' + referredNames : ''}</p><div class="reward-link"><input id="refLinkInput" readonly value="${esc(d.referralLink)}" aria-label="Tu link de referido"><button type="button" class="secondary" id="copyRefBtn">Copiar</button></div>`;
+  if (d.referralCoupon) html += couponHtml(d.referralCoupon, '¡Ya tienes tu cupón por invitar a 3 amigos! 🎉');
+  else if (stars < needed) html += `<p class="reward-note">Te faltan ${needed - stars} ${needed - stars === 1 ? 'amigo' : 'amigos'} para tu cupón de 10%.</p>`;
+  else html += `<p class="reward-note">Tu cupón se está generando… vuelve a abrir Recompensas.</p>`;
+  html += `<p class="reward-note">Solo se puede usar UN cupón por compra: si tienes dos cupones de 10%, usa uno en una compra y el otro queda para la siguiente.</p>`;
+  box.innerHTML = html;
+  const copyBtn = $('#copyRefBtn');
+  if (copyBtn) copyBtn.onclick = async () => { await copyTextToClipboard(d.referralLink); showToast('Link copiado.'); };
+  box.querySelectorAll('[data-copy-code]').forEach(b => { b.onclick = async () => { await copyTextToClipboard(b.getAttribute('data-copy-code')); showToast('Código copiado.'); }; });
+  const shareBtn = $('#shareEarlyBtn');
+  if (shareBtn) shareBtn.onclick = () => shareEarly100(d);
+}
+
+// Copia texto al portapapeles; si no hay clipboard (navegador viejo),
+// usa un textarea temporal.
+async function copyTextToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) { return false; }
+  }
+}
+
+// Compartir la tarjeta de los primeros 100: con compartir nativo del
+// teléfono, se comparte el mensaje con el link de referido (así, si
+// alguien se registra con ese link, cuenta como referido y suma
+// estrella); sin él, se copia el texto y se avisa dónde pegarlo.
+async function shareEarly100(d) {
+  const data = d || rewardsData;
+  if (!data) return;
+  const link = data.referralLink || '';
+  const text = '¡Soy de los primeros 100 atletas en OnlyClick! 📸 Gracias por ser parte de la comunidad OnlyClick. Tengo 10% de descuento en mis fotos de carrera. Búscalas en onlyclick.com.mx — regístrate con mi link: ' + link;
+  try {
+    if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url: link }); return; }
+    throw new Error('no-share');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // lo canceló, no hacer nada
+    const ok = await copyTextToClipboard(text);
+    showToast(ok ? 'Copiado, pégalo en Instagram o Facebook' : 'No se pudo copiar; copia tu link de arriba.');
+  }
+}
+
 // Aviso al registrarse como fotógrafo sin invitación: primero el formulario del inicio.
 function updatePhotogNotice() {
   var n = $('#photogNotice'); if (!n) return;
@@ -3006,11 +3137,14 @@ $('#authSubmit').onclick = async () => {
   const body = { email: $('#authEmail').value, password: $('#authPass').value };
   try {
     let r;
-    if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; if (inviteToken) body.inviteToken = inviteToken; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
+    if (mode === 'register') { body.name = $('#authName').value; body.role = $('#authRole').value; if (inviteToken) body.inviteToken = inviteToken; if (referralCode) body.referralCode = referralCode; r = await api('/api/auth-register', { method: 'POST', body: JSON.stringify(body) }); }
     else r = await api('/api/auth-login', { method: 'POST', body: JSON.stringify(body) });
     saveToken(r.token); await refreshAuth();
     // El link de invitación ya se usó: se quita de la URL.
     if (inviteToken) { inviteToken = ''; try { history.replaceState({}, '', location.pathname); } catch (_) {} }
+    // El link de referido ya se usó: se olvida (un amigo cuenta una
+    // sola vez, al crear la cuenta).
+    if (referralCode) { referralCode = ''; try { localStorage.removeItem('oc_ref'); } catch (_) {} }
     // El autocompletado de Chrome a veces deja el correo en el buscador
     // de dorsal al entrar: si parece correo, se limpia.
     const bibEl = $('#bibInput'); if (bibEl && bibEl.value.includes('@')) bibEl.value = '';
