@@ -3,6 +3,14 @@
 // La descarga es una URL de mismo origen: /api/photo?id=... con
 // Content-Disposition: attachment. En Chrome Android eso dispara el
 // gestor de descargas real. NO es un blob URL ni navigator.share.
+// Instalador automático: registra el service worker para que el
+// navegador ofrezca instalar OnlyClick como app. Si el navegador no
+// lo soporta o el registro falla, la página sigue igual.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
 let token = localStorage.getItem('onlyclick_token') || '';
 // Las etiquetas <img> NO mandan el header Authorization: el token de
 // sesión va en la URL para que el dueño sí vea las fotos y portadas de
