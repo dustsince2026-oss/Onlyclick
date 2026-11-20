@@ -115,11 +115,26 @@ const fileStore = {
   async setPhotoThumb(id, thumbPath) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; p.thumbPath = thumbPath || ''; saveDb(db); return { ...p }; },
   async updatePhoto(id, patch) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; Object.assign(p, patch); saveDb(db); return p; },
   async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
-  async addDownload(d) { const db = loadDb(); const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), ...d }; db.downloads.push(row); saveDb(db); return row; },
-  async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId)); },
-  // Quita de "Mis fotos" solo el registro de descarga de ese usuario y esa
-  // foto (la foto del álbum NO se borra). Devuelve cuántos se quitaron.
-  async removeDownloadsByUserPhoto(userId, photoId) { const db = loadDb(); const before = db.downloads.length; db.downloads = db.downloads.filter(d => !(d.userId === Number(userId) && d.photoId === Number(photoId))); const removed = before - db.downloads.length; if (removed) saveDb(db); return removed; },
+  // Si el usuario ya tenía esta foto y la había quitado de "Mis fotos",
+  // se reactiva el mismo registro (no se duplica): las estadísticas
+  // cuentan un solo registro por foto guardada.
+  async addDownload(d) {
+    const db = loadDb();
+    const old = db.downloads.find(x => x.userId === Number(d.userId) && x.photoId === Number(d.photoId) && x.removedAt);
+    if (old) { old.removedAt = null; if (d.amount !== undefined) old.amount = d.amount; if (d.eventId !== undefined) old.eventId = d.eventId; saveDb(db); return old; }
+    const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), removedAt: null, ...d }; db.downloads.push(row); saveDb(db); return row;
+  },
+  // "Mis fotos" solo muestra las que NO se quitaron: las quitadas se
+  // esconden de la lista pero el registro se queda (estadísticas).
+  async listDownloadsByUser(userId) { return loadDb().downloads.filter(d => d.userId === Number(userId) && !d.removedAt); },
+  // Quitar de "Mis fotos" NO borra el registro: solo lo marca como
+  // quitado (removedAt). Así la foto ya no sale en la lista del atleta,
+  // pero las estadísticas y las ganancias la siguen contando (Orlan,
+  // 2026-11-20: quitar de la lista no debe borrar la venta).
+  // Devuelve cuántos se marcaron.
+  async removeDownloadsByUserPhoto(userId, photoId) { const db = loadDb(); let n = 0; for (const d of db.downloads) if (d.userId === Number(userId) && d.photoId === Number(photoId) && !d.removedAt) { d.removedAt = new Date().toISOString(); n++; } if (n) saveDb(db); return n; },
+  // Estadísticas y ganancias: TODAS las descargas, incluidas las que el
+  // atleta quitó de su lista (el registro de la venta no se borra).
   async listAllDownloads() { return loadDb().downloads.slice().sort((a, b) => b.id - a.id); },
   // ---- Pagos a fotógrafos ----
   // Un payout = un pago que Orlan YA envió. Sus descargas quedan ligadas
@@ -316,10 +331,15 @@ const fileStore = {
   async getPaymentById(id) { return loadDb().payments.find(x => x.id === Number(id)) || null; },
   async getLatestPaymentByUserPhoto(userId, photoId) { const rows = loadDb().payments.filter(x => x.userId === Number(userId) && x.photoId === Number(photoId)).sort((a, b) => b.id - a.id); return rows[0] || null; },
   async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
-  async hasDownload(userId, photoId) { return loadDb().downloads.some(d => d.userId === Number(userId) && d.photoId === Number(photoId)); },
+  // Una foto quitada de "Mis fotos" ya NO cuenta como descargada: si es
+  // de pago, no se puede volver a descargar sin volver a pagarla (Orlan,
+  // 2026-11-19). El registro sigue existiendo para las estadísticas.
+  async hasDownload(userId, photoId) { return loadDb().downloads.some(d => d.userId === Number(userId) && d.photoId === Number(photoId) && !d.removedAt); },
   // ¿Alguien ya PAGÓ por esta foto? Una descarga con amount > 0 es una
   // venta: esa foto no se puede borrar (el comprador perdería lo que
   // pagó). Las descargas gratis (amount 0) no bloquean el borrado.
+  // Cuenta también las que el comprador quitó de su lista: la venta
+  // sigue siendo venta.
   async hasPaidDownload(photoId) { return loadDb().downloads.some(d => d.photoId === Number(photoId) && Number(d.amount || 0) > 0); },
   async readPhotoBytes(photo) { return fs.readFileSync(photo.filePath); },
   // Miniatura de la galería: devuelve null si la foto no tiene (fotos
@@ -361,7 +381,7 @@ function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.f
 // Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
 // llena cuando se mandó el aviso (una sola vez por correo y evento).
 function mapPhotoAlert(r) { return r ? { id: r.id, eventId: r.event_id, email: r.email, notifiedAt: r.notified_at || null, createdAt: r.created_at } : null; }
-function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, createdAt: r.created_at } : null; }
+function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), payoutId: r.payout_id != null ? Number(r.payout_id) : null, removedAt: r.removed_at || null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
@@ -641,9 +661,31 @@ const supabaseStore = {
     const { data } = await supabase().from('photos').update(p).eq('id', id).select().single(); return mapPhoto(data);
   },
   async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} } await supabase().from('photos').delete().eq('id', id); },
-  async addDownload(d) { const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data; },
-  async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).order('id', { ascending: false }); return (data || []).map(mapDownload); },
-  async removeDownloadsByUserPhoto(userId, photoId) { const { data } = await supabase().from('downloads').delete().eq('user_id', userId).eq('photo_id', photoId).select('id'); return (data || []).length; },
+  // Si el usuario ya tenía esta foto y la había quitado de "Mis fotos",
+  // se reactiva el mismo registro (no se duplica): las estadísticas
+  // cuentan un solo registro por foto guardada.
+  async addDownload(d) {
+    const { data: old } = await supabase().from('downloads').select().eq('user_id', d.userId).eq('photo_id', d.photoId).not('removed_at', 'is', null).limit(1).maybeSingle();
+    if (old) {
+      const patch = { removed_at: null };
+      if (d.amount !== undefined) patch.amount = d.amount;
+      if (d.eventId !== undefined) patch.event_id = d.eventId;
+      const { data } = await supabase().from('downloads').update(patch).eq('id', old.id).select().single();
+      return data;
+    }
+    const { data } = await supabase().from('downloads').insert({ user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 }).select().single(); return data;
+  },
+  // "Mis fotos" solo muestra las que NO se quitaron: las quitadas se
+  // esconden de la lista pero el registro se queda (estadísticas).
+  async listDownloadsByUser(userId) { const { data } = await supabase().from('downloads').select().eq('user_id', userId).is('removed_at', null).order('id', { ascending: false }); return (data || []).map(mapDownload); },
+  // Quitar de "Mis fotos" NO borra el registro: solo lo marca como
+  // quitado (removed_at). Así la foto ya no sale en la lista del atleta,
+  // pero las estadísticas y las ganancias la siguen contando (Orlan,
+  // 2026-11-20: quitar de la lista no debe borrar la venta).
+  // Devuelve cuántos se marcaron.
+  async removeDownloadsByUserPhoto(userId, photoId) { const { data } = await supabase().from('downloads').update({ removed_at: new Date().toISOString() }).eq('user_id', userId).eq('photo_id', photoId).is('removed_at', null).select('id'); return (data || []).length; },
+  // Estadísticas y ganancias: TODAS las descargas, incluidas las que el
+  // atleta quitó de su lista (el registro de la venta no se borra).
   async listAllDownloads() { const { data } = await supabase().from('downloads').select().order('id', { ascending: false }); return (data || []).map(mapDownload); },
   // ---- Pagos a fotógrafos ----
   async createPayout(p) { const { data, error } = await supabase().from('payouts').insert({ photographer_id: p.photographerId, amount_mxn: p.amountMxn, orlan_fee_mxn: p.orlanFeeMxn, clip_fee_mxn: p.clipFeeMxn, status: p.status || 'pending', paid_at: p.paidAt || null }).select().single(); if (error) throw new Error(error.message); return mapPayout(data); },
@@ -888,10 +930,15 @@ const supabaseStore = {
     }
     return out;
   },
-  async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId); return (count || 0) > 0; },
+  // Una foto quitada de "Mis fotos" ya NO cuenta como descargada: si es
+  // de pago, no se puede volver a descargar sin volver a pagarla (Orlan,
+  // 2026-11-19). El registro sigue existiendo para las estadísticas.
+  async hasDownload(userId, photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('photo_id', photoId).is('removed_at', null); return (count || 0) > 0; },
   // ¿Alguien ya PAGÓ por esta foto? Una descarga con amount > 0 es una
   // venta: esa foto no se puede borrar (el comprador perdería lo que
   // pagó). Las descargas gratis (amount 0) no bloquean el borrado.
+  // Cuenta también las que el comprador quitó de su lista: la venta
+  // sigue siendo venta.
   async hasPaidDownload(photoId) { const { count } = await supabase().from('downloads').select('id', { count: 'exact', head: true }).eq('photo_id', photoId).gt('amount', 0); return (count || 0) > 0; },
   async createPayment(p) {
     // discount_code_id ata el pago al código que usó (multiuso: un
