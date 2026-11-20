@@ -538,6 +538,7 @@ async function refreshAuth() {
       if (rback) rback.onclick = () => showView('account');
       updateNotificationsNav();
       refreshNotifBadge();
+      checkRewardsOnce();
     } else {
       updateNotificationsNav();
       updateNotifBadge(0);
@@ -2828,6 +2829,18 @@ async function refreshNotifBadge() {
   try { const r = await api('/api/list-announcements'); updateNotifBadge(r.unreadCount || 0); }
   catch (_) { updateNotifBadge(0); }
 }
+// Revisión de Recompensas una vez por sesión (solo atletas con sesión):
+// si el atleta es de los primeros 100, le asegura su cupón de
+// agradecimiento y su aviso de campanita aunque nunca abra
+// Recompensas. Fire-and-forget: no frena la carga ni muestra nada;
+// si falla, no pasa nada. Al terminar refresca el numerito de la
+// campanita por si llegó un aviso nuevo.
+let rewardsCheckDone = false;
+function checkRewardsOnce() {
+  if (rewardsCheckDone || !me || me.role !== 'athlete') return;
+  rewardsCheckDone = true;
+  api('/api/rewards-check').then(() => refreshNotifBadge()).catch(() => {});
+}
 async function loadNotifications() {
   const list = $('#notifList'), status = $('#notifStatus'), form = $('#notifForm');
   if (form) form.style.display = (me && me.isOwner) ? '' : 'none';
@@ -3057,9 +3070,11 @@ function renderRewards(d) {
   const referredNames = (d.referred || []).map(r => esc(r.name)).join(', ');
   let html = '';
   // Tarjeta de agradecimiento a los primeros 100 (solo atletas de los
-  // primeros 100): diseño dorado/negro de OnlyClick, con botón Compartir.
+  // primeros 100): diseño dorado/negro de OnlyClick, con botón Compartir
+  // y botón Copiar mensaje (Facebook no acepta texto prellenado de otras
+  // apps: el mensaje se copia y se pega en la publicación).
   if (d.earlyAthlete) {
-    html += `<div class="reward-gold" id="early100Card"><h3>¡Eres de los primeros 100! 🎉</h3><p class="big">Gracias por ser parte de OnlyClick desde el inicio.</p><p>Aquí tienes 10% en tu próxima compra.</p>${d.earlyCoupon ? couponHtml(d.earlyCoupon, 'Tu cupón de agradecimiento') : '<p class="muted">Tu cupón se está generando…</p>'}<button type="button" class="primary" id="shareEarlyBtn" style="width:100%">Compartir</button><p class="reward-note">Compártelo en Instagram o Facebook y más corredores conocerán OnlyClick.</p></div>`;
+    html += `<div class="reward-gold" id="early100Card"><h3>¡Eres de los primeros 100! 🎉</h3><p class="big">Gracias por ser parte de OnlyClick desde el inicio.</p><p>Aquí tienes 10% en tu próxima compra.</p>${d.earlyCoupon ? couponHtml(d.earlyCoupon, 'Tu cupón de agradecimiento') : '<p class="muted">Tu cupón se está generando…</p>'}<button type="button" class="primary" id="shareEarlyBtn" style="width:100%">Compartir</button><button type="button" class="secondary" id="copyEarlyMsgBtn" style="width:100%;margin-top:8px">Copiar mensaje</button><p class="reward-note">En Facebook el texto no se comparte solo: pica "Copiar mensaje" y pégalo en tu publicación.</p></div>`;
   }
   html += `<h3 style="margin-top:16px">Invita a tus amigos ⭐</h3><p class="muted">Manda tu link a tus amigos. Cuando un amigo abra su cuenta con tu link, ganas 1 estrella. Con ${needed} estrellas te damos un cupón de 10% en tu próxima compra.</p><div class="reward-stars" aria-label="${stars} de ${needed} estrellas">${rewardStars(stars, needed)}</div><p><strong>${stars} / ${needed} estrellas</strong>${referredNames ? ' — ya invitaste a: ' + referredNames : ''}</p><div class="reward-link"><input id="refLinkInput" readonly value="${esc(d.referralLink)}" aria-label="Tu link de referido"><button type="button" class="secondary" id="copyRefBtn">Copiar</button></div>`;
   if (d.referralCoupon) html += couponHtml(d.referralCoupon, '¡Ya tienes tu cupón por invitar a 3 amigos! 🎉');
@@ -3072,6 +3087,8 @@ function renderRewards(d) {
   box.querySelectorAll('[data-copy-code]').forEach(b => { b.onclick = async () => { await copyTextToClipboard(b.getAttribute('data-copy-code')); showToast('Código copiado.'); }; });
   const shareBtn = $('#shareEarlyBtn');
   if (shareBtn) shareBtn.onclick = () => shareEarly100(d);
+  const copyMsgBtn = $('#copyEarlyMsgBtn');
+  if (copyMsgBtn) copyMsgBtn.onclick = async () => { const ok = await copyTextToClipboard(early100ShareText(d.referralLink)); showToast(ok ? 'Copiado, pégalo en Facebook o Instagram' : 'No se pudo copiar; copia tu link de arriba.'); };
 }
 
 // Copia texto al portapapeles; si no hay clipboard (navegador viejo),
@@ -3090,15 +3107,25 @@ async function copyTextToClipboard(text) {
   }
 }
 
+// Texto para compartir la recompensa de los primeros 100 (palabras de
+// Orlan, 2026-11-20). Es el MISMO texto en Compartir, en Copiar mensaje
+// y en la vista previa del link (Open Graph). Mantener en sync con
+// early100ShareText de api/_lib/handlers.js.
+function early100ShareText(link) {
+  return '¡Obtuve una recompensa por ser de las primeras 100 cuentas registradas en OnlyClick! 📸 Tú también crea tu cuenta y obtén recompensas en tus primeras compras. Regístrate con mi link: ' + (link || '');
+}
+
 // Compartir la tarjeta de los primeros 100: con compartir nativo del
 // teléfono, se comparte el mensaje con el link de referido (así, si
 // alguien se registra con ese link, cuenta como referido y suma
 // estrella); sin él, se copia el texto y se avisa dónde pegarlo.
+// OJO: Facebook no acepta texto prellenado de otras apps — al compartir
+// ahí solo llega el link; por eso existe el botón "Copiar mensaje".
 async function shareEarly100(d) {
   const data = d || rewardsData;
   if (!data) return;
   const link = data.referralLink || '';
-  const text = '¡Soy de los primeros 100 atletas en OnlyClick! 📸 Gracias por ser parte de la comunidad OnlyClick. Tengo 10% de descuento en mis fotos de carrera. Búscalas en onlyclick.com.mx — regístrate con mi link: ' + link;
+  const text = early100ShareText(link);
   try {
     if (navigator.share) { await navigator.share({ title: 'OnlyClick', text, url: link }); return; }
     throw new Error('no-share');
