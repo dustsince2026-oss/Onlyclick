@@ -89,6 +89,10 @@
   .sec-top { display: flex; align-items: center; gap: 10px; }
   .sec-top img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; flex: 0 0 auto; }
   input, select, textarea { font-size: 16px; padding: 12px; border-radius: 10px; border: 1px solid #2a2a30; background: #141419; color: #fff; width: 100%; margin: 6px 0; }
+  /* ---------- Ojito ver/ocultar contraseña (Orlan, 2026-11-20) ---------- */
+  .pass-wrap { position: relative; margin: 6px 0; }
+  .pass-wrap input { margin: 0; padding-right: 48px; }
+  .pass-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; padding: 0; margin: 0; border: none; background: transparent; color: #d4af37; font-size: 20px; line-height: 1; }
   button { font-size: 16px; padding: 11px 14px; border-radius: 10px; border: 1px solid #3a3a41; background: #26262c; color: #fff; font-weight: 700; cursor: pointer; }
   button.primary { background: linear-gradient(180deg, #e3c15a, #c9a227); color: #141414; border: none; }
   button.secondary, button.ghost { background: #26262c; border: 1px solid #3a3a41; color: #fff; }
@@ -422,7 +426,10 @@
       <div id="inviteBanner"></div>
       <input id="authName" placeholder="Nombre" style="display:none">
       <input id="authEmail" type="email" autocomplete="username" placeholder="Correo">
-      <input id="authPass" type="password" autocomplete="current-password" placeholder="Contraseña (mín. 6 caracteres)">
+      <div class="pass-wrap">
+        <input id="authPass" type="password" autocomplete="current-password" placeholder="Contraseña (mín. 6 caracteres)">
+        <button type="button" id="toggleAuthPass" class="pass-eye" aria-label="Mostrar contraseña" title="Mostrar contraseña">👁️</button>
+      </div>
       <select id="authRole" style="display:none">
         <option value="athlete">Soy deportista / corredor</option>
         <option value="photographer">Soy fotógrafo (ONLYCLICK debe aprobar tu cuenta)</option>
@@ -444,7 +451,10 @@
       </div>
       <div id="resetBox" style="display:none">
         <p class="muted">Escribe tu nueva contraseña.</p>
-        <input id="resetPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mín. 6 caracteres)">
+        <div class="pass-wrap">
+          <input id="resetPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mín. 6 caracteres)">
+          <button type="button" id="toggleResetPass" class="pass-eye" aria-label="Mostrar contraseña" title="Mostrar contraseña">👁️</button>
+        </div>
         <button id="resetSend" class="primary">Guardar nueva contraseña</button>
         <p class="muted" id="resetStatus"></p>
       </div>
