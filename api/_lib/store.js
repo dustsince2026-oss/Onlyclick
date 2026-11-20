@@ -37,6 +37,9 @@ const fileStore = {
   async createUser(u) { const db = loadDb(); const row = { id: nextId(db, 'user'), createdAt: new Date().toISOString(), ...u }; db.users.push(row); saveDb(db); return row; },
   async findUserByEmail(email) { return loadDb().users.find(u => u.email.toLowerCase() === String(email).toLowerCase()) || null; },
   async findUserById(id) { return loadDb().users.find(u => u.id === Number(id)) || null; },
+  // Lote (panel rápido 2026-11-19): varios usuarios en una sola pasada,
+  // en vez de un findUserById por comprador.
+  async findUsersByIds(ids) { const set = new Set((ids || []).map(Number).filter(Boolean)); return loadDb().users.filter(u => set.has(u.id)); },
   async updateUserPassword(id, passwordHash) { const db = loadDb(); const u = db.users.find(x => x.id === Number(id)); if (!u) return null; u.passwordHash = passwordHash; saveDb(db); return u; },
   async setTipClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.tipClabe = clabe; saveDb(db); return u; },
   async setPayoutClabe(userId, clabe) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.payoutClabe = clabe; saveDb(db); return u; },
@@ -61,17 +64,34 @@ const fileStore = {
     saveDb(db); return before - db.eventPhotographers.length;
   },
   async listParticipants(eventId) { return (loadDb().eventPhotographers || []).filter(x => x.eventId === Number(eventId)); },
+  // Lote (panel rápido 2026-11-19): TODAS las filas de participantes en
+  // una sola pasada, en vez de una consulta por evento (N+1).
+  async listAllParticipants() { return (loadDb().eventPhotographers || []).slice(); },
   async getParticipant(eventId, photographerId) { return (loadDb().eventPhotographers || []).find(x => x.eventId === Number(eventId) && x.photographerId === Number(photographerId)) || null; },
   async listJoinedEventIds(photographerId) { return (loadDb().eventPhotographers || []).filter(x => x.photographerId === Number(photographerId)).map(x => x.eventId); },
   async setDisplayName(userId, name) { const db = loadDb(); const u = db.users.find(x => x.id === Number(userId)); if (!u) return null; u.displayName = name; saveDb(db); return u; },
   async listEvents() { return loadDb().events.slice().sort((a, b) => b.id - a.id).map(e => ({ ...e, photoCount: loadDb().photos.filter(p => p.eventId === e.id).length })); },
   async getEvent(id) { return loadDb().events.find(e => e.id === Number(id)) || null; },
+  // Lote (panel rápido 2026-11-19): varios eventos en una sola pasada.
+  async listEventsByIds(ids) { const set = new Set((ids || []).map(Number).filter(Boolean)); const db = loadDb(); return db.events.filter(e => set.has(e.id)).map(e => ({ ...e, photoCount: db.photos.filter(p => p.eventId === e.id).length })); },
+  // Lote (panel rápido 2026-11-19): ids de los álbumes ya caducados
+  // (fecha del evento + 60 días <= hoy), sin listar todos los eventos
+  // ni contar sus fotos. cutoff es 'YYYY-MM-DD' (hoy - 60 días, UTC).
+  async listExpiredEventIds(cutoff) { return loadDb().events.filter(e => e.eventDate && String(e.eventDate).slice(0, 10) <= String(cutoff)).map(e => e.id); },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, priceMxn: 20, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
   async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); db.eventPhotographers = (db.eventPhotographers || []).filter(x => x.eventId !== Number(id)); db.photoAlerts = (db.photoAlerts || []).filter(x => x.eventId !== Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },
   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
+  // Lote (panel rápido 2026-11-19): las fotos de varios eventos (o de
+  // varias fotos por id) en una sola pasada, en vez de una consulta por
+  // evento/foto.
+  async listPhotosByEventIds(ids) { const set = new Set((ids || []).map(Number).filter(Boolean)); return loadDb().photos.filter(p => set.has(p.eventId)); },
+  async listPhotosByIds(ids) { const set = new Set((ids || []).map(Number).filter(Boolean)); return loadDb().photos.filter(p => set.has(p.id)); },
+  // Lote (panel rápido 2026-11-19): cuántas fotos tiene cada evento, en
+  // una sola pasada (el adaptador de Supabase lo hace con una consulta).
+  async listPhotoCountsByEvent() { const counts = new Map(); for (const p of loadDb().photos) counts.set(p.eventId, (counts.get(p.eventId) || 0) + 1); return counts; },
   async getPhoto(id) { return loadDb().photos.find(p => p.id === Number(id)) || null; },
   async createPhoto(p) {
     const db = loadDb();
@@ -360,6 +380,14 @@ const supabaseStore = {
   async createUser(u) { const { data, error } = await supabase().from('users').insert({ name: u.name, email: u.email, password_hash: u.passwordHash, role: u.role, is_owner: !!u.isOwner, approved: u.approved !== false, payout_clabe: u.payoutClabe || '' }).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async findUserByEmail(email) { const { data } = await supabase().from('users').select().ilike('email', email).maybeSingle(); return mapUser(data); },
   async findUserById(id) { const { data } = await supabase().from('users').select().eq('id', id).maybeSingle(); return mapUser(data); },
+  // Lote (panel rápido 2026-11-19): varios usuarios en una sola
+  // consulta, en vez de un findUserById por comprador.
+  async findUsersByIds(ids) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return [];
+    const { data } = await supabase().from('users').select().in('id', list);
+    return (data || []).map(mapUser);
+  },
   async updateUserPassword(id, passwordHash) { const { data, error } = await supabase().from('users').update({ password_hash: passwordHash }).eq('id', id).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async setTipClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ tip_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
   async setPayoutClabe(userId, clabe) { const { data, error } = await supabase().from('users').update({ payout_clabe: clabe }).eq('id', userId).select().single(); if (error) throw new Error(error.message); return mapUser(data); },
@@ -380,6 +408,16 @@ const supabaseStore = {
   async listParticipants(eventId) {
     try {
       const { data, error } = await supabase().from('event_photographers').select().eq('event_id', eventId).order('joined_at');
+      if (error) return [];
+      return (data || []).map(r => ({ eventId: r.event_id, photographerId: r.photographer_id, priceMxn: Number(r.price_mxn || 20), joinedAt: r.joined_at }));
+    } catch (_) { return []; }
+  },
+  // Lote (panel rápido 2026-11-19): TODAS las filas de participantes en
+  // una sola consulta, en vez de una por evento (N+1). Mismo orden
+  // (joined_at) y misma forma que listParticipants.
+  async listAllParticipants() {
+    try {
+      const { data, error } = await supabase().from('event_photographers').select().order('joined_at');
       if (error) return [];
       return (data || []).map(r => ({ eventId: r.event_id, photographerId: r.photographer_id, priceMxn: Number(r.price_mxn || 20), joinedAt: r.joined_at }));
     } catch (_) { return []; }
@@ -416,13 +454,51 @@ const supabaseStore = {
     if (error) throw new Error(error.message);
     return mapUser(data);
   },
+  // Panel rápido 2026-11-19 (D22): ANTES cada evento pedía su conteo de
+  // fotos con una consulta count SEGUIDA (N consultas en serie: con 3
+  // eventos ya eran 3 idas y vueltas por cada listEvents, y listEvents
+  // se llama varias veces al abrir el panel). AHORA los conteos salen
+  // de UNA sola consulta (id + event_id de todas las fotos, paginada)
+  // y se cuentan en memoria: 2 consultas en total, no N+1.
+  async listPhotoCountsByEvent() {
+    const counts = new Map();
+    const PAGE = 1000, MAX = 20000;
+    for (let from = 0; from < MAX; from += PAGE) {
+      const { data, error } = await supabase().from('photos').select('id,event_id').order('id').range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const rows = data || [];
+      for (const r of rows) counts.set(r.event_id, (counts.get(r.event_id) || 0) + 1);
+      if (rows.length < PAGE) break;
+    }
+    return counts;
+  },
   async listEvents() {
     const { data } = await supabase().from('events').select().order('id', { ascending: false });
+    const counts = await this.listPhotoCountsByEvent().catch(() => null);
+    if (counts) return (data || []).map(e => mapEvent(e, counts.get(e.id) || 0));
+    // Respaldo si el conteo en lote falla: conteo por evento, como antes.
     const out = [];
     for (const e of data || []) { const { count } = await supabase().from('photos').select('id', { count: 'exact', head: true }).eq('event_id', e.id); out.push(mapEvent(e, count || 0)); }
     return out;
   },
   async getEvent(id) { const { data } = await supabase().from('events').select().eq('id', id).maybeSingle(); return mapEvent(data); },
+  // Lote (panel rápido 2026-11-19): varios eventos en una sola consulta.
+  async listEventsByIds(ids) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return [];
+    const { data } = await supabase().from('events').select().in('id', list);
+    return (data || []).map(e => mapEvent(e));
+  },
+  // Panel rápido 2026-11-19 (D22): ids de los álbumes ya caducados, con
+  // UNA consulta por fecha (event_date + 60 días <= hoy), sin listar
+  // todos los eventos ni contar sus fotos. cutoff es 'YYYY-MM-DD'
+  // (hoy - 60 días, UTC). El límite inferior '1000-01-01' deja fuera
+  // fechas vacías o nulas (un evento sin fecha nunca caduca).
+  async listExpiredEventIds(cutoff) {
+    const { data, error } = await supabase().from('events').select('id').gt('event_date', '1000-01-01').lte('event_date', String(cutoff));
+    if (error) throw new Error(error.message);
+    return (data || []).map(r => r.id);
+  },
   async createEvent(e) {
     const ins = { photographer_id: e.photographerId, name: e.name, sport: e.sport, event_date: e.eventDate, location: e.location, free_mode: e.freeMode !== false, price_mxn: e.priceMxn !== undefined ? e.priceMxn : 20 };
     // Álbum exclusivo: la columna solo se manda cuando es exclusivo, para
@@ -487,6 +563,21 @@ const supabaseStore = {
     return { photos: photos.length };
   },
   async listPhotos(eventId) { const { data } = await supabase().from('photos').select().eq('event_id', eventId).order('id'); return (data || []).map(mapPhoto); },
+  // Lote (panel rápido 2026-11-19): las fotos de varios eventos (o de
+  // varias fotos por id) en una sola consulta .in(), en vez de una
+  // consulta por evento/foto.
+  async listPhotosByEventIds(ids) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return [];
+    const { data } = await supabase().from('photos').select().in('event_id', list).order('id');
+    return (data || []).map(mapPhoto);
+  },
+  async listPhotosByIds(ids) {
+    const list = (ids || []).map(Number).filter(Boolean);
+    if (!list.length) return [];
+    const { data } = await supabase().from('photos').select().in('id', list).order('id');
+    return (data || []).map(mapPhoto);
+  },
   async getPhoto(id) { const { data } = await supabase().from('photos').select().eq('id', id).maybeSingle(); return mapPhoto(data); },
   async createPhoto(p) {
     const ext = (String(p.filename || 'foto.jpg').split('.').pop() || 'jpg').toLowerCase();
