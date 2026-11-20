@@ -174,11 +174,33 @@ function daysUntil(dateIso) {
   if (!dateIso) return null;
   return Math.ceil((new Date(dateIso).getTime() - Date.now()) / (24 * 3600 * 1000));
 }
+// Panel rápido 2026-11-19 (D22): llama un método NUEVO del store si
+// existe; si no existe (stores viejos o simulados de los tests) o falla,
+// devuelve null para que el llamador use la ruta vieja (una por una).
+// El resultado es el mismo, solo más lento: nunca se rompe nada.
+async function tryStore(store, name, ...args) {
+  try {
+    if (store && typeof store[name] === 'function') return await store[name](...args);
+  } catch (_) {}
+  return null;
+}
 // Borra los álbumes ya caducados (fotos, archivos y portada). Se corre al
 // listar eventos, al abrir uno y al listar Mis fotos / notificaciones:
 // la primera visita después de la fecha dispara la limpieza. Un fallo al
 // borrar un álbum no rompe la lista.
+// Panel rápido 2026-11-19 (D22): ANTES cada llamada listaba TODOS los
+// eventos con su conteo de fotos (1 + N consultas) solo para ver si
+// alguno caducó. AHORA pide solo los ids ya caducados con UNA consulta
+// por fecha; si el store no tiene ese método, cae al escaneo de antes.
 async function expireOldEvents(store) {
+  const cutoff = new Date(Date.now() - EVENT_EXPIRY_DAYS * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const ids = await tryStore(store, 'listExpiredEventIds', cutoff);
+  if (ids) {
+    for (const id of ids) {
+      try { await store.deleteEvent(id); } catch (_) {}
+    }
+    return;
+  }
   const now = Date.now();
   for (const e of await store.listEvents()) {
     const exp = eventExpiresAt(e);
@@ -218,8 +240,21 @@ async function listEvents(store, user) {
   const ownerIds = new Set();
   for (const ph of await store.listPhotographers()) { names.set(ph.id, displayNameFor(ph)); if (ph.isOwner) ownerIds.add(ph.id); }
   // Las filas de participantes de cada evento son independientes: se
-  // piden todas a la vez (antes iban una por una y la lista tardaba).
-  const partsList = await Promise.all(events.map(e => store.listParticipants(e.id).catch(() => [])));
+  // piden TODAS en una sola consulta (antes iban una por una y la lista
+  // tardaba); si el store no tiene el método nuevo, una por una como antes.
+  let partsByEvent = null;
+  const allParts = await tryStore(store, 'listAllParticipants');
+  if (allParts) {
+    partsByEvent = new Map();
+    for (const pt of allParts) {
+      const list = partsByEvent.get(pt.eventId) || [];
+      list.push(pt);
+      partsByEvent.set(pt.eventId, list);
+    }
+  }
+  const partsList = partsByEvent
+    ? events.map(e => partsByEvent.get(e.id) || [])
+    : await Promise.all(events.map(e => store.listParticipants(e.id).catch(() => [])));
   const out = [];
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
@@ -646,12 +681,36 @@ async function listPurchases(store, user) {
   requireUser(user);
   await expireOldEvents(store);
   const downloads = await store.listDownloadsByUser(user.id);
+  // Panel rápido 2026-11-19 (D22): ANTES cada descarga pedía su foto,
+  // su evento y su fotógrafo una por una (3 consultas por fila, en
+  // serie). AHORA las tres cosas salen en lote (3 consultas en total);
+  // si el store no tiene los métodos nuevos, una por una como antes.
+  const photoIds = [...new Set(downloads.map(d => d.photoId))].filter(id => Number.isInteger(id));
+  const eventIds = [...new Set(downloads.map(d => d.eventId))].filter(id => Number.isInteger(id));
+  const photoRows = await tryStore(store, 'listPhotosByIds', photoIds);
+  const eventRows = photoRows ? await tryStore(store, 'listEventsByIds', eventIds) : null;
+  const photoById = photoRows ? new Map(photoRows.map(p => [p.id, p])) : null;
+  const eventById = eventRows ? new Map(eventRows.map(e => [e.id, e])) : null;
+  const pids = (photoById && eventById)
+    ? [...new Set(downloads.map(d => { const p = photoById.get(d.photoId); if (!p) return null; return photoOwnerId(p, eventById.get(p.eventId)); }).filter(id => id != null))]
+    : [];
+  const userRows = (photoById && eventById) ? await tryStore(store, 'findUsersByIds', pids) : null;
+  const userById = userRows ? new Map(userRows.filter(Boolean).map(u => [u.id, u])) : null;
   const photos = [];
   for (const d of downloads) {
-    const p = await store.getPhoto(d.photoId); if (!p) continue;
-    const ev = await store.getEvent(d.eventId);
+    let p, ev, u;
+    if (photoById && eventById && userById) {
+      p = photoById.get(d.photoId); if (!p) continue;
+      ev = eventById.get(d.eventId);
+      const pid0 = photoOwnerId(p, ev);
+      u = pid0 != null ? (userById.get(pid0) || null) : null;
+    } else {
+      p = await store.getPhoto(d.photoId); if (!p) continue;
+      ev = await store.getEvent(d.eventId);
+      const pid0 = photoOwnerId(p, ev);
+      u = pid0 != null ? await store.findUserById(pid0) : null;
+    }
     const pid = photoOwnerId(p, ev);
-    const u = pid != null ? await store.findUserById(pid) : null;
     photos.push({ ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev ? ev.name : '', expiresAt: ev ? eventExpiresAt(ev) : null, freeMode: ev ? ev.freeMode : true, owned: true, amount: d.amount, downloadedAt: d.createdAt, filePath: undefined, storagePath: undefined, thumbPath: undefined });
   }
   return { status: 200, data: { photos } };
@@ -667,9 +726,19 @@ async function listSales(store, user) {
   // cada evento distinto una sola vez, y los compradores distintos en
   // paralelo — y el resto se resuelve en memoria.
   const eventIds = [...new Set(downloads.map(d => d.eventId).filter(id => Number.isInteger(id)))];
-  const [events, ...photoLists] = await Promise.all([store.listEvents(), ...eventIds.map(id => store.listPhotos(id))]);
+  // Panel rápido 2026-11-19 (D22): las fotos de todos los eventos en
+  // UNA consulta .in() (antes una por evento); si el store no tiene el
+  // método nuevo, una por evento como antes.
+  const [events, photoRows] = await Promise.all([
+    store.listEvents(),
+    (async () => {
+      const batched = await tryStore(store, 'listPhotosByEventIds', eventIds);
+      if (batched) return batched;
+      return (await Promise.all(eventIds.map(id => store.listPhotos(id)))).flat();
+    })(),
+  ]);
   const photos = new Map();
-  for (const list of photoLists) for (const ph of list || []) photos.set(ph.id, ph);
+  for (const ph of photoRows || []) photos.set(ph.id, ph);
   const eventById = new Map((events || []).map(e => [e.id, e]));
   // Cada fotógrafo ve SOLO las descargas de SUS FOTOS (en eventos
   // compartidos, las fotos de los demás no son suyas); el dueño ve todas.
@@ -682,8 +751,12 @@ async function listSales(store, user) {
     });
   }
   const buyerIds = [...new Set(mine.map(d => d.userId).filter(id => Number.isInteger(id)))];
-  const buyers = await Promise.all(buyerIds.map(id => store.findUserById(id).catch(() => null)));
-  const buyerById = new Map(buyers.filter(Boolean).map(u => [u.id, u]));
+  // Panel rápido 2026-11-19 (D22): los compradores distintos en UNA
+  // consulta .in() (antes uno por uno); si el store no tiene el método
+  // nuevo, uno por uno como antes.
+  const buyerRows = await tryStore(store, 'findUsersByIds', buyerIds);
+  const buyers = buyerRows || await Promise.all(buyerIds.map(id => store.findUserById(id).catch(() => null)));
+  const buyerById = new Map((buyers || []).filter(Boolean).map(u => [u.id, u]));
   const rows = [];
   let revenue = 0, freeCount = 0;
   for (const d of mine) {
@@ -751,9 +824,13 @@ async function listStats(store, user) {
     downloads = downloads.filter(d => own.has(d.eventId));
   }
   const photos = new Map();
-  // Las fotos de cada evento son independientes: a la vez, no evento por
-  // evento (antes la pestaña de estadísticas esperaba cada lista).
-  for (const list of await Promise.all(events.map(ev => store.listPhotos(ev.id)))) for (const p of list || []) photos.set(p.id, p);
+  // Panel rápido 2026-11-19 (D22): las fotos de todos los eventos en
+  // UNA consulta .in() (antes una por evento); si el store no tiene el
+  // método nuevo, una por evento como antes.
+  const photoRows = await tryStore(store, 'listPhotosByEventIds', events.map(ev => ev.id));
+  if (photoRows) { for (const p of photoRows) photos.set(p.id, p); }
+  else { for (const list of await Promise.all(events.map(ev => store.listPhotos(ev.id)))) for (const p of list || []) photos.set(p.id, p); }
+  const eventById = new Map(events.map(e => [e.id, e]));
   if (!user.isOwner) {
     // En un evento compartido: las descargas y las vistas de FOTO son
     // de quien subió esa foto (las visitas al evento sí se ven para
@@ -761,14 +838,14 @@ async function listStats(store, user) {
     downloads = downloads.filter(d => {
       const p = photos.get(d.photoId);
       if (!p) return false;
-      const ev = events.find(e => e.id === p.eventId);
+      const ev = eventById.get(p.eventId);
       return photoOwnerId(p, ev) === user.id;
     });
     views = views.filter(v => {
       if (v.kind !== 'photo' || v.photoId == null) return true;
       const p = photos.get(v.photoId);
       if (!p) return false;
-      const ev = events.find(e => e.id === p.eventId);
+      const ev = eventById.get(p.eventId);
       return photoOwnerId(p, ev) === user.id;
     });
   }
@@ -822,7 +899,7 @@ async function listStats(store, user) {
     .sort((a, b) => b[1] - a[1] || (photoDlCount.get(b[0]) || 0) - (photoDlCount.get(a[0]) || 0) || a[0] - b[0]).slice(0, 10)
     .map(([photoId, views]) => {
       const p = photos.get(photoId);
-      const ev = p ? events.find(e => e.id === p.eventId) : null;
+      const ev = p ? eventById.get(p.eventId) : null;
       return { photoId, eventId: p ? p.eventId : null, eventName: ev ? ev.name : '', bibs: p ? (p.bibs || []) : [], views, downloads: photoDlCount.get(photoId) || 0 };
     });
   const topBibs = [...bibSearches.entries()]
@@ -2119,8 +2196,22 @@ async function listPhotographers(store, user) {
   const [photographers, events, downloads] = await Promise.all([store.listPhotographers(), store.listEvents(), store.listAllDownloads()]);
   // Dueño de cada descarga: el fotógrafo DE LA FOTO (en eventos
   // compartidos, las ventas de los demás no son del creador del evento).
+  // Panel rápido 2026-11-19 (D22): los dueños salen en lote (2
+  // consultas); si el store no tiene los métodos nuevos, foto por foto.
+  let ownerByPhoto = null;
+  const _photoIds = [...new Set(downloads.map(d => d.photoId))].filter(id => Number.isInteger(id));
+  const _photoRows = await tryStore(store, 'listPhotosByIds', _photoIds);
+  if (_photoRows) {
+    const _eventIds = [...new Set(_photoRows.map(p => p.eventId))].filter(id => Number.isInteger(id));
+    const _eventRows = await tryStore(store, 'listEventsByIds', _eventIds);
+    if (_eventRows) {
+      const _eventById = new Map(_eventRows.map(e => [e.id, e]));
+      ownerByPhoto = new Map(_photoRows.map(p => [p.id, photoOwnerId(p, _eventById.get(p.eventId))]));
+    }
+  }
   const photoOwnerCache = new Map();
   async function ownerOfDownload(d) {
+    if (ownerByPhoto) return ownerByPhoto.get(d.photoId) ?? null;
     if (!photoOwnerCache.has(d.photoId)) {
       const p = await store.getPhoto(d.photoId);
       const ev = p ? await store.getEvent(p.eventId) : null;
@@ -2347,28 +2438,54 @@ async function setPayoutClabe(store, user, body) {
 // Reparto de las ventas de un fotógrafo, en centavos enteros para que
 // las sumas sean exactas. pending = descargas de pago sin payout_id
 // (aún no liquidadas); pendingSince = la venta sin pagar más vieja.
-async function photographerEarnings(store, photographerId) {
+// preloaded (opcional, lo pasa payoutsSummary): { downloads,
+// ownerByPhoto } para compartir UNA lectura de descargas entre todos
+// los fotógrafos en vez de una por fotógrafo.
+// Panel rápido 2026-11-19 (D22): ANTES cada llamada leía TODAS las
+// descargas y resolvía el dueño foto por foto (2 consultas por foto
+// distinta). AHORA las fotos y sus eventos salen en lote (2 consultas
+// en total); si el store no tiene los métodos nuevos, una por una.
+async function photographerEarnings(store, photographerId, preloaded) {
   // Dos listas independientes: a la vez, no una tras otra.
-  const [downloads, payouts] = await Promise.all([store.listAllDownloads(), store.listPayoutsByPhotographer(photographerId)]);
+  const [downloads, payouts] = (preloaded && preloaded.downloads)
+    ? [preloaded.downloads, await store.listPayoutsByPhotographer(photographerId)]
+    : await Promise.all([store.listAllDownloads(), store.listPayoutsByPhotographer(photographerId)]);
   // Solo las descargas de SUS fotos (en eventos compartidos, las fotos
   // de los demás fotógrafos no cuentan para él).
-  const photoOwnerCache = new Map();
-  async function ownerOf(d) {
-    if (!photoOwnerCache.has(d.photoId)) {
-      const p = await store.getPhoto(d.photoId);
-      const ev = p ? await store.getEvent(p.eventId) : null;
-      photoOwnerCache.set(d.photoId, p ? photoOwnerId(p, ev) : null);
+  let ownerByPhoto = (preloaded && preloaded.ownerByPhoto) || null;
+  if (!ownerByPhoto) {
+    const photoIds = [...new Set(downloads.map(d => d.photoId))].filter(id => Number.isInteger(id));
+    const photoRows = await tryStore(store, 'listPhotosByIds', photoIds);
+    if (photoRows) {
+      const eventIds = [...new Set(photoRows.map(p => p.eventId))].filter(id => Number.isInteger(id));
+      const eventRows = await tryStore(store, 'listEventsByIds', eventIds);
+      if (eventRows) {
+        const eventById = new Map(eventRows.map(e => [e.id, e]));
+        ownerByPhoto = new Map(photoRows.map(p => [p.id, photoOwnerId(p, eventById.get(p.eventId))]));
+      }
     }
-    return photoOwnerCache.get(d.photoId);
+  }
+  if (!ownerByPhoto) {
+    // Ruta vieja: una foto y un evento por foto distinta.
+    const photoOwnerCache = new Map();
+    async function ownerOf(d) {
+      if (!photoOwnerCache.has(d.photoId)) {
+        const p = await store.getPhoto(d.photoId);
+        const ev = p ? await store.getEvent(p.eventId) : null;
+        photoOwnerCache.set(d.photoId, p ? photoOwnerId(p, ev) : null);
+      }
+      return photoOwnerCache.get(d.photoId);
+    }
+    // Los dueños de las descargas se resuelven todos a la vez (antes cada
+    // descarga esperaba a la anterior dentro del conteo).
+    await Promise.all([...new Set(downloads.map(d => d.photoId))].map(id => ownerOf({ photoId: id })));
+    ownerByPhoto = photoOwnerCache;
   }
   let totalSoldC = 0, clipC = 0, orlanC = 0, shareC = 0;
   let pendingShareC = 0, pendingClipC = 0, pendingOrlanC = 0, pendingSince = null;
   const pendingIds = [];
-  // Los dueños de las descargas se resuelven todos a la vez (antes cada
-  // descarga esperaba a la anterior dentro del conteo).
-  await Promise.all([...new Set(downloads.map(d => d.photoId))].map(id => ownerOf({ photoId: id })));
   for (const d of downloads) {
-    if ((await ownerOf(d)) !== photographerId) continue;
+    if (ownerByPhoto.get(d.photoId) !== photographerId) continue;
     const amt = Number(d.amount || 0);
     if (!amt) continue; // gratis: no genera comisión ni pago
     const s = splitSale(amt);
@@ -2399,11 +2516,28 @@ async function photographerEarnings(store, photographerId) {
 async function payoutsSummary(store, user) {
   requireOwner(user);
   const photographers = (await store.listPhotographers()).filter(ph => !ph.isOwner);
+  // Panel rápido 2026-11-19 (D22): ANTES las ganancias de cada
+  // fotógrafo volvían a leer TODAS las descargas y a resolver foto por
+  // foto (con 3 fotógrafos eran 3 escaneos completos + 2 consultas por
+  // foto distinta, por fotógrafo). AHORA las descargas se leen UNA vez
+  // y se comparten, y los dueños de las fotos se resuelven en lote.
+  const downloads = await store.listAllDownloads();
+  let ownerByPhoto = null;
+  const photoIds = [...new Set(downloads.map(d => d.photoId))].filter(id => Number.isInteger(id));
+  const photoRows = await tryStore(store, 'listPhotosByIds', photoIds);
+  if (photoRows) {
+    const eventIds = [...new Set(photoRows.map(p => p.eventId))].filter(id => Number.isInteger(id));
+    const eventRows = await tryStore(store, 'listEventsByIds', eventIds);
+    if (eventRows) {
+      const eventById = new Map(eventRows.map(e => [e.id, e]));
+      ownerByPhoto = new Map(photoRows.map(p => [p.id, photoOwnerId(p, eventById.get(p.eventId))]));
+    }
+  }
   const rows = [];
   const totals = { totalSold: 0, clipFee: 0, orlanFee: 0, photographerShare: 0, pendingBalance: 0 };
   // Las ganancias de cada fotógrafo son independientes: se calculan todas
   // a la vez (antes iban una por una y la pestaña Fotógrafos esperaba).
-  const earningsList = await Promise.all(photographers.map(ph => photographerEarnings(store, ph.id)));
+  const earningsList = await Promise.all(photographers.map(ph => photographerEarnings(store, ph.id, { downloads, ownerByPhoto })));
   for (let i = 0; i < photographers.length; i++) {
     const ph = photographers[i];
     const e = earningsList[i];
