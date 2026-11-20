@@ -973,9 +973,11 @@ async function setTip(store, user, body) {
   return { status: 200, data: { tipClabe: updated ? (updated.tipClabe || '') : clabe } };
 }
 
-// Quitar una foto de "Mis fotos": solo borra el registro de descarga de
-// ese usuario y esa foto, así ya no sale en su lista. La foto del álbum
-// NO se borra (sigue en el evento y otros la pueden comprar).
+// Quitar una foto de "Mis fotos": solo la ESCONDE de la lista del
+// atleta (removed_at); el registro de la descarga NO se borra, así las
+// estadísticas y las ganancias la siguen contando (Orlan, 2026-11-20:
+// quitar de la lista no debe borrar la venta). La foto del álbum NO se
+// borra (sigue en el evento y otros la pueden comprar).
 // También se pueden quitar las fotos DE PAGO (Orlan, 2026-11-19): la
 // pantalla avisa antes que si la quita, ya no la podrá descargar sin
 // volver a pagarla. El que quita es el comprador, con el aviso enfrente.
