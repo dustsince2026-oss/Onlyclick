@@ -133,12 +133,15 @@ const server = http.createServer(async (req, res) => {
     // Vista previa Open Graph con ?ref= (2026-11-20): Facebook arma la
     // vista previa del link con las etiquetas de la página. Solo se
     // inyecta cuando viene ?ref=; sin ref, la página se sirve igual que
-    // siempre. Sin caché agresiva: cada link de referido tiene sus
-    // propias etiquetas y Facebook debe leer las nuevas. Si algo falla,
-    // cae al envío normal de abajo (la página nunca se rompe).
+    // siempre. El parámetro &compartir= (primeros100 o referidos) dice
+    // QUÉ tarjeta se compartió y cambia la vista previa (ver
+    // ogMetaForRef); sin él, la vista previa es la de siempre. Sin
+    // caché agresiva: cada link de referido tiene sus propias etiquetas
+    // y Facebook debe leer las nuevas. Si algo falla, cae al envío
+    // normal de abajo (la página nunca se rompe).
     if (path.basename(file) === 'index.html' && query.ref) {
       try {
-        const og = await ogMetaForRef(query.ref);
+        const og = await ogMetaForRef(query.ref, undefined, query.compartir);
         const html = injectOg(fs.readFileSync(file, 'utf8'), og);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, max-age=0, no-cache' });
         return res.end(html);
