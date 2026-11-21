@@ -483,6 +483,28 @@ async function autoReadBibsAfterUpload(eventId) {
   }
 }
 
+// Al terminar una subida, indexa las caras en segundo plano (Fase 2):
+// llama a /api/index-photo-faces de 8 en 8 hasta que no queden fotos sin
+// indexar en el evento. Es opcional y nunca rompe la subida: si no hay
+// llaves de AWS o falla, la foto ya quedó guardada y la búsqueda por
+// selfie sigue funcionando con la Fase 1. El backfill de un evento viejo
+// (p. ej. Trijex) usa el mismo endpoint desde el botón del detalle.
+async function autoIndexFacesAfterUpload(eventId) {
+  const upStatus = () => document.getElementById('upStatus');
+  try {
+    let offset = 0, done = false, faces = 0, indexed = 0;
+    while (!done) {
+      const r = await api('/api/index-photo-faces', { method: 'POST', body: JSON.stringify({ eventId, offset, limit: 8 }) });
+      if (!r.ok) return; // sin llaves de AWS: la búsqueda instantánea queda para después
+      indexed += Number(r.indexed) || 0; faces += Number(r.faces) || 0;
+      offset = Number(r.nextOffset) || 0; done = !!r.done;
+      const el = upStatus(); if (el && !done) el.textContent = 'Indexando caras para la búsqueda instantánea… ' + offset + '/' + (r.total || 0);
+    }
+    const el = upStatus();
+    if (el && indexed) el.textContent = 'Caras indexadas: ' + faces + ' en ' + indexed + ' fotos. La búsqueda por selfie ya es instantánea en este evento.';
+  } catch (_) { /* la indexación es opcional: la foto ya quedó subida */ }
+}
+
 function saveToken(t) { token = t || ''; if (t) localStorage.setItem('onlyclick_token', t); else localStorage.removeItem('onlyclick_token'); }
 
 // Visitante anónimo para estadísticas: un código por navegador, creado
@@ -1682,6 +1704,24 @@ async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, result
     } catch (_) { state.errors++; state.checked += FACE_BATCH; renderStatus(); }
   }
   if (statusEl) statusEl.textContent = 'Buscando tu cara…';
+  // Fase 2: primero se intenta la búsqueda instantánea (caras ya
+  // indexadas con Rekognition). Si el evento aún no tiene índice, o no
+  // hay llaves de AWS, se sigue con la Fase 1 (lotes con Gemini) y la
+  // búsqueda nunca se rompe. Si en la selfie no se ve ninguna cara, se
+  // avisa y se para (la Fase 1 tampoco la encontraría).
+  try {
+    const inst = await api('/api/face-search-instant', { method: 'POST', body: JSON.stringify({ eventId, selfieBase64, mimeType: 'image/jpeg' }) });
+    if (inst.ok) {
+      const secs = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
+      for (const p of (inst.matches || [])) if (!state.matches.has(p.id)) state.matches.set(p.id, p);
+      state.total = Number(inst.total) || state.matches.size;
+      state.checked = state.total;
+      renderResults('Búsqueda instantánea · ' + secs + ' s');
+      return;
+    }
+    if (inst.reason === 'no-face') { if (statusEl) statusEl.textContent = 'No se ve tu cara en la selfie, prueba otra de frente y con buena luz.'; return; }
+    // no-index / no-key / ia-error: se sigue con la Fase 1 abajo.
+  } catch (_) { /* sin conexión al endpoint instantáneo: Fase 1 */ }
   // Primer lote: dice cuántas fotos tiene el evento y calienta la
   // conexión. Los demás lotes van después, 4 en paralelo.
   await oneChunk(0);
@@ -1890,6 +1930,7 @@ async function loadEventDetail(eventId, push) {
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
     <p id="evFaceStatus" class="muted"></p>
+    ${r.isParticipant ? `<div class="row"><button id="evIndexFacesBtn" class="secondary">⚡ Indexar caras (búsqueda instantánea)</button></div><p id="evIndexStatus" class="muted"></p>` : ''}
     ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
     <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
   bindPhotos(r.photos);
@@ -1916,6 +1957,25 @@ async function loadEventDetail(eventId, push) {
       await api('/api/join-event', { method: 'POST', body: JSON.stringify({ eventId, priceMxn: Number($('#joinPrice').value || 20) }) });
       loadEventDetail(eventId);
     } catch (e) { const st = $('#joinStatus'); if (st) st.textContent = e.message; }
+  };
+  // Backfill Fase 2: indexa las caras de las fotos que aún no tienen
+  // índice, de 8 en 8, con avance. Solo lo ve quien participa en el
+  // evento (para el Trijex viejo es el botón que lo deja instantáneo).
+  const evIndexFacesBtn = $('#evIndexFacesBtn');
+  if (evIndexFacesBtn) evIndexFacesBtn.onclick = async () => {
+    const st = $('#evIndexStatus');
+    evIndexFacesBtn.disabled = true;
+    try {
+      let offset = 0, done = false, faces = 0, indexed = 0, total = 0;
+      while (!done) {
+        const r = await api('/api/index-photo-faces', { method: 'POST', body: JSON.stringify({ eventId, offset, limit: 8 }) });
+        if (!r.ok) { if (st) st.textContent = 'La indexación no está disponible ahorita (falta configurar AWS). La búsqueda por selfie sigue funcionando con la Fase 1.'; evIndexFacesBtn.disabled = false; return; }
+        indexed += Number(r.indexed) || 0; faces += Number(r.faces) || 0; total = Number(r.total) || total;
+        offset = Number(r.nextOffset) || 0; done = !!r.done;
+        if (st) st.textContent = 'Indexando caras… ' + offset + '/' + total + ' fotos';
+      }
+      if (st) st.textContent = 'Listo: ' + faces + ' caras en ' + indexed + ' fotos. La búsqueda por selfie ya es instantánea en este evento.';
+    } catch (e) { if (st) st.textContent = e.message || 'No se pudo indexar.'; evIndexFacesBtn.disabled = false; }
   };
 }
 
@@ -2654,6 +2714,7 @@ async function loadPhotographer() {
     // Al terminar de subirse, los dorsales se leen solos con IA, en
     // segundo plano, y se guardan. No se espera: la lectura sigue sola.
     if (n) autoReadBibsAfterUpload(eventId);
+    if (n) autoIndexFacesAfterUpload(eventId);
   };
   document.querySelectorAll('[data-free]').forEach(b => b.onclick = async () => {
     const ev = events.find(e => e.id === Number(b.dataset.free));
