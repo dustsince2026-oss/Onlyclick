@@ -1969,7 +1969,7 @@ async function loadEventDetail(eventId, push) {
       let offset = 0, done = false, faces = 0, indexed = 0, total = 0;
       while (!done) {
         const r = await api('/api/index-photo-faces', { method: 'POST', body: JSON.stringify({ eventId, offset, limit: 8 }) });
-        if (!r.ok) { if (st) st.textContent = 'La indexación no está disponible ahorita (falta configurar AWS). La búsqueda por selfie sigue funcionando con la Fase 1.'; evIndexFacesBtn.disabled = false; return; }
+        if (!r.ok) { if (st) st.textContent = 'La indexación no está disponible ahorita (falta configurar AWS). La búsqueda por selfie sigue funcionando con la Fase 1. Detalle: ' + (r.detail || r.reason || 'sin detalle'); evIndexFacesBtn.disabled = false; return; }
         indexed += Number(r.indexed) || 0; faces += Number(r.faces) || 0; total = Number(r.total) || total;
         offset = Number(r.nextOffset) || 0; done = !!r.done;
         if (st) st.textContent = 'Indexando caras… ' + offset + '/' + total + ' fotos';
