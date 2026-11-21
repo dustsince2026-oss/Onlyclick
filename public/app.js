@@ -1742,13 +1742,33 @@ async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, result
   renderResults(state.errors ? 'Algunas fotos no se pudieron revisar, si no aparece tu foto inténtalo de nuevo.' : '');
 }
 
-// Abre el selector de foto del teléfono, achica la selfie y arranca la
-// búsqueda en el evento dado. statusEl muestra el avance, resultsEl las
+// Pregunta CÓMO quiere su selfie y luego abre el selector: con la
+// cámara de frente ahí mismo ("Tomar foto", capture="user") o con una
+// foto que ya tiene ("Elegir de la galería"). Sin capture el navegador
+// solo ofrece la galería y el corredor tendría que salirse a tomarse la
+// foto y volver a entrar. statusEl muestra el avance, resultsEl las
 // fotos encontradas (pueden ser el mismo elemento, como en el inicio).
 async function pickSelfieAndSearch(eventId, eventName, statusEl, resultsEl) {
   if (!eventId) { if (statusEl) statusEl.textContent = 'Aún no hay eventos para buscar.'; return; }
+  // Sin lugar donde mostrar el selector, abre la galería como antes.
+  if (!statusEl || !statusEl.parentNode) { openSelfieInput(false, eventId, eventName, statusEl, resultsEl); return; }
+  document.querySelectorAll('.selfie-chooser').forEach(n => n.remove());
+  const chooser = document.createElement('div');
+  chooser.className = 'selfie-chooser';
+  chooser.innerHTML = '<p class="muted">¿Cómo quieres tu selfie?</p><div class="row"><button type="button" class="primary" data-pick="camera">📷 Tomar foto</button><button type="button" class="secondary" data-pick="gallery">🖼️ Elegir de la galería</button></div>';
+  statusEl.after(chooser);
+  chooser.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+    chooser.remove();
+    openSelfieInput(b.dataset.pick === 'camera', eventId, eventName, statusEl, resultsEl);
+  });
+}
+
+// Abre el selector de foto (cámara de frente si withCamera, galería si
+// no), achica la selfie y arranca la búsqueda en el evento dado.
+function openSelfieInput(withCamera, eventId, eventName, statusEl, resultsEl) {
   const input = document.createElement('input');
   input.type = 'file'; input.accept = 'image/*';
+  if (withCamera) input.setAttribute('capture', 'user');
   input.onchange = async () => {
     const file = input.files && input.files[0];
     if (!file) return;
