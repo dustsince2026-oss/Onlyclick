@@ -8,7 +8,7 @@
 // de un caché viejo. La cáscara se pide a la red primero y solo si no
 // hay conexión se usa la copia guardada, así cada despliegue llega
 // solo; los íconos sí se guardan directo porque no cambian.
-const CACHE = 'onlyclick-shell-v2';
+const CACHE = 'onlyclick-shell-v3';
 const SHELL_CACHE_FIRST = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/favicon.png', '/apple-touch-icon.png'];
 const SHELL_NETWORK_FIRST = ['/', '/index.html', '/app.js'];
 
