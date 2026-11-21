@@ -22,7 +22,7 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 // ---------------- Adaptador de archivo local ----------------
 function loadDb() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (_) {
-    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], payouts: [], announcements: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1, payout: 1, announcement: 1 } };
+    return { users: [], events: [], photos: [], downloads: [], payments: [], views: [], payouts: [], announcements: [], faceIndex: [], seq: { user: 1, event: 1, photo: 1, download: 1, payment: 1, view: 1, payout: 1, announcement: 1, face: 1 } };
   }
 }
 function saveDb(db) {
@@ -140,7 +140,7 @@ const fileStore = {
   async listExpiredEventIds(cutoff) { return loadDb().events.filter(e => e.eventDate && String(e.eventDate).slice(0, 10) <= String(cutoff)).map(e => e.id); },
   async createEvent(e) { const db = loadDb(); const row = { id: nextId(db, 'event'), freeMode: true, priceMxn: 20, createdAt: new Date().toISOString(), ...e }; db.events.push(row); saveDb(db); return row; },
   async updateEvent(id, patch) { const db = loadDb(); const e = db.events.find(x => x.id === Number(id)); if (!e) return null; Object.assign(e, patch); saveDb(db); return e; },
-  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); db.eventPhotographers = (db.eventPhotographers || []).filter(x => x.eventId !== Number(id)); db.photoAlerts = (db.photoAlerts || []).filter(x => x.eventId !== Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
+  async deleteEvent(id) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); db.eventPhotographers = (db.eventPhotographers || []).filter(x => x.eventId !== Number(id)); db.photoAlerts = (db.photoAlerts || []).filter(x => x.eventId !== Number(id)); const gone = db.photos.filter(p => p.eventId === Number(id)); for (const p of gone) { if (p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } } if (ev && ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } db.faceIndex = (db.faceIndex || []).filter(x => x.eventId !== Number(id)); db.events = db.events.filter(e => e.id !== Number(id)); db.photos = db.photos.filter(p => p.eventId !== Number(id)); saveDb(db); return { photos: gone.length }; },
   async setEventCover(id, f) { const db = loadDb(); const ev = db.events.find(x => x.id === Number(id)); if (!ev) return null; fs.mkdirSync(UPLOAD_DIR, { recursive: true }); if (ev.coverPath) { try { fs.unlinkSync(ev.coverPath); } catch (_) {} } const ext = f.mimeType === 'image/png' ? 'png' : 'jpg'; const coverPath = path.join(UPLOAD_DIR, `cover-${id}-${Date.now()}.${ext}`); fs.writeFileSync(coverPath, f.fileBuffer); ev.coverPath = coverPath; saveDb(db); return coverPath; },
   async getEventCover(id) { const ev = await this.getEvent(id); if (!ev || !ev.coverPath) return null; try { return { bytes: fs.readFileSync(ev.coverPath), mimeType: String(ev.coverPath).endsWith('.png') ? 'image/png' : 'image/jpeg' }; } catch (_) { return null; } },
   async listPhotos(eventId) { return loadDb().photos.filter(p => p.eventId === Number(eventId)); },
@@ -174,7 +174,39 @@ const fileStore = {
   async saveThumbBuffer(photoId, buffer) { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); const thumbPath = path.join(UPLOAD_DIR, `${Number(photoId)}-thumb.jpg`); fs.writeFileSync(thumbPath, buffer); return thumbPath; },
   async setPhotoThumb(id, thumbPath) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; p.thumbPath = thumbPath || ''; saveDb(db); return { ...p }; },
   async updatePhoto(id, patch) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (!p) return null; Object.assign(p, patch); saveDb(db); return p; },
-  async deletePhoto(id) { const db = loadDb(); const p = db.photos.find(x => x.id === Number(id)); if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} } if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} } db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); },
+  async deletePhoto(id) {
+    const db = loadDb(); const p = db.photos.find(x => x.id === Number(id));
+    if (p && p.filePath) { try { fs.unlinkSync(p.filePath); } catch (_) {} }
+    if (p && p.thumbPath) { try { fs.unlinkSync(p.thumbPath); } catch (_) {} }
+    // Al borrar la foto se borran también sus caras indexadas (Fase 2) y
+    // se devuelven sus FaceIds para borrarlas de Rekognition.
+    const faceIds = (db.faceIndex || []).filter(x => x.photoId === Number(id)).map(x => x.faceId);
+    db.faceIndex = (db.faceIndex || []).filter(x => x.photoId !== Number(id));
+    db.photos = db.photos.filter(x => x.id !== Number(id)); saveDb(db); return faceIds;
+  },
+  // ---- Búsqueda por selfie instantánea (Fase 2, Rekognition) ----
+  async listFaceIndex(eventId) { return (loadDb().faceIndex || []).filter(x => x.eventId === Number(eventId)).map(mapFaceIndex); },
+  async addFaceIndex(rows) {
+    const db = loadDb(); db.faceIndex = db.faceIndex || []; if (!db.seq.face) db.seq.face = 1;
+    const out = [];
+    for (const r of (rows || [])) {
+      const existing = db.faceIndex.find(x => x.faceId === String(r.faceId));
+      if (existing) { out.push(mapFaceIndex(existing)); continue; }
+      const row = { id: nextId(db, 'face'), eventId: Number(r.eventId), photoId: Number(r.photoId), faceId: String(r.faceId), collectionId: String(r.collectionId || ''), createdAt: new Date().toISOString() };
+      db.faceIndex.push(row); out.push(mapFaceIndex(row));
+    }
+    saveDb(db); return out;
+  },
+  async deleteFaceIndexByPhoto(photoId) {
+    const db = loadDb(); const gone = (db.faceIndex || []).filter(x => x.photoId === Number(photoId));
+    db.faceIndex = (db.faceIndex || []).filter(x => x.photoId !== Number(photoId)); saveDb(db);
+    return gone.map(x => x.faceId);
+  },
+  async deleteFaceIndexByEvent(eventId) {
+    const db = loadDb(); const gone = (db.faceIndex || []).filter(x => x.eventId === Number(eventId));
+    db.faceIndex = (db.faceIndex || []).filter(x => x.eventId !== Number(eventId)); saveDb(db);
+    return gone.map(x => x.faceId);
+  },
   // Si el usuario ya tenía esta foto y la había quitado de "Mis fotos",
   // se reactiva el mismo registro (no se duplica): las estadísticas
   // cuentan un solo registro por foto guardada.
@@ -439,6 +471,9 @@ function supabase() {
 function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', referralCode: r.referral_code || null, referredBy: r.referred_by != null ? Number(r.referred_by) : null, lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, freeSalesBank: Number(r.free_sales_bank || 0), freeSalesReferralBlocks: Number(r.free_sales_referral_blocks || 0), freeSalesMilestoneBlocks: Number(r.free_sales_milestone_blocks || 0), createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', isHidden: !!r.is_hidden, isExclusive: !!r.is_exclusive, isUpcoming: !!r.is_upcoming, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', widthPx: r.width_px != null ? Number(r.width_px) : null, heightPx: r.height_px != null ? Number(r.height_px) : null, sizeKb: r.size_kb != null ? Number(r.size_kb) : null, createdAt: r.created_at } : null; }
+// Cara indexada en Rekognition (Fase 2): una fila por cara de una foto.
+// fileStore guarda camelCase y Supabase snake_case; el mapper acepta las dos.
+function mapFaceIndex(r) { return r ? { id: r.id, eventId: r.event_id != null ? Number(r.event_id) : Number(r.eventId), photoId: r.photo_id != null ? Number(r.photo_id) : Number(r.photoId), faceId: r.face_id || r.faceId, collectionId: r.collection_id || r.collectionId || '', createdAt: r.created_at || r.createdAt } : null; }
 // Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
 // llena cuando se mandó el aviso (una sola vez por correo y evento).
 function mapPhotoAlert(r) { return r ? { id: r.id, eventId: r.event_id, email: r.email, notifiedAt: r.notified_at || null, createdAt: r.created_at } : null; }
@@ -771,6 +806,7 @@ const supabaseStore = {
     if (ev && ev.coverPath) paths.push(ev.coverPath);
     for (let i = 0; i < paths.length; i += 100) { await supabase().storage.from('photos').remove(paths.slice(i, i + 100)); }
     await supabase().from('photos').delete().eq('event_id', id);
+    try { await supabase().from('photo_faces').delete().eq('event_id', id); } catch (_) {}
     try { await supabase().from('photo_alerts').delete().eq('event_id', id); } catch (_) {}
     try { await supabase().from('event_photographers').delete().eq('event_id', id); } catch (_) {}
     await supabase().from('events').delete().eq('id', id);
@@ -854,7 +890,42 @@ const supabaseStore = {
     if (patch.sizeKb !== undefined && patch.sizeKb != null) p.size_kb = Number(patch.sizeKb);
     const { data } = await supabase().from('photos').update(p).eq('id', id).select().single(); return mapPhoto(data);
   },
-  async deletePhoto(id) { const ph = await this.getPhoto(id); if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]); if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} } await supabase().from('photos').delete().eq('id', id); },
+  async deletePhoto(id) {
+    const ph = await this.getPhoto(id);
+    if (ph && ph.storagePath) await supabase().storage.from('photos').remove([ph.storagePath]);
+    if (ph && ph.thumbPath) { try { await supabase().storage.from('photos').remove([ph.thumbPath]); } catch (_) {} }
+    // Las caras indexadas de la foto (Fase 2) se borran con ella; se
+    // devuelven sus FaceIds para borrarlas de Rekognition.
+    const faceIds = await this.deleteFaceIndexByPhoto(id).catch(() => []);
+    await supabase().from('photos').delete().eq('id', id);
+    return faceIds;
+  },
+  // ---- Búsqueda por selfie instantánea (Fase 2, Rekognition) ----
+  // Si la tabla photo_faces aún no existe en vivo (falta correr el SQL),
+  // las lecturas devuelven vacío (la búsqueda cae a la Fase 1) y las
+  // escrituras fallan y avisan.
+  async listFaceIndex(eventId) {
+    try {
+      const { data, error } = await supabase().from('photo_faces').select().eq('event_id', eventId).order('id');
+      if (error) return [];
+      return (data || []).map(mapFaceIndex);
+    } catch (_) { return []; }
+  },
+  async addFaceIndex(rows) {
+    const list = (rows || []).map(r => ({ event_id: Number(r.eventId), photo_id: Number(r.photoId), face_id: String(r.faceId), collection_id: String(r.collectionId || '') }));
+    if (!list.length) return [];
+    const { data, error } = await supabase().from('photo_faces').upsert(list, { onConflict: 'face_id' }).select();
+    if (error) throw new Error(error.message);
+    return (data || []).map(mapFaceIndex);
+  },
+  async deleteFaceIndexByPhoto(photoId) {
+    const { data } = await supabase().from('photo_faces').delete().eq('photo_id', photoId).select('face_id');
+    return (data || []).map(r => r.face_id);
+  },
+  async deleteFaceIndexByEvent(eventId) {
+    const { data } = await supabase().from('photo_faces').delete().eq('event_id', eventId).select('face_id');
+    return (data || []).map(r => r.face_id);
+  },
   // Si el usuario ya tenía esta foto y la había quitado de "Mis fotos",
   // se reactiva el mismo registro (no se duplica): las estadísticas
   // cuentan un solo registro por foto guardada.
