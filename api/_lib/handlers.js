@@ -11,6 +11,9 @@ const { sendResetEmail, sendSaleEmail, sendEmail } = require('./mailer');
 // Clip se usa por objeto de módulo (clip.getCheckout) y no desestructurado,
 // para que los tests puedan cambiar el simulado a mitad de la corrida.
 const clip = require('./clip');
+// Rekognition igual: por objeto de módulo (rekognition.searchFacesByImage),
+// para que los tests puedan cambiar el simulado sin tocar handlers.js.
+const rekognition = require('./rekognition');
 
 function err(status, message) { const e = new Error(message); e.status = status; return e; }
 function normBib(b) { return String(b == null ? '' : b).trim(); }
@@ -613,7 +616,12 @@ async function expireOldEvents(store) {
   const ids = await tryStore(store, 'listExpiredEventIds', cutoff);
   if (ids) {
     for (const id of ids) {
-      try { await store.deleteEvent(id); } catch (_) {}
+      try {
+        await store.deleteEvent(id);
+        // Fase 2: al caducar el álbum se borra también su colección de
+        // caras en Rekognition (mejor esfuerzo: si falla, no rompe nada).
+        try { await rekognition.deleteCollection(rekognition.collectionIdFor(id)); } catch (_) {}
+      } catch (_) {}
     }
     return;
   }
@@ -621,7 +629,12 @@ async function expireOldEvents(store) {
   for (const e of await store.listEvents()) {
     const exp = eventExpiresAt(e);
     if (exp && new Date(exp).getTime() <= now) {
-      try { await store.deleteEvent(e.id); } catch (_) {}
+      try {
+        await store.deleteEvent(e.id);
+        // Fase 2: al caducar el álbum se borra también su colección de
+        // caras en Rekognition (mejor esfuerzo: si falla, no rompe nada).
+        try { await rekognition.deleteCollection(rekognition.collectionIdFor(e.id)); } catch (_) {}
+      } catch (_) {}
     }
   }
 }
@@ -1430,7 +1443,13 @@ async function deletePhoto(store, user, photoId) {
   // acceso. Las descargas gratis no bloquean (la foto solo desaparece
   // de la lista de Mis fotos de quien la guardó gratis).
   if (await store.hasPaidDownload(p.id)) throw err(400, 'Esta foto ya se vendió y no se puede eliminar: alguien ya pagó por ella.');
-  await store.deletePhoto(p.id);
+  // store.deletePhoto borra también sus caras indexadas (Fase 2) y
+  // devuelve sus FaceIds: se borran de Rekognition (mejor esfuerzo).
+  // Si el borrado de la foto falla, el error se propaga como antes.
+  const faceIds = await store.deletePhoto(p.id);
+  if (faceIds && faceIds.length) {
+    try { await rekognition.deleteFaces(rekognition.collectionIdFor(ev.id), faceIds); } catch (_) {}
+  }
   return { status: 200, data: { ok: true } };
 }
 
@@ -1475,6 +1494,9 @@ async function deleteEvent(store, user, body) {
   if (!ev) throw err(404, 'Evento no encontrado.');
   if (ev.photographerId !== user.id) throw err(403, 'Ese evento no es tuyo.');
   const result = await store.deleteEvent(ev.id);
+  // Fase 2: al borrar el evento se borra también su colección de caras
+  // en Rekognition (mejor esfuerzo: si falla, no rompe el borrado).
+  try { await rekognition.deleteCollection(rekognition.collectionIdFor(ev.id)); } catch (_) {}
   return { status: 200, data: { ok: true, photos: result ? (result.photos || 0) : 0 } };
 }
 
@@ -1559,6 +1581,48 @@ async function geminiVisionJson(key, parts) {
   return { ok: false, status: lastErr.status, detail: lastErr.detail };
 }
 
+// ---- Ayudas compartidas por la búsqueda por selfie (Fase 1 y 2) ----
+// faceSearchEvent: el evento existe y no caducó (dispara la limpieza de
+// álbumes viejos igual que getEvent) y respeta las reglas de la Fase 1
+// actual: álbumes ocultos y "Próximo evento" solo los ve el dueño.
+// parseFaceSelfie: valida la selfie (vacía, más de 2 MB o no imagen ->
+// 400). enrichFaceMatches: las fotos con la misma forma que la búsqueda
+// por dorsal (autor, precio por foto, nombre del evento, modo gratis/pago
+// y si ya es tuya con sesión).
+async function faceSearchEvent(store, user, eventId) {
+  await expireOldEvents(store);
+  const ev = await store.getEvent(eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  const exp = eventExpiresAt(ev);
+  if (exp && new Date(exp).getTime() <= Date.now()) throw err(404, 'Este álbum ya caducó.');
+  // Búsqueda por selfie no toca álbumes ocultos (salvo al dueño).
+  assertEventVisible(user, ev);
+  // Ni álbumes "Próximo evento" (salvo al dueño): aún no hay fotos.
+  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
+  return ev;
+}
+function parseFaceSelfie(body) {
+  const selfieBase64 = String(body.selfieBase64 || '');
+  if (!selfieBase64) throw err(400, 'Falta tu selfie.');
+  const buf = Buffer.from(selfieBase64, 'base64');
+  if (!buf.length || buf.length > FACE_SELFIE_MAX_BYTES) throw err(400, 'La selfie está vacía o pesa más de 2 MB.');
+  const mime = String(body.mimeType || 'image/jpeg');
+  if (!mime.startsWith('image/')) throw err(400, 'La selfie no es una imagen.');
+  return { buf, mime };
+}
+async function enrichFaceMatches(store, user, ev, photos) {
+  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
+  const partsRows = await store.listParticipants(ev.id).catch(() => []);
+  const priceByPh = new Map(partsRows.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
+  const owned = new Set();
+  if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
+  return photos.map(p => {
+    const pid = photoOwnerId(p, ev);
+    const u = pid != null ? users.get(pid) : null;
+    return { ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev.name, freeMode: ev.freeMode, priceMxn: (pid != null && priceByPh.has(pid)) ? priceByPh.get(pid) : eventPrice(ev), tipClabe: u ? (u.tipClabe || '') : '', tipName: displayNameFor(u), owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined };
+  });
+}
+
 // Búsqueda por selfie (Fase 1, reconocimiento facial con Gemini).
 // POST { eventId, selfieBase64, mimeType, offset, limit }.
 // Compara LA SELFIE contra UN LOTE de fotos del evento (máx. 8 por
@@ -1576,21 +1640,8 @@ async function faceSearch(store, user, body) {
   if (!key) return { status: 200, data: { ok: false, reason: 'no-key' } };
   const eventId = Number(body.eventId);
   if (!Number.isInteger(eventId)) throw err(400, 'Falta el evento.');
-  await expireOldEvents(store);
-  const ev = await store.getEvent(eventId);
-  if (!ev) throw err(404, 'Evento no encontrado.');
-  const exp = eventExpiresAt(ev);
-  if (exp && new Date(exp).getTime() <= Date.now()) throw err(404, 'Este álbum ya caducó.');
-  // Búsqueda por selfie no toca álbumes ocultos (salvo al dueño).
-  assertEventVisible(user, ev);
-  // Ni álbumes "Próximo evento" (salvo al dueño): aún no hay fotos.
-  if (ev.isUpcoming && !(user && user.isOwner)) throw err(404, 'Este álbum aún no tiene fotos. Las fotos estarán disponibles después de la carrera.');
-  const selfieBase64 = String(body.selfieBase64 || '');
-  if (!selfieBase64) throw err(400, 'Falta tu selfie.');
-  const selfieBuf = Buffer.from(selfieBase64, 'base64');
-  if (!selfieBuf.length || selfieBuf.length > FACE_SELFIE_MAX_BYTES) throw err(400, 'La selfie está vacía o pesa más de 2 MB.');
-  const selfieMime = String(body.mimeType || 'image/jpeg');
-  if (!selfieMime.startsWith('image/')) throw err(400, 'La selfie no es una imagen.');
+  const ev = await faceSearchEvent(store, user, eventId);
+  const { buf: selfieBuf, mime: selfieMime } = parseFaceSelfie(body);
   const offset = Math.max(0, Number(body.offset) || 0);
   const limit = Math.min(FACE_BATCH_MAX, Math.max(1, Number(body.limit) || FACE_BATCH_MAX));
   const all = await store.listPhotos(eventId);
@@ -1627,18 +1678,118 @@ async function faceSearch(store, user, body) {
   // Las coincidencias se devuelven con la misma forma que la búsqueda por
   // dorsal (searchBib): autor, precio por foto, nombre del evento, modo
   // gratis/pago y si ya es tuya (cuando hay sesión).
-  const users = new Map((await store.listPhotographers()).map(u => [u.id, u]));
-  const partsRows = await store.listParticipants(ev.id).catch(() => []);
-  const priceByPh = new Map(partsRows.map(pt => [Number(pt.photographerId), Number(pt.priceMxn)]));
-  const owned = new Set();
-  if (user) for (const d of await store.listDownloadsByUser(user.id)) owned.add(d.photoId);
-  const matches = idxs.map(i => {
-    const p = candidates[i].photo;
-    const pid = photoOwnerId(p, ev);
-    const u = pid != null ? users.get(pid) : null;
-    return { ...p, photographerId: pid, photographerName: displayNameFor(u), eventName: ev.name, freeMode: ev.freeMode, priceMxn: (pid != null && priceByPh.has(pid)) ? priceByPh.get(pid) : eventPrice(ev), tipClabe: u ? (u.tipClabe || '') : '', tipName: displayNameFor(u), owned: owned.has(p.id), filePath: undefined, storagePath: undefined, thumbPath: undefined };
-  });
+  const matches = await enrichFaceMatches(store, user, ev, idxs.map(i => candidates[i].photo));
   return { status: 200, data: { ok: true, matches, total, checked: batch.length, nextOffset: offset + batch.length, done: offset + batch.length >= total } };
+}
+
+// Búsqueda por selfie INSTANTÁNEA (Fase 2, Rekognition).
+// POST { eventId, selfieBase64, mimeType } — UNA sola llamada: compara la
+// selfie contra las huellas ya indexadas del evento y devuelve las fotos
+// donde aparece la persona, en segundos. Misma forma de respuesta que la
+// Fase 1 (autor, precio, evento, gratis/pago, owned) + instant:true.
+// La selfie NO se guarda. Pública como la búsqueda por dorsal.
+// Si el evento aún no tiene índice -> { ok:false, reason:'no-index' } y
+// el cliente cae a la Fase 1 (lotes con Gemini): la búsqueda nunca se
+// rompe. Sin llaves de AWS -> 'no-key'. Si en la selfie no se ve ninguna
+// cara -> 'no-face'. Otros errores de Rekognition -> 'ia-error'.
+async function faceSearchInstant(store, user, body) {
+  const eventId = Number(body.eventId);
+  if (!Number.isInteger(eventId)) throw err(400, 'Falta el evento.');
+  const ev = await faceSearchEvent(store, user, eventId);
+  const { buf: selfieBuf } = parseFaceSelfie(body);
+  if (!rekognition.isConfigured()) return { status: 200, data: { ok: false, reason: 'no-key' } };
+  // Sin tabla photo_faces (falta correr el SQL) la lectura devuelve [] y
+  // se cae a la Fase 1, igual que si el evento no tuviera índice.
+  const index = await store.listFaceIndex(eventId).catch(() => []);
+  if (!index.length) return { status: 200, data: { ok: false, reason: 'no-index' } };
+  const collectionId = rekognition.collectionIdFor(eventId);
+  let res;
+  try {
+    res = await rekognition.searchFacesByImage(collectionId, selfieBuf, { threshold: FACE2_SIMILARITY_MIN, maxFaces: 100 });
+  } catch (e) {
+    if (e.code === 'InvalidParameterException') return { status: 200, data: { ok: false, reason: 'no-face', detail: String(e.message || '').slice(0, 120) } };
+    return { status: 200, data: { ok: false, reason: 'ia-error', status: e.status || 500, detail: String(e.message || '').slice(0, 120) } };
+  }
+  const byFace = new Map(index.map(r => [r.faceId, r.photoId]));
+  const best = new Map(); // photoId -> mayor parecido (una foto puede tener varias caras)
+  for (const m of (res.FaceMatches || [])) {
+    const faceId = m.Face && m.Face.FaceId;
+    const sim = Number(m.Similarity);
+    if (!faceId || !byFace.has(faceId) || !Number.isFinite(sim) || sim < FACE2_SIMILARITY_MIN) continue;
+    const pid = byFace.get(faceId);
+    if (!best.has(pid) || sim > best.get(pid)) best.set(pid, sim);
+  }
+  const all = await store.listPhotos(eventId);
+  const byId = new Map(all.map(p => [p.id, p]));
+  const photos = [...best.entries()].sort((a, b) => b[1] - a[1]).map(([pid]) => byId.get(pid)).filter(Boolean);
+  const matches = await enrichFaceMatches(store, user, ev, photos);
+  for (const m of matches) m.similarity = Math.round(best.get(m.id) * 10) / 10;
+  return { status: 200, data: { ok: true, instant: true, matches, total: all.length, indexed: index.length, similarityMin: FACE2_SIMILARITY_MIN } };
+}
+
+// Indexa las caras de fotos de un evento en Rekognition (Fase 2).
+// POST { eventId, photoIds:[...] } (fotos concretas, p. ej. recién
+// subidas) o { eventId, photoId } (una foto) o { eventId, offset, limit }
+// (backfill: las siguientes fotos del evento que aún no tienen ninguna
+// cara indexada). Máx. 8 fotos por llamada (límite de Vercel ~10 s; el
+// cliente repite con offset hasta terminar). Solo fotógrafos que
+// participen en el evento. Crea la colección si no existe (una por
+// evento). Las fotos sin cara no son error (se cuentan en noFace).
+// Sin llaves de AWS -> { ok:false, reason:'no-key' }.
+async function indexPhotoFaces(store, user, body) {
+  requirePhotographer(user);
+  const eventId = Number(body.eventId);
+  if (!Number.isInteger(eventId)) throw err(400, 'Falta el evento.');
+  const ev = await store.getEvent(eventId);
+  if (!ev) throw err(404, 'Evento no encontrado.');
+  if (!isEventOwner(user, ev)) {
+    const part = await store.getParticipant(ev.id, user.id).catch(() => null);
+    if (!part) throw err(403, 'No participas en ese evento.');
+  }
+  if (!rekognition.isConfigured()) return { status: 200, data: { ok: false, reason: 'no-key' } };
+  const limit = Math.min(FACE2_INDEX_CHUNK_MAX, Math.max(1, Number(body.limit) || FACE2_INDEX_CHUNK_MAX));
+  let photos = [];
+  let total = 0, nextOffset = 0, done = true;
+  if (Array.isArray(body.photoIds) && body.photoIds.length) {
+    const ids = [...new Set(body.photoIds.map(Number).filter(Number.isInteger))].slice(0, limit);
+    for (const id of ids) { const p = await store.getPhoto(id); if (p && Number(p.eventId) === eventId) photos.push(p); }
+    total = photos.length; done = true;
+  } else if (body.photoId) {
+    const p = await store.getPhoto(Number(body.photoId));
+    if (p && Number(p.eventId) === eventId) photos = [p];
+    total = photos.length; done = true;
+  } else {
+    // Backfill: el offset/limit recorren TODAS las fotos del evento en
+    // orden (no solo las pendientes): así el offset es estable entre
+    // llamadas aunque las fotos se vayan indexando. Dentro de cada tanda
+    // se saltan las que ya tienen cara indexada.
+    const all = await store.listPhotos(eventId);
+    const indexed = new Set((await store.listFaceIndex(eventId).catch(() => [])).map(r => r.photoId));
+    const offset = Math.max(0, Number(body.offset) || 0);
+    const slice = all.slice(offset, offset + limit);
+    photos = slice.filter(p => !indexed.has(p.id));
+    total = all.length; nextOffset = offset + slice.length; done = nextOffset >= all.length;
+  }
+  const collectionId = rekognition.collectionIdFor(eventId);
+  try { await rekognition.createCollection(collectionId); }
+  catch (e) {
+    if (e.code !== 'ResourceAlreadyExistsException') return { status: 200, data: { ok: false, reason: 'ia-error', status: e.status || 500, detail: String(e.message || '').slice(0, 120) } };
+  }
+  let indexed = 0, faces = 0, noFace = 0; const errors = [];
+  for (const p of photos) {
+    let bytes = null;
+    try { bytes = await store.readPhotoBytes(p); } catch (_) {}
+    if (!bytes || !bytes.length) { errors.push({ photoId: p.id, error: 'no se pudo leer la foto' }); continue; }
+    let recs;
+    try { recs = await rekognition.indexFaces(collectionId, bytes, String(p.id)); }
+    catch (e) { errors.push({ photoId: p.id, error: String(e.message || '').slice(0, 80) }); continue; }
+    const good = (recs || []).filter(r => r.Face && r.Face.FaceId && Number(r.Face.Confidence || 0) >= FACE2_FACE_CONFIDENCE_MIN);
+    if (!good.length) { noFace++; continue; }
+    const rows = good.map(r => ({ eventId, photoId: p.id, faceId: r.Face.FaceId, collectionId }));
+    try { await store.addFaceIndex(rows); indexed++; faces += rows.length; }
+    catch (e) { errors.push({ photoId: p.id, error: 'no se pudo guardar el índice' }); }
+  }
+  return { status: 200, data: { ok: true, indexed, faces, noFace, errors, total, nextOffset, done } };
 }
 
 // Devuelve los bytes de la foto para la descarga real.
@@ -1758,6 +1909,14 @@ const CART_MAX_ITEMS = 100; // máximo de fotos por carrito
 const FACE_BATCH_MAX = 8; // fotos del evento por llamada a Gemini
 const FACE_SEARCH_MAX_PHOTOS = 1000; // tope de fotos por búsqueda
 const FACE_SELFIE_MAX_BYTES = 2 * 1024 * 1024; // selfie máx. 2 MB decodificada
+// ---- Búsqueda por selfie instantánea, Fase 2 (Rekognition) ----
+// Al subir una foto se indexan sus caras (huellas) en una colección de
+// Rekognition por evento; buscar es comparar la selfie contra esas
+// huellas, en segundos. Si el evento aún no tiene índice, la búsqueda
+// cae a la Fase 1 (lotes con Gemini) y nunca se rompe.
+const FACE2_SIMILARITY_MIN = 90; // % mínimo de parecido para devolver una foto
+const FACE2_INDEX_CHUNK_MAX = 8; // fotos por llamada a index-photo-faces (límite Vercel ~10 s)
+const FACE2_FACE_CONFIDENCE_MIN = 80; // confianza mínima de Rekognition para guardar una cara
 const SINGLE_TIERS = [
   { from: 1, to: 3, discount: 0 },
   { from: 4, to: 5, discount: 0.20 },
@@ -3249,6 +3408,8 @@ async function dispatch(route, req) {
     case 'cover-file': return coverFile(store, user, req.query.eventId);
     case 'read-bib': return readBib(store, user, b);
     case 'face-search': return faceSearch(store, user, b);
+    case 'face-search-instant': return faceSearchInstant(store, user, b);
+    case 'index-photo-faces': return indexPhotoFaces(store, user, b);
     case 'checkout-create': return createCheckout(store, user, b);
     case 'checkout-create-cart': return createCartCheckout(store, user, b);
     case 'checkout-return': return checkoutReturn(store, req.query);
