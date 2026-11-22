@@ -3458,3 +3458,60 @@ function initToTopBtn() {
   btn.addEventListener('click', () => { window.scrollTo({ top: 0, behavior: 'smooth' }); });
 }
 initToTopBtn();
+
+// ---------- Botón flotante "Ayuda" + preguntas frecuentes ----------
+// El botón vive abajo a la IZQUIERDA (el de "volver arriba" está a la
+// derecha) y abre un modal con buscador + acordeón de preguntas.
+// Si la respuesta no está, el botón de WhatsApp abre el chat de Orlan.
+const HELP_FAQ = [
+  { q: '¿Cómo busco mis fotos por número de dorsal?', a: 'En el álbum, pica «Buscar por selfie o dorsal», escribe tu número de dorsal y te salen solo tus fotos, sin revisar una por una.' },
+  { q: '¿Cómo busco mis fotos por selfie?', a: 'En el álbum, pica «Buscar por selfie o dorsal», luego «Por selfie»: tómate una foto o elige una de tu galería. Tu selfie solo se usa para buscar, no se guarda.' },
+  { q: '¿Cuánto cuesta cada foto?', a: 'El precio lo pone el fotógrafo de cada evento y se ve en la foto. Por ejemplo, en la CANACINTRA cuesta $25 por foto.' },
+  { q: '¿Cómo pago?', a: 'Con tarjeta, en OXXO o en efectivo, a través de Clip, de forma segura. Cuando se confirma tu pago te llega un aviso.' },
+  { q: 'Ya pagué, ¿dónde descargo mis fotos?', a: 'En «Mis fotos», ahí están todas las que compraste, listas para descargar.' },
+  { q: '¿Cuánto tiempo están mis fotos en la app?', a: '60 días después del evento. Cuando falten 15 días o menos te avisamos en «Mis fotos» para que las descargues antes de que se borren.' },
+  { q: 'Busqué mi dorsal y no salió nada, ¿qué hago?', a: 'Puede ser que tu número no se vea en la foto o que el fotógrafo aún no suba todas las fotos. Prueba buscando por selfie.' },
+  { q: '¿Puedo comprar varias fotos con descuento?', a: 'Sí: la 4a y 5a foto tienen 20% de descuento, y el paquete de 10 fotos tiene 25% de descuento. El carrito te avisa cuando te falta poco para el paquete.' },
+  { q: 'Soy fotógrafo, ¿cómo vendo mis fotos aquí?', a: 'En el inicio pica «Soy fotógrafo, quiero unirme a OnlyClick» y llena el formulario. Revisamos tu solicitud y te avisamos.' },
+  { q: '¿Cómo creo mi cuenta?', a: 'Pica «Crear cuenta» y regístrate con tu correo y una contraseña. Para entrar solo necesitas tu correo y contraseña.' },
+];
+const HELP_WHATSAPP_URL = 'https://wa.me/526444531015?text=' + encodeURIComponent('Hola, tengo una duda sobre OnlyClick.');
+function renderHelpFaq(filter) {
+  const list = $('#helpFaqList'); if (!list) return;
+  const q = (filter || '').trim().toLowerCase();
+  list.innerHTML = '';
+  let shown = 0;
+  HELP_FAQ.forEach(item => {
+    if (q && !(item.q.toLowerCase().includes(q) || item.a.toLowerCase().includes(q))) return;
+    shown++;
+    const wrap = document.createElement('div');
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'help-faq-q'; btn.textContent = item.q;
+    const ans = document.createElement('div');
+    ans.className = 'help-faq-a'; ans.textContent = item.a;
+    btn.onclick = () => { const open = ans.classList.toggle('open'); btn.classList.toggle('open', open); };
+    wrap.appendChild(btn); wrap.appendChild(ans);
+    list.appendChild(wrap);
+  });
+  const noRes = $('#helpNoResults'); if (noRes) noRes.style.display = shown ? 'none' : '';
+}
+function openHelpModal() {
+  renderHelpFaq('');
+  const s = $('#helpSearch'); if (s) s.value = '';
+  const m = $('#helpModal'); if (m) m.style.display = 'flex';
+}
+function closeHelpModal() { const m = $('#helpModal'); if (m) m.style.display = 'none'; }
+function initHelpBtn() {
+  const btn = $('#helpBtn'); if (!btn) return;
+  btn.onclick = openHelpModal;
+  const search = $('#helpSearch');
+  if (search) search.addEventListener('input', () => renderHelpFaq(search.value));
+  const x = $('#helpModalX'); if (x) x.onclick = closeHelpModal;
+  const close = $('#helpModalClose'); if (close) close.onclick = closeHelpModal;
+  const wa = $('#helpWhatsAppBtn');
+  if (wa) wa.onclick = () => window.open(HELP_WHATSAPP_URL, '_blank');
+  const m = $('#helpModal');
+  if (m) m.addEventListener('click', (e) => { if (e.target === m) closeHelpModal(); });
+  renderHelpFaq('');
+}
+initHelpBtn();
