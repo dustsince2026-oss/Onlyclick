@@ -3466,7 +3466,7 @@ initToTopBtn();
 const HELP_FAQ = [
   { q: '¿Cómo busco mis fotos por número de dorsal?', a: 'En el álbum, pica «Buscar por selfie o dorsal», escribe tu número de dorsal y te salen solo tus fotos, sin revisar una por una.' },
   { q: '¿Cómo busco mis fotos por selfie?', a: 'En el álbum, pica «Buscar por selfie o dorsal», luego «Por selfie»: tómate una foto o elige una de tu galería. Tu selfie solo se usa para buscar, no se guarda.' },
-  { q: '¿Cuánto cuesta cada foto?', a: 'El precio lo pone el fotógrafo de cada evento y se ve en la foto. Por ejemplo, en la CANACINTRA cuesta $25 por foto.' },
+  { q: '¿Cuánto cuesta cada foto?', a: 'El precio lo pone el fotógrafo de cada evento y se ve en la foto.' },
   { q: '¿Cómo pago?', a: 'Con tarjeta, en OXXO o en efectivo, a través de Clip, de forma segura. Cuando se confirma tu pago te llega un aviso.' },
   { q: 'Ya pagué, ¿dónde descargo mis fotos?', a: 'En «Mis fotos», ahí están todas las que compraste, listas para descargar.' },
   { q: '¿Cuánto tiempo están mis fotos en la app?', a: '60 días después del evento. Cuando falten 15 días o menos te avisamos en «Mis fotos» para que las descargues antes de que se borren.' },
