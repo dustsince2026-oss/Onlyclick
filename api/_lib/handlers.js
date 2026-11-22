@@ -1773,7 +1773,7 @@ async function indexPhotoFaces(store, user, body) {
   const collectionId = rekognition.collectionIdFor(eventId);
   try { await rekognition.createCollection(collectionId); }
   catch (e) {
-    if (e.code !== 'ResourceAlreadyExistsException') return { status: 200, data: { ok: false, reason: 'ia-error', status: e.status || 500, detail: (e.code ? e.code + ': ' : '') + String(e.message || '').slice(0, 120) } };
+    if (e.code !== 'ResourceAlreadyExistsException') return { status: 200, data: { ok: false, reason: 'ia-error', status: e.status || 500, detail: String(e.message || '').slice(0, 120) } };
   }
   let indexed = 0, faces = 0, noFace = 0; const errors = [];
   for (const p of photos) {
