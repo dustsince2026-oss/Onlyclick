@@ -1883,7 +1883,10 @@ async function buildPhotoStrip(evs) {
     const withPhotos = (evs || []).filter(e => (e.photoCount || 0) > 0 && !e.isHidden && !e.isUpcoming);
     if (!withPhotos.length) return;
     const newest = [...withPhotos].sort((a, b) => String(b.eventDate || '').localeCompare(String(a.eventDate || ''))).slice(0, 5);
-    const lists = (await Promise.all(newest.map(ev => api('/api/event-get?eventId=' + ev.id)))).map(r => (r.photos || []).slice()).filter(l => l.length);
+    // Solo 10 fotos por álbum: la tira solo muestra 10 en total y antes
+    // bajaba cada álbum completo (512 fotos en CANACINTRA) en cada carga
+    // del inicio (Orlan 2026-11-22).
+    const lists = (await Promise.all(newest.map(ev => api('/api/event-get?eventId=' + ev.id + '&limit=10')))).map(r => (r.photos || []).slice()).filter(l => l.length);
     if (!lists.length) return;
     // Reparto: 10 fotos como máximo, una por álbum por ronda, para que el
     // mix se vea (si un álbum tiene pocas fotos, los demás completan).
@@ -1937,7 +1940,12 @@ async function loadEventDetail(eventId, push) {
   // parecía no hacer nada.
   showView('events');
   if (push) pushNav({ view: 'events', event: eventId });
-  const r = await api('/api/event-get?eventId=' + eventId);
+  // El álbum se pide por páginas de 60 (Orlan 2026-11-22): antes bajaban
+  // las 512 fotos de un jalón y en el teléfono tardaba muchísimo.
+  const r = await api('/api/event-get?eventId=' + eventId + '&limit=' + EV_GRID_BATCH + '&offset=0');
+  // Total real del álbum (la página trae solo 60): lo usa el conteo
+  // "Mostrando N de M fotos" y el botón "Ver más fotos".
+  const evTotal = r.totalPhotos || r.photos.length;
   currentPhotos = r.photos;
   currentEventName = r.event.name || '';
   currentEventHidden = !!r.event.isHidden; // para el token de la foto ampliada
@@ -1966,30 +1974,38 @@ async function loadEventDetail(eventId, push) {
     ${r.isParticipant ? `<div class="row"><button id="evIndexFacesBtn" class="secondary">⚡ Indexar caras (búsqueda instantánea)</button></div><p id="evIndexStatus" class="muted"></p>` : ''}
     ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
     <div class="grid" id="evGrid">${r.photos.slice(0, EV_GRID_BATCH).map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>
-    ${r.photos.length > EV_GRID_BATCH ? `<div class="row" id="evMoreWrap"><button id="evMoreBtn" class="secondary">Ver más fotos</button><p id="evMoreCount" class="muted"></p></div>` : ''}`;
+    ${evTotal > EV_GRID_BATCH ? `<div class="row" id="evMoreWrap"><button id="evMoreBtn" class="secondary">Ver más fotos</button><p id="evMoreCount" class="muted"></p></div>` : ''}`;
   bindPhotos(r.photos);
-  // "Ver más fotos": agrega el siguiente lote de 60 tarjetas al álbum
-  // y vuelve a ligar los botones de las nuevas tarjetas (bindPhotos
-  // reasigna onclick, así que es seguro llamarlo de nuevo). El conteo
-  // se lee de lo ya dibujado y de currentPhotos, así sigue bien aunque
+  // "Ver más fotos": pide la siguiente página de 60 al servidor y la
+  // agrega al álbum (antes ya venían todas cargadas en memoria). El
+  // conteo se lee de lo ya dibujado y de evTotal, así sigue bien aunque
   // se elimine una foto del álbum.
   const evMoreBtn = $('#evMoreBtn');
   const updateEvMore = () => {
     const grid = $('#evGrid');
     const shown = grid ? grid.querySelectorAll('.photo').length : 0;
-    const total = currentPhotos.length;
+    const total = evTotal;
     const c = $('#evMoreCount'), w = $('#evMoreWrap');
     if (c) c.textContent = 'Mostrando ' + shown + ' de ' + total + ' fotos';
     if (w) w.style.display = shown >= total ? 'none' : '';
   };
   if (evMoreBtn) {
     updateEvMore();
-    evMoreBtn.onclick = () => {
+    evMoreBtn.onclick = async () => {
       const grid = $('#evGrid'); if (!grid) return;
       const shown = grid.querySelectorAll('.photo').length;
-      const next = currentPhotos.slice(shown, shown + EV_GRID_BATCH);
-      grid.insertAdjacentHTML('beforeend', next.map(p => photoCard(p, { delete: true, event: r.event })).join(''));
-      bindPhotos(currentPhotos);
+      if (shown >= evTotal) { updateEvMore(); return; }
+      evMoreBtn.disabled = true; evMoreBtn.textContent = 'Cargando…';
+      try {
+        const page = await api('/api/event-get?eventId=' + eventId + '&limit=' + EV_GRID_BATCH + '&offset=' + shown);
+        const next = page.photos || [];
+        next.forEach(p => { p.freeMode = r.event.freeMode; });
+        await markPendingPhotos(next);
+        currentPhotos = currentPhotos.concat(next);
+        grid.insertAdjacentHTML('beforeend', next.map(p => photoCard(p, { delete: true, event: r.event })).join(''));
+        bindPhotos(currentPhotos);
+      } catch (_) { /* si falla, el botón queda para reintentar */ }
+      evMoreBtn.disabled = false; evMoreBtn.textContent = 'Ver más fotos';
       updateEvMore();
     };
   }
@@ -1997,9 +2013,11 @@ async function loadEventDetail(eventId, push) {
   // Al abrir el álbum, bajar directo a la primera foto: el detalle se
   // dibuja DEBAJO de la lista de eventos y sin esto la persona se queda
   // mirando arriba sin ver las fotos (Orlan 2026-11-18). Si el álbum
-  // aún no tiene fotos, bajar al inicio del detalle.
+  // aún no tiene fotos, bajar al inicio del detalle. Salto instantáneo
+  // (Orlan 2026-11-22): el suave se perdía mientras las miniaturas
+  // seguían cargando y la página se movía sola.
   const scrollTarget = document.getElementById(r.photos.length ? 'evGrid' : 'eventDetail');
-  if (scrollTarget && scrollTarget.scrollIntoView) scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (scrollTarget && scrollTarget.scrollIntoView) scrollTarget.scrollIntoView({ behavior: 'auto', block: 'start' });
   const notifyBtn = $('#notifyBtn');
   if (notifyBtn) notifyBtn.onclick = async () => {
     const email = ($('#notifyEmail').value || '').trim();
