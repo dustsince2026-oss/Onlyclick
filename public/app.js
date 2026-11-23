@@ -2852,14 +2852,59 @@ async function loadPhotographer() {
     box.innerHTML = '<p class="muted">Cargando fotos…</p>';
     try {
       const r = await api('/api/event-get?eventId=' + ev.id);
-      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (me && me.isOwner ? ' <button id="backfillThumbs" class="secondary">Generar miniaturas</button> <span id="backfillStatus" class="muted"></span>' : '') + (r.photos.length > 100 ? '<p class="muted">Mostrando 100 de ' + r.photos.length + ' fotos — el lote procesa todas.</p>' : '') + r.photos.slice(0, 100).map(p => `
+      // Filtro por dorsal + "Mostrar más": la lista solo mostraba las
+      // primeras 100 fotos y no había forma de llegar a las demás (ni de
+      // buscar una en concreto). El filtro esconde las filas cuyo dorsal
+      // no contiene lo escrito; "Mostrar más" carga las siguientes 100
+      // filas sin perder el filtro ni lo ya editado. El lote sigue
+      // procesando TODAS las fotos como antes.
+      const revTotal = r.photos.length;
+      let revShown = Math.min(100, revTotal);
+      const revRowHtml = p => `
         <div class="row" style="align-items:center">
           <img src="${photoImgUrl(p.id, true)}" loading="lazy" decoding="async" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px">
           <input id="revBib-${p.id}" type="search" inputmode="numeric" autocomplete="one-time-code" placeholder="Dorsal" value="${esc((p.bibs || []).join(', '))}" style="max-width:130px">
           <button data-reread="${p.id}">Releer con IA</button>
           <button data-savebib="${p.id}">Guardar</button>
           <span id="revState-${p.id}" class="muted"></span>
-        </div>`).join('');
+        </div>`;
+      const updateRevCount = visible => {
+        const el = document.getElementById('revCount'); if (!el) return;
+        const q = (document.getElementById('revFilter').value || '').trim();
+        el.textContent = q ? 'Filtro "' + q + '": ' + visible + ' foto(s) de ' + revTotal + '.' : 'Mostrando ' + revShown + ' de ' + revTotal + ' fotos' + (revTotal > 100 ? ' — el lote procesa todas.' : '.');
+      };
+      const applyRevFilter = () => {
+        const q = (document.getElementById('revFilter').value || '').trim().toLowerCase();
+        let visible = 0;
+        box.querySelectorAll('#revRows .row').forEach(row => {
+          const inp = row.querySelector('input[id^="revBib-"]');
+          const show = !q || (inp ? inp.value : '').toLowerCase().includes(q);
+          row.style.display = show ? '' : 'none';
+          if (show) visible++;
+        });
+        updateRevCount(visible);
+      };
+      const bindRevButtons = scope => {
+        scope.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
+          const id = Number(rb.dataset.reread);
+          const st = document.getElementById('revState-' + id); if (st) st.textContent = 'Leyendo…';
+          try {
+            const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: id }) });
+            const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
+            if (r2.ok && list.length) { document.getElementById('revBib-' + id).value = list.join(', '); if (st) st.textContent = '✓ IA'; }
+            else if (r2.ok) { if (st) st.textContent = 'La IA no vio dorsal claro'; }
+            else if (r2.reason === 'no-key') { if (st) st.textContent = 'Sin llave de IA todavía'; }
+            else if (st) st.textContent = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : '') + (r2.detail ? ': ' + r2.detail : '');
+          } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; }
+        });
+        scope.querySelectorAll('[data-savebib]').forEach(sb => sb.onclick = async () => {
+          const id = Number(sb.dataset.savebib);
+          const bibs = document.getElementById('revBib-' + id).value.split(',').map(s => s.trim()).filter(Boolean);
+          await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: id, bibs }) });
+          const st = document.getElementById('revState-' + id); if (st) st.textContent = '✓ guardado';
+        });
+      };
+      box.innerHTML = '<h4>' + esc(r.event.name) + ' — ' + r.photos.length + ' foto(s)</h4><button id="batchRead" class="primary">Leer dorsales en lote (IA)</button> <span id="batchStatus" class="muted"></span>' + (me && me.isOwner ? ' <button id="backfillThumbs" class="secondary">Generar miniaturas</button> <span id="backfillStatus" class="muted"></span>' : '') + '<p style="margin:10px 0 4px"><input id="revFilter" type="search" placeholder="Buscar dorsal…" autocomplete="off" style="max-width:200px"> <span id="revCount" class="muted"></span></p><div id="revRows">' + r.photos.slice(0, revShown).map(revRowHtml).join('') + '</div>' + (revTotal > 100 ? '<button id="revMore" class="secondary">Mostrar más</button>' : '');
       // Lote: lee con IA solo las fotos sin dorsal, de 3 en 3, y guarda cada
       // una en cuanto queda. Si se cierra la página, lo ya guardado queda y
       // al darle otra vez continúa con las que faltan.
@@ -2903,24 +2948,21 @@ async function loadPhotographer() {
           if (bfStatus) bfStatus.textContent = 'Error: ' + (e && e.message ? e.message : 'no se pudieron generar las miniaturas');
         } finally { bfBtn.disabled = false; }
       };
-      box.querySelectorAll('[data-reread]').forEach(rb => rb.onclick = async () => {
-        const id = Number(rb.dataset.reread);
-        const st = document.getElementById('revState-' + id); if (st) st.textContent = 'Leyendo…';
-        try {
-          const r2 = await api('/api/read-bib', { method: 'POST', body: JSON.stringify({ photoId: id }) });
-          const list = Array.isArray(r2.bibs) ? r2.bibs : (r2.bib ? [r2.bib] : []);
-          if (r2.ok && list.length) { document.getElementById('revBib-' + id).value = list.join(', '); if (st) st.textContent = '✓ IA'; }
-          else if (r2.ok) { if (st) st.textContent = 'La IA no vio dorsal claro'; }
-          else if (r2.reason === 'no-key') { if (st) st.textContent = 'Sin llave de IA todavía'; }
-          else if (st) st.textContent = 'La IA falló' + (r2.status ? ' (error ' + r2.status + ')' : '') + (r2.detail ? ': ' + r2.detail : '');
-        } catch (e) { if (st) st.textContent = e.message || 'No se pudo releer'; }
-      });
-      box.querySelectorAll('[data-savebib]').forEach(sb => sb.onclick = async () => {
-        const id = Number(sb.dataset.savebib);
-        const bibs = document.getElementById('revBib-' + id).value.split(',').map(s => s.trim()).filter(Boolean);
-        await api('/api/photo-update', { method: 'POST', body: JSON.stringify({ photoId: id, bibs }) });
-        const st = document.getElementById('revState-' + id); if (st) st.textContent = '✓ guardado';
-      });
+      const revRowsEl = document.getElementById('revRows');
+      bindRevButtons(revRowsEl);
+      document.getElementById('revFilter').oninput = applyRevFilter;
+      applyRevFilter();
+      const revMoreBtn = document.getElementById('revMore');
+      if (revMoreBtn) revMoreBtn.onclick = () => {
+        const next = Math.min(revShown + 100, revTotal);
+        const tmp = document.createElement('div');
+        tmp.innerHTML = r.photos.slice(revShown, next).map(revRowHtml).join('');
+        bindRevButtons(tmp);
+        while (tmp.firstChild) revRowsEl.appendChild(tmp.firstChild);
+        revShown = next;
+        if (revShown >= revTotal) revMoreBtn.remove();
+        applyRevFilter();
+      };
     } catch (e) { box.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
   });
   // Lista y paginación: se aplican después de cada render del panel.
