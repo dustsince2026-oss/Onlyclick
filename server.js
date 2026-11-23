@@ -23,7 +23,7 @@ const ROUTES = {
   'set-tip': 'set-tip', 'event-delete': 'delete-event', 'event-cover': 'upload-cover', 'photo-update': 'update-photo', 'photo-delete': 'delete-photo', 'read-bib': 'read-bib',
   'face-search': 'face-search',
   'face-search-instant': 'face-search-instant', 'index-photo-faces': 'index-photo-faces',
-  'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
+  'checkout-create': 'checkout-create', 'checkout-create-cart': 'checkout-create-cart', 'checkout-status': 'checkout-status', 'my-pending-payments': 'my-pending-payments', 'clip-webhook': 'clip-webhook', 'set-event-price': 'set-event-price',
   'validate-discount-code': 'validate-discount-code', 'create-discount-code': 'create-discount-code', 'generate-discount-codes': 'generate-discount-codes', 'list-discount-codes': 'list-discount-codes', 'deactivate-discount-code': 'deactivate-discount-code',
   'track-view': 'track-view', 'stats': 'stats',
   'approve-photographer': 'approve-photographer', 'list-photographers': 'list-photographers',
