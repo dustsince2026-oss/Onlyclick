@@ -423,6 +423,17 @@ const fileStore = {
   async getPaymentByExternalRef(ref) { return loadDb().payments.find(x => x.externalReference === String(ref)) || null; },
   async getPaymentById(id) { return loadDb().payments.find(x => x.id === Number(id)) || null; },
   async getLatestPaymentByUserPhoto(userId, photoId) { const rows = loadDb().payments.filter(x => x.userId === Number(userId) && x.photoId === Number(photoId)).sort((a, b) => b.id - a.id); return rows[0] || null; },
+  // Último pago del usuario por cada foto de una lista, en UNA pasada
+  // (Orlan 2026-11-22): checkout-status lo pedía foto por foto y abrir
+  // un álbum de pago tardaba segundos. Devuelve un Map photoId → pago.
+  async getLatestPaymentsByUserPhotos(userId, photoIds) {
+    const wanted = new Set((photoIds || []).map(Number).filter(Boolean));
+    const out = new Map();
+    for (const x of loadDb().payments.filter(p => p.userId === Number(userId) && wanted.has(Number(p.photoId))).sort((a, b) => b.id - a.id)) {
+      if (!out.has(Number(x.photoId))) out.set(Number(x.photoId), x);
+    }
+    return out;
+  },
   async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; if (patch.commissionFree !== undefined) p.commissionFree = !!patch.commissionFree; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
   // Una foto quitada de "Mis fotos" ya NO cuenta como descargada: si es
   // de pago, no se puede volver a descargar sin volver a pagarla (Orlan,
@@ -1254,6 +1265,20 @@ const supabaseStore = {
   async getPaymentByExternalRef(ref) { const { data } = await supabase().from('payments').select().eq('external_reference', ref).maybeSingle(); return mapPayment(data); },
   async getPaymentById(id) { const { data } = await supabase().from('payments').select().eq('id', id).maybeSingle(); return mapPayment(data); },
   async getLatestPaymentByUserPhoto(userId, photoId) { const { data } = await supabase().from('payments').select().eq('user_id', userId).eq('photo_id', photoId).order('id', { ascending: false }).limit(1).maybeSingle(); return mapPayment(data); },
+  // Último pago del usuario por cada foto de una lista, en UNA consulta
+  // (Orlan 2026-11-22): checkout-status lo pedía foto por foto y abrir
+  // un álbum de pago tardaba segundos. Devuelve un Map photoId → pago.
+  async getLatestPaymentsByUserPhotos(userId, photoIds) {
+    const ids = (photoIds || []).map(Number).filter(Boolean);
+    if (!ids.length) return new Map();
+    const { data } = await supabase().from('payments').select().eq('user_id', userId).in('photo_id', ids).order('id', { ascending: false });
+    const out = new Map();
+    for (const row of (data || [])) {
+      const p = mapPayment(row);
+      if (!out.has(Number(p.photoId))) out.set(Number(p.photoId), p);
+    }
+    return out;
+  },
   async updatePaymentStatus(id, patch) { const p = { updated_at: new Date().toISOString() }; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receipt_no = patch.receiptNo; if (patch.commissionFree !== undefined) p.commission_free = !!patch.commissionFree; let res = await supabase().from('payments').update(p).eq('id', id).select().single(); if (res.error && p.commission_free !== undefined && /commission_free|does not exist|42703/i.test(res.error.message || '')) { delete p.commission_free; res = await supabase().from('payments').update(p).eq('id', id).select().single(); } return mapPayment(res.data); },
   async readPhotoBytes(photo) {
     const { data, error } = await supabase().storage.from('photos').download(photo.storagePath);
