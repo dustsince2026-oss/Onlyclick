@@ -1585,6 +1585,9 @@ async function runBibSearch(bib) {
   const t = searchTargets();
   const box = t.resultsEl;
   if (!box) return;
+  // La búsqueda reemplaza la cuadrícula del álbum: esconder "Ver más
+  // fotos" (sus fotos son del álbum completo, no de los resultados).
+  const evMoreWrap = document.getElementById('evMoreWrap'); if (evMoreWrap) evMoreWrap.style.display = 'none';
   if (bib.includes('@')) { box.innerHTML = '<p>Escribe solo tu número de dorsal, sin correo.</p>'; return; }
   box.innerHTML = '<p>Buscando…</p>';
   try {
@@ -1667,6 +1670,9 @@ async function runFaceSearch(eventId, eventName, selfieDataUrl, statusEl, result
   function renderResults(note) {
     const list = [...state.matches.values()];
     currentPhotos = list;
+    // La búsqueda reemplaza la cuadrícula del álbum: esconder "Ver más
+    // fotos" (sus fotos son del álbum completo, no de los resultados).
+    const evMoreWrap = document.getElementById('evMoreWrap'); if (evMoreWrap) evMoreWrap.style.display = 'none';
     if (!resultsEl) return;
     if (list.length) {
       // #evGrid YA es una cuadrícula: no anidar otra dentro (mismo bug
@@ -1917,6 +1923,13 @@ async function loadEvents() {
   bindEventCards();
 }
 
+// Álbum grande: cuántas tarjetas se dibujan de un jalón al abrir el
+// álbum y cuántas agrega cada toque de "Ver más fotos" (Orlan
+// 2026-11-22: el álbum de 512 fotos tardaba muchísimo en abrir porque
+// dibujaba todas las tarjetas a la vez). Las búsquedas escriben sus
+// resultados en #evGrid y esconden el botón de "Ver más".
+const EV_GRID_BATCH = 60;
+
 async function loadEventDetail(eventId, push) {
   currentEvent = eventId;
   // El detalle vive dentro de la vista de eventos (oculta desde el inicio):
@@ -1952,8 +1965,34 @@ async function loadEventDetail(eventId, push) {
     <p id="evFaceStatus" class="muted"></p>
     ${r.isParticipant ? `<div class="row"><button id="evIndexFacesBtn" class="secondary">⚡ Indexar caras (búsqueda instantánea)</button></div><p id="evIndexStatus" class="muted"></p>` : ''}
     ${r.photos.length === 0 ? `<div class="card" id="notifyCard"><h3>¿Todavía no hay fotos?</h3><p class="muted">Déjanos tu correo y te avisamos en cuanto el fotógrafo suba las fotos de este evento. Solo un correo, sin spam.</p><div class="row"><input id="notifyEmail" type="email" placeholder="Tu correo" style="flex:1"><button id="notifyBtn" class="primary">Avísame cuando haya fotos</button></div><p id="notifyStatus" class="muted"></p></div>` : ''}
-    <div class="grid" id="evGrid">${r.photos.map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>`;
+    <div class="grid" id="evGrid">${r.photos.slice(0, EV_GRID_BATCH).map(p => photoCard(p, { delete: true, event: r.event })).join('') || '<p>No hay fotos todavía.</p>'}</div>
+    ${r.photos.length > EV_GRID_BATCH ? `<div class="row" id="evMoreWrap"><button id="evMoreBtn" class="secondary">Ver más fotos</button><p id="evMoreCount" class="muted"></p></div>` : ''}`;
   bindPhotos(r.photos);
+  // "Ver más fotos": agrega el siguiente lote de 60 tarjetas al álbum
+  // y vuelve a ligar los botones de las nuevas tarjetas (bindPhotos
+  // reasigna onclick, así que es seguro llamarlo de nuevo). El conteo
+  // se lee de lo ya dibujado y de currentPhotos, así sigue bien aunque
+  // se elimine una foto del álbum.
+  const evMoreBtn = $('#evMoreBtn');
+  const updateEvMore = () => {
+    const grid = $('#evGrid');
+    const shown = grid ? grid.querySelectorAll('.photo').length : 0;
+    const total = currentPhotos.length;
+    const c = $('#evMoreCount'), w = $('#evMoreWrap');
+    if (c) c.textContent = 'Mostrando ' + shown + ' de ' + total + ' fotos';
+    if (w) w.style.display = shown >= total ? 'none' : '';
+  };
+  if (evMoreBtn) {
+    updateEvMore();
+    evMoreBtn.onclick = () => {
+      const grid = $('#evGrid'); if (!grid) return;
+      const shown = grid.querySelectorAll('.photo').length;
+      const next = currentPhotos.slice(shown, shown + EV_GRID_BATCH);
+      grid.insertAdjacentHTML('beforeend', next.map(p => photoCard(p, { delete: true, event: r.event })).join(''));
+      bindPhotos(currentPhotos);
+      updateEvMore();
+    };
+  }
   trackView('event', null, eventId);
   // Al abrir el álbum, bajar directo a la primera foto: el detalle se
   // dibuja DEBAJO de la lista de eventos y sin esto la persona se queda
