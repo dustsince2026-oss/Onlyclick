@@ -1942,6 +1942,11 @@ async function loadEventDetail(eventId, push) {
   if (push) pushNav({ view: 'events', event: eventId });
   // El álbum se pide por páginas de 60 (Orlan 2026-11-22): antes bajaban
   // las 512 fotos de un jalón y en el teléfono tardaba muchísimo.
+  // Aviso inmediato de carga (Orlan 2026-11-22): al picar "Ver fotos"
+  // no pasaba nada visible por unos segundos y la persona podía salirse
+  // o refrescar; ahora se ve luego luego el relojito.
+  const detailEl = $('#eventDetail');
+  if (detailEl) detailEl.innerHTML = '<p class="muted"><span class="spin"></span> Cargando fotos…</p>';
   const r = await api('/api/event-get?eventId=' + eventId + '&limit=' + EV_GRID_BATCH + '&offset=0');
   // Total real del álbum (la página trae solo 60): lo usa el conteo
   // "Mostrando N de M fotos" y el botón "Ver más fotos".
