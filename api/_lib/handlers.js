@@ -1533,11 +1533,12 @@ async function readBib(store, user, body) {
   } else throw err(400, 'Falta la foto.');
   if (!buf || !buf.length || buf.length > 10 * 1024 * 1024) throw err(400, 'La foto está vacía o pesa más de 10 MB.');
   const prompt = 'En esta foto de una carrera, lee TODOS los números de dorsal que llevan los corredores en el pecho (puede haber varios corredores). Ignora por completo los números de los anuncios, pancartas, logos y fondo: solo cuentan los dorsales que lleva la gente puesta. Responde solo con este JSON: {"bibs": ["90", "301"]} con los números tal como se ven, sin espacios. Si no se ve ningún dorsal claro, responde {"bibs": []}.';
-  // gemini-2.0-flash fue apagado por Google el 1 jun 2026; el reemplazo
-  // oficial es gemini-3.8-flash (gratis en el plan free). Pero el 3.8 es el
-  // modelo nuevo y más saturado: a veces responde 503 por alta demanda.
-  // Se prueban en orden y se usa el primero que responda.
-  const MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+  // El Lite va primero: cuesta $0.30/millón de tokens de entrada contra
+  // $0.75 del 3.8 (2.5x más barato) y el 3.8 sube al doble el 1 ene 2027,
+  // así que una carrera de ~580 fotos sale ~$35 MXN en vez de ~$81. Si el
+  // Lite falla por saturación (503) o límite (429), se pasa al 3.8 y luego
+  // al 3.6. Se prueban en orden y se usa el primero que responda.
+  const MODELS = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.6-flash'];
   let lastErr = null;
   for (const model of MODELS) {
     const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
