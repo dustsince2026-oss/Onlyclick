@@ -642,6 +642,9 @@ async function savePhoto(photo, freeMode, priceMxn) {
     showView('account');
     return;
   }
+  // Si esta foto ya tiene un pago en proceso, no se crea otro checkout:
+  // se verifica el que ya existe (Orlan, 2026-11-22).
+  if (!freeMode && !photo.owned && photo._pending) { verifyPhotoPayment(photo.id, null); return; }
   const btns = document.querySelectorAll(`[data-save="${photo.id}"]`);
   btns.forEach(b => { b.disabled = true; b.textContent = 'Guardando…'; });
   try {
@@ -824,12 +827,12 @@ async function handlePayReturn() {
     return;
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso. En cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
+    alert('Tu pago está en proceso. No pagues de nuevo: en cuanto Clip lo confirme, la foto aparecerá en "Mis fotos".');
     if (eventId && photoId) pollPayment(photoId);
     return;
   }
-  if (pay === 'failed') alert('El pago no se completó (cancelado o vencido). Puedes intentarlo de nuevo con "Pagar y descargar".');
-  if (pay === 'error') alert('No se pudo verificar el pago. Revisa "Mis fotos" en unos minutos; si no aparece, inténtalo de nuevo.');
+  if (pay === 'failed') alert('El pago no se completó (cancelado o vencido). No se realizó el cobro. Puedes intentarlo de nuevo con "Pagar y descargar".');
+  if (pay === 'error') alert('No pudimos confirmar tu pago todavía. No pagues de nuevo: revisa "Mis fotos" en unos minutos o pica "Verificar pago".');
 }
 // Pregunta cada 5 s (máx 2 min) si un pago pendiente ya se confirmó.
 async function pollPayment(photoId) {
@@ -1005,20 +1008,20 @@ async function handleCartReturn(pid, paid, pay) {
     try {
       const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
       if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
-      box.innerHTML = '<p>Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
+      box.innerHTML = '<p>Tu pago está en proceso. No pagues de nuevo: en cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
       const cv = $('#cartVerify');
       if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
       pollCartPayment(pid);
       return;
     } catch (_) {
-      box.innerHTML = '<p>No se pudo verificar el pago todavía. Revisa "Mis fotos" en unos minutos.</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
+      box.innerHTML = '<p>No pudimos confirmar tu pago todavía. No pagues de nuevo: revisa "Mis fotos" en unos minutos o pica "Verificar pago".</p><div class="row"><button id="cartVerify" class="secondary">Verificar pago</button></div>';
       const cv = $('#cartVerify');
       if (cv) cv.onclick = () => verifyCartPayment(pid, cv);
       return;
     }
   }
   if (pay === 'pending') {
-    alert('Tu pago está en proceso. En cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.');
+    alert('Tu pago está en proceso. No pagues de nuevo: en cuanto Clip lo confirme, las fotos aparecerán en "Mis fotos". Si pagaste en efectivo, puede tardar hasta 48 horas.');
     const box2 = $('#cartBox');
     if (box2) {
       const row = document.createElement('div');
@@ -1031,8 +1034,8 @@ async function handleCartReturn(pid, paid, pay) {
     pollCartPayment(pid);
     return;
   }
-  if (pay === 'failed') { alert('El pago no se completó (cancelado o vencido). Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
-  if (pay === 'error') { alert('No se pudo verificar el pago. Revisa "Mis fotos" en unos minutos; si no aparece, inténtalo de nuevo.'); renderCartView(); }
+  if (pay === 'failed') { alert('El pago no se completó (cancelado o vencido). No se realizó el cobro. Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
+  if (pay === 'error') { alert('No pudimos confirmar tu pago todavía. No pagues de nuevo: revisa "Mis fotos" en unos minutos o pica "Verificar pago".'); renderCartView(); }
 }
 // Pregunta cada 5 s (máx 2 min) si un pago de carrito ya se confirmó.
 async function pollCartPayment(pid) {
@@ -1082,9 +1085,8 @@ function photoCard(p, opts) {
       ${p.owned ? '<span class="badge owned">Tuya</span>' : ''}
       ${daysLeft != null && daysLeft >= 1 && daysLeft <= 15 ? `<span class="badge warn">Se borra en ${daysLeft} día${daysLeft === 1 ? '' : 's'}</span>` : ''}
       ${p.photographerName ? `<span class="muted">Foto de ${esc(p.photographerName)}</span>` : ''}
-      <button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>
-      ${!freeMode && !p.owned ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
-      ${p._pending ? `<button data-verify="${p.id}" class="secondary">Verificar pago</button>` : ''}
+      ${(!freeMode && !p.owned && p._pending) ? `<button data-verify="${p.id}" class="primary">Verificar pago</button>` : `<button data-save="${p.id}" class="primary">${freeMode ? 'Guardar gratis' : (p.owned ? 'Guardar' : 'Pagar y descargar · $' + price + ' MXN')}</button>`}
+      ${!freeMode && !p.owned && !p._pending ? `<button data-cart="${p.id}" class="secondary cart-btn" ${cartHas(p.id) ? 'disabled' : ''}>${cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito'}</button>` : ''}
       ${opts && opts.remove ? `<button data-remove="${p.id}" data-paid="${Number(p.amount || 0) > 0 ? '1' : '0'}" class="secondary">Quitar de Mis fotos</button>` : ''}
       ${opts && opts.delete && canDeletePhoto(p, opts.event) ? `<button data-delete="${p.id}" class="secondary">Eliminar foto</button>` : ''}
     </div></div>`;
@@ -1126,7 +1128,10 @@ function openLightbox(p) {
   lbCart.textContent = cartHas(p.id) ? 'En el carrito ✓' : 'Agregar al carrito · $' + price + ' MXN';
   // "Verificar pago" en la vista ampliada: solo foto de pago sin
   // comprar y con un pago pendiente del usuario (se pregunta una vez
-  // al abrir, con la rama {photoIds} que lee el estado local).
+  // al abrir, con la rama {photoIds} que lee el estado local). Cuando
+  // hay pendiente, el botón principal (#lbSave) pasa a ser "Verificar
+  // pago" y no se muestra un segundo botón: así no se puede pagar dos
+  // veces la misma foto (Orlan, 2026-11-22).
   const lbVerify = $('#lbVerify');
   if (lbVerify) {
     lbVerify.style.display = 'none';
@@ -1135,7 +1140,7 @@ function openLightbox(p) {
       api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ photoIds: [p.id] }) }).then(s => {
         if (lightboxPhoto !== p) return;
         const st = (s.photos || [])[0];
-        if (st && st.status === 'pending') lbVerify.style.display = '';
+        if (st && st.status === 'pending') { p._pending = true; $('#lbSave').textContent = 'Verificar pago'; }
       }).catch(() => {});
     }
   }
@@ -1262,14 +1267,14 @@ async function verifyPhotoPayment(photoId, btn) {
       return;
     }
     if (s.status === 'cancelled' || s.status === 'expired') {
-      alert('El pago no se completó (cancelado o vencido). Puedes intentarlo de nuevo con "Pagar y descargar".');
+      alert('El pago no se completó (cancelado o vencido). No se realizó el cobro. Puedes intentarlo de nuevo con "Pagar y descargar".');
       if (lightboxPhoto && lightboxPhoto.id === photoId) hideLightbox();
       if (currentEvent) loadEventDetail(currentEvent);
       return;
     }
-    alert('Clip todavía no confirma tu pago, inténtalo en unos minutos.');
+    alert('Clip todavía no confirma tu pago. No pagues de nuevo, inténtalo en unos minutos.');
   } catch (_) {
-    alert('No se pudo verificar el pago, inténtalo de nuevo.');
+    alert('No se pudo verificar el pago. No pagues de nuevo, inténtalo en unos minutos.');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Verificar pago'; }
   }
@@ -1285,10 +1290,10 @@ async function verifyCartPayment(pid, btn) {
   try {
     const s = await api('/api/checkout-status', { method: 'POST', body: JSON.stringify({ paymentRequestId: pid }) });
     if (s.paid) { clearCart(); cartPaidBox(s.photoIds || []); return; }
-    if (s.status === 'cancelled' || s.status === 'expired') { alert('El pago no se completó (cancelado o vencido). Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
-    alert('Clip todavía no confirma tu pago, inténtalo en unos minutos.');
+    if (s.status === 'cancelled' || s.status === 'expired') { alert('El pago no se completó (cancelado o vencido). No se realizó el cobro. Tu carrito sigue intacto, puedes intentarlo de nuevo.'); renderCartView(); return; }
+    alert('Clip todavía no confirma tu pago. No pagues de nuevo, inténtalo en unos minutos.');
   } catch (_) {
-    alert('No se pudo verificar el pago, inténtalo de nuevo.');
+    alert('No se pudo verificar el pago. No pagues de nuevo, inténtalo en unos minutos.');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Verificar pago'; }
   }
@@ -2072,7 +2077,13 @@ async function loadMyPhotos() {
     return;
   }
   const r = await api('/api/my-photos');
-  $('#myPhotosList').innerHTML = r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, { remove: true })).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>';
+  // Aviso de pagos en proceso (Orlan, 2026-11-22): SOLO aparece cuando
+  // el usuario tiene pendientes. Cuando todo está normal no se muestra
+  // nada nuevo: ni aviso, ni botones, ni mensajes.
+  let pendings = [];
+  try { const pr = await api('/api/my-pending-payments'); pendings = pr.payments || []; } catch (_) { pendings = []; }
+  const notice = pendings.length ? `<div class="card"><p><strong>Tienes ${pendings.length} pago${pendings.length === 1 ? '' : 's'} en proceso.</strong> No pagues de nuevo: en cuanto Clip lo confirme, la foto aparecerá aquí. Si ya pasó un rato, pica "Verificar pago".</p>${pendings.map(pp => `<div class="row"><span class="muted">Pago en proceso · $${Number(pp.amount || 0)} MXN</span><button data-verify="${pp.photoId}" class="secondary">Verificar pago</button></div>`).join('')}</div>` : '';
+  $('#myPhotosList').innerHTML = notice + (r.photos.length ? `<div class="grid">${r.photos.map(p => photoCard(p, { remove: true })).join('')}</div>` : '<p>Todavía no tienes fotos guardadas.</p>');
   bindPhotos(r.photos);
   // Quitar de Mis fotos: solo la saca de TU lista (la foto sigue en el
   // evento). También las de pago se pueden quitar (Orlan, 2026-11-19):
@@ -3121,7 +3132,13 @@ $('#brandHome').onclick = () => showView('home');
 $('#cartTopBtn').onclick = () => showView('cart');
 $('#lbCart').onclick = () => { if (lightboxPhoto) addToCart(lightboxPhoto); };
 $('#lbClose').onclick = () => closeLightbox();
-$('#lbSave').onclick = () => { if (lightboxPhoto) savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn); };
+// Si la foto tiene un pago en proceso, el botón principal es
+// "Verificar pago": no se crea otro checkout (Orlan, 2026-11-22).
+$('#lbSave').onclick = () => {
+  if (!lightboxPhoto) return;
+  if (lightboxPhoto._pending) { verifyPhotoPayment(lightboxPhoto.id, $('#lbSave')); return; }
+  savePhoto(lightboxPhoto, lightboxFreeMode, lightboxPriceMxn);
+};
 // Si la URL trae ?invite=... (link de invitación aprobado por Orlan):
 // se verifica y se prepara el registro como fotógrafo con ese token.
 // Si el link ya no vale, se avisa y el registro normal sigue funcionando.
