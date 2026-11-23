@@ -2736,14 +2736,21 @@ async function checkoutStatus(store, user, body) {
       return { status: 200, data: { paid: false, status: payments[0].status, clipError: true, photoIds, count: payments.length } };
     }
   }
-  // Estado por foto, para una lista de ids.
+  // Estado por foto, para una lista de ids. Antes se preguntaba foto
+  // por foto (2 consultas por foto, una por una) y abrir un álbum de
+  // pago tardaba segundos; ahora son 2 consultas en total, en paralelo
+  // (Orlan 2026-11-22). La respuesta es la misma de antes.
   if (Array.isArray(body.photoIds) && body.photoIds.length) {
-    const photos = [];
-    for (const id of body.photoIds.map(Number).filter(Boolean)) {
-      const p = await store.getLatestPaymentByUserPhoto(user.id, id);
-      const owned = await store.hasDownload(user.id, id);
-      photos.push({ photoId: id, paid: owned || (p && p.status === 'completed'), status: owned ? 'completed' : (p ? p.status : 'none') });
-    }
+    const ids = body.photoIds.map(Number).filter(Boolean);
+    const [downloads, latest] = await Promise.all([
+      store.listDownloadsByUser(user.id),
+      store.getLatestPaymentsByUserPhotos(user.id, ids),
+    ]);
+    const owned = new Set(downloads.map(d => Number(d.photoId)));
+    const photos = ids.map(id => {
+      const p = latest.get(id);
+      return { photoId: id, paid: owned.has(id) || !!(p && p.status === 'completed'), status: owned.has(id) ? 'completed' : (p ? p.status : 'none') };
+    });
     return { status: 200, data: { paid: photos.length > 0 && photos.every(x => x.paid), photos } };
   }
   // Una foto: como antes.
