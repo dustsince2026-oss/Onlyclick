@@ -72,7 +72,9 @@ async function boot(photoCount) {
   // 1) Álbum grande (130 fotos): primer lote de 60 + "Ver más".
   {
     const t = await boot(130);
-    await t.window.loadEventDetail(6);
+    const loading = t.window.loadEventDetail(6);
+    check('al picar Ver fotos se ve luego luego el relojito "Cargando fotos…"', t.d.querySelector('#eventDetail').textContent.includes('Cargando fotos'));
+    await loading;
     await sleep(100);
     const grid = t.d.querySelector('#evGrid');
     check('130 fotos: al abrir solo se dibujan 60 tarjetas', grid.querySelectorAll('.photo').length === 60, grid.querySelectorAll('.photo').length);
