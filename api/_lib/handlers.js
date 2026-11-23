@@ -2770,6 +2770,27 @@ async function checkoutStatus(store, user, body) {
   }
 }
 
+// GET /api/my-pending-payments — pagos del usuario que siguen en
+// proceso (Clip aún no los confirma). Solo para "Mis fotos": avisa
+// que hay un pago en camino y ofrece "Verificar pago" por cada uno,
+// en vez de dejarlo pagar de nuevo a ciegas (Orlan, 2026-11-22).
+// No incluye pagos de fotos que ya son suyas (otro intento posterior
+// ya se confirmó y la foto está en Mis fotos): esos pendientes viejos
+// no se muestran. Solo aparecen en este camino anormal; el flujo
+// normal de pago exitoso no cambia nada.
+async function myPendingPayments(store, user) {
+  requireUser(user);
+  const [pending, downloads] = await Promise.all([
+    store.listPendingPaymentsByUser(user.id),
+    store.listDownloadsByUser(user.id),
+  ]);
+  const owned = new Set(downloads.map(d => Number(d.photoId)));
+  const payments = (pending || [])
+    .filter(p => !owned.has(Number(p.photoId)))
+    .map(p => ({ photoId: Number(p.photoId), eventId: Number(p.eventId), amount: Number(p.amount || 0), createdAt: p.createdAt || '' }));
+  return { status: 200, data: { payments } };
+}
+
 // POST /api/clip-webhook?s=<secreto> — aviso de Clip cuando cambia un
 // pago. El payload v2 es mínimo: { id, resource, resource_status }.
 // NO trae monto ni estado confiable: solo sirve de pista para volver a
@@ -3431,6 +3452,7 @@ async function dispatch(route, req) {
     case 'checkout-create-cart': return createCartCheckout(store, user, b);
     case 'checkout-return': return checkoutReturn(store, req.query);
     case 'checkout-status': return checkoutStatus(store, user, b);
+    case 'my-pending-payments': return myPendingPayments(store, user);
     case 'clip-webhook': return clipWebhook(store, b, req.query);
     case 'validate-discount-code': return validateDiscountCode(store, user, b);
     case 'create-discount-code': return createDiscountCode(store, user, b);

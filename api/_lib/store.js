@@ -434,6 +434,9 @@ const fileStore = {
     }
     return out;
   },
+  // Pagos del usuario que siguen en proceso (Orlan, 2026-11-22):
+  // "Mis fotos" avisa de ellos con "Verificar pago".
+  async listPendingPaymentsByUser(userId) { return loadDb().payments.filter(p => p.userId === Number(userId) && p.status === 'pending').sort((a, b) => b.id - a.id); },
   async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; if (patch.commissionFree !== undefined) p.commissionFree = !!patch.commissionFree; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
   // Una foto quitada de "Mis fotos" ya NO cuenta como descargada: si es
   // de pago, no se puede volver a descargar sin volver a pagarla (Orlan,
@@ -1279,6 +1282,9 @@ const supabaseStore = {
     }
     return out;
   },
+  // Pagos del usuario que siguen en proceso (Orlan, 2026-11-22):
+  // "Mis fotos" avisa de ellos con "Verificar pago".
+  async listPendingPaymentsByUser(userId) { const { data } = await supabase().from('payments').select().eq('user_id', userId).eq('status', 'pending').order('id', { ascending: false }); return (data || []).map(mapPayment); },
   async updatePaymentStatus(id, patch) { const p = { updated_at: new Date().toISOString() }; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receipt_no = patch.receiptNo; if (patch.commissionFree !== undefined) p.commission_free = !!patch.commissionFree; let res = await supabase().from('payments').update(p).eq('id', id).select().single(); if (res.error && p.commission_free !== undefined && /commission_free|does not exist|42703/i.test(res.error.message || '')) { delete p.commission_free; res = await supabase().from('payments').update(p).eq('id', id).select().single(); } return mapPayment(res.data); },
   async readPhotoBytes(photo) {
     const { data, error } = await supabase().storage.from('photos').download(photo.storagePath);
