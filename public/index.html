@@ -168,6 +168,10 @@
   .marquee-track { display: flex; gap: 6px; width: max-content; padding-left: 6px; animation: stripScroll 30s linear infinite; }
   .marquee-track img { height: 28px; width: auto; object-fit: contain; border-radius: 5px; border: 1px solid #26262c; }
   @keyframes stripScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  /* Relojito de carga (Orlan 2026-11-22): al picar "Ver fotos" se ve
+     luego luego que está cargando, para que nadie se salga o refresque. */
+  .spin { display: inline-block; width: 22px; height: 22px; border-radius: 50%; border: 3px solid #3a3a42; border-top-color: #d4af37; animation: spin 0.8s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .hero-explore { width: 100%; border: 1.5px solid #3a3a42; background: transparent; color: #f5f5f0; border-radius: 999px; padding: 13px 18px; font-weight: 700; font-size: 16px; cursor: pointer; }
   .hero-photo-card { background: #141419; border: 1px solid #26262c; border-left: 4px solid #d4af37; border-radius: 12px; padding: 16px; display: flex; align-items: center; gap: 12px; cursor: pointer; margin-bottom: 10px; }
   .hero-photo-kicker { color: #d4af37; font-size: 11px; letter-spacing: 2px; font-weight: 800; margin: 0 0 4px; }
@@ -608,6 +612,6 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="/app.js?v=20261122c"></script>
+<script src="/app.js?v=20261122d"></script>
 </body>
 </html>
