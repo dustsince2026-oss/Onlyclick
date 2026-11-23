@@ -742,7 +742,7 @@ async function createEvent(store, user, body) {
   return { status: 201, data: { event: ev } };
 }
 
-async function getEvent(store, user, eventId) {
+async function getEvent(store, user, eventId, query) {
   await expireOldEvents(store);
   const ev = await store.getEvent(eventId);
   if (!ev) throw err(404, 'Evento no encontrado.');
@@ -782,12 +782,22 @@ async function getEvent(store, user, eventId) {
     };
   });
   const partRows = parts.length ? parts : [{ photographerId: ev.photographerId, priceMxn: ev.priceMxn, joinedAt: ev.createdAt }];
+  // Paginación opcional (el álbum pide de 60 en 60, Orlan 2026-11-22):
+  // con limit/offset se devuelve solo esa página y totalPhotos con el
+  // total del álbum. Sin ellos se devuelven todas, como antes (la
+  // lectura de dorsales y Revisar dorsales las necesitan completas).
+  const qLimit = query ? Number(query.limit) : NaN;
+  const qOffset = query ? Number(query.offset) : NaN;
+  const limit = Number.isFinite(qLimit) && qLimit > 0 ? Math.min(Math.floor(qLimit), 200) : null;
+  const offset = Number.isFinite(qOffset) && qOffset >= 0 ? Math.floor(qOffset) : 0;
+  const page = limit == null ? enriched : enriched.slice(offset, offset + limit);
   const myPart = user ? parts.find(pt => Number(pt.photographerId) === user.id) : null;
   const isCreator = user ? ev.photographerId === user.id : false;
   return { status: 200, data: {
     event: ev,
     photographerName: photographer ? displayNameFor(photographer) : '',
-    photos: enriched,
+    photos: page,
+    totalPhotos: enriched.length,
     tipClabe: photographer ? (photographer.tipClabe || '') : '',
     tipName: photographer ? displayNameFor(photographer) : '',
     participants: partRows.map(pt => {
@@ -3381,7 +3391,7 @@ async function dispatch(route, req) {
     case 'referral-info': return { status: 200, data: await referralInfo(store, req.query.code) };
     case 'list-events': return listEvents(store, user);
     case 'create-event': return createEvent(store, user, b);
-    case 'get-event': return getEvent(store, user, req.query.eventId);
+    case 'get-event': return getEvent(store, user, req.query.eventId, req.query);
     case 'upload-photo': return uploadPhoto(store, user, b);
     case 'backfill-thumbs': return backfillThumbs(store, user, b);
     case 'subscribe-photo-alert': return subscribePhotoAlert(store, user, b);
