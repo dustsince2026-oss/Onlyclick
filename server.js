@@ -39,6 +39,10 @@ const ROUTES = {
   'join-event': 'join-event', 'leave-event': 'leave-event',
   'event-participants': 'event-participants',
   'set-display-name': 'set-display-name', 'set-my-event-price': 'set-my-event-price',
+  // Planes de fotógrafo (2026-11-24).
+  'plan-status': 'plan-status', 'plan-select': 'plan-select',
+  'plan-payment-create': 'plan-payment-create', 'plan-payment-status': 'plan-payment-status',
+  'plan-payment-mark-paid': 'plan-payment-mark-paid', 'plan-payments': 'plan-payments',
   // NOTA: la ruta simulada 'purchase' se eliminó a propósito: con Clip
   // real, cualquiera podría llamar /api/purchase y descargar sin pagar.
   // El cobro real es POST /api/checkout-create.
