@@ -213,7 +213,7 @@ const fileStore = {
   async addDownload(d) {
     const db = loadDb();
     const old = db.downloads.find(x => x.userId === Number(d.userId) && x.photoId === Number(d.photoId) && x.removedAt);
-    if (old) { old.removedAt = null; if (d.amount !== undefined) old.amount = d.amount; if (d.eventId !== undefined) old.eventId = d.eventId; if (d.baseAmount !== undefined) old.baseAmount = d.baseAmount; if (d.commissionFree !== undefined) old.commissionFree = !!d.commissionFree; saveDb(db); return old; }
+    if (old) { old.removedAt = null; if (d.amount !== undefined) old.amount = d.amount; if (d.eventId !== undefined) old.eventId = d.eventId; if (d.baseAmount !== undefined) old.baseAmount = d.baseAmount; if (d.commissionFree !== undefined) old.commissionFree = !!d.commissionFree; if (d.commissionRate !== undefined) old.commissionRate = d.commissionRate != null ? Number(d.commissionRate) : null; saveDb(db); return old; }
     const row = { id: nextId(db, 'download'), createdAt: new Date().toISOString(), removedAt: null, ...d }; db.downloads.push(row); saveDb(db); return row;
   },
   // "Mis fotos" solo muestra las que NO se quitaron: las quitadas se
@@ -437,7 +437,37 @@ const fileStore = {
   // Pagos del usuario que siguen en proceso (Orlan, 2026-11-22):
   // "Mis fotos" avisa de ellos con "Verificar pago".
   async listPendingPaymentsByUser(userId) { return loadDb().payments.filter(p => p.userId === Number(userId) && p.status === 'pending').sort((a, b) => b.id - a.id); },
-  async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; if (patch.commissionFree !== undefined) p.commissionFree = !!patch.commissionFree; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
+  async updatePaymentStatus(id, patch) { const db = loadDb(); const p = db.payments.find(x => x.id === Number(id)); if (!p) return null; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receiptNo = patch.receiptNo; if (patch.commissionFree !== undefined) p.commissionFree = !!patch.commissionFree; if (patch.commissionRate !== undefined) p.commissionRate = patch.commissionRate != null ? Number(patch.commissionRate) : null; p.updatedAt = new Date().toISOString(); saveDb(db); return p; },
+  // ---- Planes de fotógrafo (2026-11-24) ----
+  // Fotos SUBIDAS por un fotógrafo en un mes calendario (UTC): el tope
+  // cuenta createdAt, así que borrar fotos no libera tope.
+  async countPhotosByPhotographerInMonth(photographerId, year, month) {
+    const prefix = String(year) + '-' + String(month).padStart(2, '0');
+    return loadDb().photos.filter(p => Number(p.photographerId) === Number(photographerId) && String(p.createdAt || '').slice(0, 7) === prefix).length;
+  },
+  // Pagos de mensualidad de plan (tabla plan_payments). Las filas ya
+  // guardan camelCase, igual que el resto de este adaptador.
+  async createPlanPayment(p) {
+    const db = loadDb();
+    if (!db.planPayments) db.planPayments = [];
+    if (!db.seq.planPayment) db.seq.planPayment = 1;
+    const row = { id: nextId(db, 'planPayment'), photographerId: Number(p.photographerId), plan: String(p.plan || ''), amountMxn: Number(p.amountMxn || 0), clipPaymentRequestId: p.clipPaymentRequestId || null, paymentUrl: p.paymentUrl || null, status: p.status || 'pending', createdAt: new Date().toISOString(), paidAt: p.paidAt || null };
+    db.planPayments.push(row); saveDb(db); return row;
+  },
+  async getPlanPaymentById(id) { return (loadDb().planPayments || []).find(x => x.id === Number(id)) || null; },
+  async getPlanPaymentByClipId(clipId) { return (loadDb().planPayments || []).find(x => String(x.clipPaymentRequestId || '') === String(clipId)) || null; },
+  async listPlanPaymentsByPhotographer(photographerId) { return (loadDb().planPayments || []).filter(x => Number(x.photographerId) === Number(photographerId)).sort((a, b) => b.id - a.id); },
+  async listPlanPayments() { return (loadDb().planPayments || []).slice().sort((a, b) => b.id - a.id); },
+  async updatePlanPayment(id, patch) {
+    const db = loadDb();
+    const row = (db.planPayments || []).find(x => x.id === Number(id));
+    if (!row) return null;
+    if (patch.status !== undefined) row.status = patch.status;
+    if (patch.clipPaymentRequestId !== undefined) row.clipPaymentRequestId = patch.clipPaymentRequestId || null;
+    if (patch.paymentUrl !== undefined) row.paymentUrl = patch.paymentUrl || null;
+    if (patch.paidAt !== undefined) row.paidAt = patch.paidAt || null;
+    saveDb(db); return row;
+  },
   // Una foto quitada de "Mis fotos" ya NO cuenta como descargada: si es
   // de pago, no se puede volver a descargar sin volver a pagarla (Orlan,
   // 2026-11-19). El registro sigue existiendo para las estadísticas.
@@ -482,7 +512,7 @@ function supabase() {
   return supabaseClient;
 }
 
-function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', referralCode: r.referral_code || null, referredBy: r.referred_by != null ? Number(r.referred_by) : null, lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, freeSalesBank: Number(r.free_sales_bank || 0), freeSalesReferralBlocks: Number(r.free_sales_referral_blocks || 0), freeSalesMilestoneBlocks: Number(r.free_sales_milestone_blocks || 0), createdAt: r.created_at } : null; }
+function mapUser(r) { return r ? { id: r.id, name: r.name, email: r.email, passwordHash: r.password_hash, role: r.role, tipClabe: r.tip_clabe || '', isOwner: !!r.is_owner, approved: r.approved !== false, payoutClabe: r.payout_clabe || '', displayName: r.display_name || '', referralCode: r.referral_code || null, referredBy: r.referred_by != null ? Number(r.referred_by) : null, lastAnnouncementsSeenAt: r.last_announcements_seen_at || null, freeSalesBank: Number(r.free_sales_bank || 0), freeSalesReferralBlocks: Number(r.free_sales_referral_blocks || 0), freeSalesMilestoneBlocks: Number(r.free_sales_milestone_blocks || 0), plan: r.plan || 'gratis', planExpiresAt: r.plan_expires_at || null, createdAt: r.created_at } : null; }
 function mapEvent(r, photoCount) { return r ? { id: r.id, photographerId: r.photographer_id, name: r.name, sport: r.sport, eventDate: r.event_date, location: r.location, freeMode: r.free_mode, priceMxn: Number(r.price_mxn || 20), coverPath: r.cover_path || '', isHidden: !!r.is_hidden, isExclusive: !!r.is_exclusive, isUpcoming: !!r.is_upcoming, createdAt: r.created_at, photoCount } : null; }
 function mapPhoto(r) { return r ? { id: r.id, eventId: r.event_id, filename: r.filename, mimeType: r.mime_type, bibs: r.bibs || [], price: Number(r.price || 0), photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, storagePath: r.storage_path, thumbPath: r.thumb_path || '', widthPx: r.width_px != null ? Number(r.width_px) : null, heightPx: r.height_px != null ? Number(r.height_px) : null, sizeKb: r.size_kb != null ? Number(r.size_kb) : null, createdAt: r.created_at } : null; }
 // Cara indexada en Rekognition (Fase 2): una fila por cara de una foto.
@@ -491,7 +521,7 @@ function mapFaceIndex(r) { return r ? { id: r.id, eventId: r.event_id != null ? 
 // Aviso "Avísame cuando haya fotos": un correo por evento; notified_at se
 // llena cuando se mandó el aviso (una sola vez por correo y evento).
 function mapPhotoAlert(r) { return r ? { id: r.id, eventId: r.event_id, email: r.email, notifiedAt: r.notified_at || null, createdAt: r.created_at } : null; }
-function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, payoutId: r.payout_id != null ? Number(r.payout_id) : null, removedAt: r.removed_at || null, commissionFree: !!r.commission_free, createdAt: r.created_at } : null; }
+function mapDownload(r) { return r ? { id: r.id, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, payoutId: r.payout_id != null ? Number(r.payout_id) : null, removedAt: r.removed_at || null, commissionFree: !!r.commission_free, commissionRate: r.commission_rate != null ? Number(r.commission_rate) : null, createdAt: r.created_at } : null; }
 function mapPayout(r) { return r ? { id: r.id, photographerId: r.photographer_id, amountMxn: Number(r.amount_mxn || 0), orlanFeeMxn: Number(r.orlan_fee_mxn || 0), clipFeeMxn: Number(r.clip_fee_mxn || 0), status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 function mapView(r) { return r ? { id: r.id, kind: r.kind, photoId: r.photo_id, eventId: r.event_id, bib: r.bib || '', viewerKey: r.viewer_key, createdAt: r.created_at } : null; }
 function mapApplication(r) { return r ? { id: r.id, name: r.name, city: r.city, phone: r.phone, events: r.events, camera: r.camera || '', sampleLink: r.sample_link, specialty: r.specialty || '', dorsalExp: r.dorsal_exp || '', availability: r.availability || '', clabe: r.clabe || '', message: r.message || '', status: r.status, inviteToken: r.invite_token || null, inviteExpiresAt: r.invite_expires_at || null, photographerId: r.photographer_id != null ? Number(r.photographer_id) : null, createdAt: r.created_at } : null; }
@@ -505,7 +535,9 @@ function mapAnnouncement(r) { return r ? { id: r.id, title: r.title, body: r.bod
 // isReward = cupón de recompensa (referidos / primeros 100), generado por
 // el sistema, no por el dueño; rewardKind = 'referral' | 'early100'.
 function mapDiscountCode(r) { return r ? { id: r.id, code: r.code, eventId: r.event_id != null ? r.event_id : null, discountPercent: Number(r.discount_percent || 20), note: r.note || '', createdBy: r.created_by != null ? Number(r.created_by) : null, used: !!r.used, usedBy: r.used_by != null ? Number(r.used_by) : null, usedAt: r.used_at || null, paymentRequestId: r.payment_request_id || null, active: r.active !== false, maxUses: Number(r.max_uses || 1), uses: Number(r.uses || 0), isReward: !!r.is_reward, rewardKind: r.reward_kind || null, createdAt: r.created_at } : null; }
-function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', discountCodeId: r.discount_code_id != null ? Number(r.discount_code_id) : null, commissionFree: !!r.commission_free, createdAt: r.created_at, updatedAt: r.updated_at } : null; }
+function mapPayment(r) { return r ? { id: r.id, clipPaymentRequestId: r.clip_payment_request_id, externalReference: r.external_reference, userId: r.user_id, photoId: r.photo_id, eventId: r.event_id, amount: Number(r.amount || 0), baseAmount: r.base_amount != null ? Number(r.base_amount) : null, currency: r.currency || 'MXN', status: r.status, receiptNo: r.receipt_no || '', discountCodeId: r.discount_code_id != null ? Number(r.discount_code_id) : null, commissionFree: !!r.commission_free, commissionRate: r.commission_rate != null ? Number(r.commission_rate) : null, createdAt: r.created_at, updatedAt: r.updated_at } : null; }
+// Pago de mensualidad de plan (tabla plan_payments): snake_case → camelCase.
+function mapPlanPayment(r) { return r ? { id: r.id, photographerId: r.photographer_id, plan: r.plan, amountMxn: Number(r.amount_mxn || 0), clipPaymentRequestId: r.clip_payment_request_id || null, paymentUrl: r.payment_url || null, status: r.status, createdAt: r.created_at, paidAt: r.paid_at || null } : null; }
 
 const supabaseStore = {
   kind: 'supabase',
@@ -601,7 +633,15 @@ const supabaseStore = {
     if (patch.freeSalesBank !== undefined) p.free_sales_bank = Math.max(0, Math.floor(Number(patch.freeSalesBank)) || 0);
     if (patch.freeSalesReferralBlocks !== undefined) p.free_sales_referral_blocks = Math.max(0, Math.floor(Number(patch.freeSalesReferralBlocks)) || 0);
     if (patch.freeSalesMilestoneBlocks !== undefined) p.free_sales_milestone_blocks = Math.max(0, Math.floor(Number(patch.freeSalesMilestoneBlocks)) || 0);
-    const { data, error } = await supabase().from('users').update(p).eq('id', id).select().single();
+    // Planes (2026-11-24): si faltan las columnas (SQL sin correr), se
+    // reintenta sin ellas para no romper el resto del update.
+    if (patch.plan !== undefined) p.plan = String(patch.plan || 'gratis');
+    if (patch.planExpiresAt !== undefined) p.plan_expires_at = patch.planExpiresAt || null;
+    let { data, error } = await supabase().from('users').update(p).eq('id', id).select().single();
+    if (error && (p.plan !== undefined || p.plan_expires_at !== undefined) && /plan|42703/i.test(error.message || '')) {
+      delete p.plan; delete p.plan_expires_at;
+      ({ data, error } = await supabase().from('users').update(p).eq('id', id).select().single());
+    }
     if (error) throw new Error(error.message);
     return mapUser(data);
   },
@@ -951,21 +991,24 @@ const supabaseStore = {
       if (d.eventId !== undefined) patch.event_id = d.eventId;
       if (d.baseAmount !== undefined) patch.base_amount = d.baseAmount != null ? Number(d.baseAmount) : null;
       if (d.commissionFree !== undefined) patch.commission_free = !!d.commissionFree;
+      if (d.commissionRate !== undefined) patch.commission_rate = d.commissionRate != null ? Number(d.commissionRate) : null;
       const { data } = await supabase().from('downloads').update(patch).eq('id', old.id).select().single();
       return data;
     }
-    // base_amount (recompensas) y commission_free (recompensas de
-    // fotógrafos): si falta correr el SQL nuevo, la columna no existe
-    // y el insert fallaría; se reintenta sin ellas para no romper
-    // NINGUNA descarga (el reparto de esa venta cae al normal, sin
-    // el ajuste de recompensa).
+    // base_amount (recompensas), commission_free (recompensas de
+    // fotógrafos) y commission_rate (planes 2026-11-24): si falta correr
+    // el SQL nuevo, la columna no existe y el insert fallaría; se
+    // reintenta sin ellas para no romper NINGUNA descarga (el reparto
+    // de esa venta cae al normal, sin el ajuste).
     const insertRow = { user_id: d.userId, photo_id: d.photoId, event_id: d.eventId, amount: d.amount || 0 };
     if (d.baseAmount != null) insertRow.base_amount = Number(d.baseAmount);
     if (d.commissionFree) insertRow.commission_free = true;
+    if (d.commissionRate != null) insertRow.commission_rate = Number(d.commissionRate);
     let res = await supabase().from('downloads').insert(insertRow).select().single();
-    if (res.error && (insertRow.base_amount != null || insertRow.commission_free != null) && /base_amount|commission_free|does not exist|42703/i.test(res.error.message || '')) {
+    if (res.error && (insertRow.base_amount != null || insertRow.commission_free != null || insertRow.commission_rate != null) && /base_amount|commission_free|commission_rate|does not exist|42703/i.test(res.error.message || '')) {
       delete insertRow.base_amount;
       delete insertRow.commission_free;
+      delete insertRow.commission_rate;
       res = await supabase().from('downloads').insert(insertRow).select().single();
     }
     if (res.error) throw new Error(res.error.message);
@@ -1285,7 +1328,69 @@ const supabaseStore = {
   // Pagos del usuario que siguen en proceso (Orlan, 2026-11-22):
   // "Mis fotos" avisa de ellos con "Verificar pago".
   async listPendingPaymentsByUser(userId) { const { data } = await supabase().from('payments').select().eq('user_id', userId).eq('status', 'pending').order('id', { ascending: false }); return (data || []).map(mapPayment); },
-  async updatePaymentStatus(id, patch) { const p = { updated_at: new Date().toISOString() }; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receipt_no = patch.receiptNo; if (patch.commissionFree !== undefined) p.commission_free = !!patch.commissionFree; let res = await supabase().from('payments').update(p).eq('id', id).select().single(); if (res.error && p.commission_free !== undefined && /commission_free|does not exist|42703/i.test(res.error.message || '')) { delete p.commission_free; res = await supabase().from('payments').update(p).eq('id', id).select().single(); } return mapPayment(res.data); },
+  async updatePaymentStatus(id, patch) { const p = { updated_at: new Date().toISOString() }; if (patch.status !== undefined) p.status = patch.status; if (patch.receiptNo !== undefined) p.receipt_no = patch.receiptNo; if (patch.commissionFree !== undefined) p.commission_free = !!patch.commissionFree; if (patch.commissionRate !== undefined) p.commission_rate = patch.commissionRate != null ? Number(patch.commissionRate) : null; let res = await supabase().from('payments').update(p).eq('id', id).select().single(); if (res.error && (p.commission_free !== undefined || p.commission_rate !== undefined) && /commission_free|commission_rate|does not exist|42703/i.test(res.error.message || '')) { delete p.commission_free; delete p.commission_rate; res = await supabase().from('payments').update(p).eq('id', id).select().single(); } return mapPayment(res.data); },
+  // ---- Planes de fotógrafo (2026-11-24) ----
+  // Fotos SUBIDAS por un fotógrafo en un mes calendario (UTC). Si la
+  // consulta falla, 0 (el handler no bloquea la subida por esto).
+  async countPhotosByPhotographerInMonth(photographerId, year, month) {
+    try {
+      const y = Number(year), m = Number(month);
+      const start = new Date(Date.UTC(y, m - 1, 1)).toISOString();
+      const end = new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1)).toISOString();
+      const { count, error } = await supabase().from('photos').select('id', { count: 'exact', head: true }).eq('photographer_id', Number(photographerId)).gte('created_at', start).lt('created_at', end);
+      if (error) return 0;
+      return count || 0;
+    } catch (_) { return 0; }
+  },
+  // Pagos de mensualidad de plan. Lecturas tolerantes: si la tabla aún
+  // no existe (falta correr la migración), devuelven []/null como las
+  // lecturas de códigos de descuento. Las escrituras sí fallan y avisan.
+  async createPlanPayment(p) {
+    const row = { photographer_id: Number(p.photographerId), plan: String(p.plan || ''), amount_mxn: Number(p.amountMxn || 0), status: p.status || 'pending' };
+    if (p.clipPaymentRequestId) row.clip_payment_request_id = p.clipPaymentRequestId;
+    if (p.paymentUrl) row.payment_url = p.paymentUrl;
+    const { data, error } = await supabase().from('plan_payments').insert(row).select().single();
+    if (error) throw new Error(error.message);
+    return mapPlanPayment(data);
+  },
+  async getPlanPaymentById(id) {
+    try {
+      const { data, error } = await supabase().from('plan_payments').select().eq('id', Number(id)).maybeSingle();
+      if (error) return null;
+      return mapPlanPayment(data);
+    } catch (_) { return null; }
+  },
+  async getPlanPaymentByClipId(clipId) {
+    try {
+      const { data, error } = await supabase().from('plan_payments').select().eq('clip_payment_request_id', String(clipId)).maybeSingle();
+      if (error) return null;
+      return mapPlanPayment(data);
+    } catch (_) { return null; }
+  },
+  async listPlanPaymentsByPhotographer(photographerId) {
+    try {
+      const { data, error } = await supabase().from('plan_payments').select().eq('photographer_id', Number(photographerId)).order('id', { ascending: false });
+      if (error) return [];
+      return (data || []).map(mapPlanPayment);
+    } catch (_) { return []; }
+  },
+  async listPlanPayments() {
+    try {
+      const { data, error } = await supabase().from('plan_payments').select().order('id', { ascending: false });
+      if (error) return [];
+      return (data || []).map(mapPlanPayment);
+    } catch (_) { return []; }
+  },
+  async updatePlanPayment(id, patch) {
+    const p = {};
+    if (patch.status !== undefined) p.status = patch.status;
+    if (patch.clipPaymentRequestId !== undefined) p.clip_payment_request_id = patch.clipPaymentRequestId || null;
+    if (patch.paymentUrl !== undefined) p.payment_url = patch.paymentUrl || null;
+    if (patch.paidAt !== undefined) p.paid_at = patch.paidAt || null;
+    const { data, error } = await supabase().from('plan_payments').update(p).eq('id', Number(id)).select().single();
+    if (error) throw new Error(error.message);
+    return mapPlanPayment(data);
+  },
   async readPhotoBytes(photo) {
     const { data, error } = await supabase().storage.from('photos').download(photo.storagePath);
     if (error) throw new Error('No se pudo leer la foto: ' + error.message);

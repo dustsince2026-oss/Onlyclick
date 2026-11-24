@@ -80,22 +80,79 @@ async function isPhotoOwner(user, p, ev) {
 
 // ---- Comisiones (decisión del dueño 2026-11-16) ----
 // Todo el dinero cae en la cuenta de Clip de Orlan; él les paga a los
-// fotógrafos. Por cada venta de $A: Clip se queda 4.18% (3.6% + IVA),
-// Orlan se queda el 10% DE LO QUE QUEDA, y el fotógrafo el resto.
+// fotógrafos. Por cada venta de $A: Clip se queda 4.06% (3.50% + 16% de
+// IVA sobre la comisión), Orlan se queda el 10% DE LO QUE QUEDA, y el
+// fotógrafo el resto.
 // Todo en centavos enteros para que las tres partes sumen EXACTAMENTE $A.
-// $20 -> Clip $0.84, Orlan $1.92, fotógrafo $17.24.
-// $50 -> Clip $2.09, Orlan $4.79, fotógrafo $43.12.
+// $20 -> Clip $0.81, Orlan $1.92, fotógrafo $17.27.
+// $50 -> Clip $2.03, Orlan $4.80, fotógrafo $43.17.
 // NOTA: en un carrito Clip cobra sobre el TOTAL del carrito, no por foto;
 // el reparto por foto es una aproximación (diferencia de centavos) que el
 // dueño aceptó. Las descargas gratis ($0) no generan comisión ni pago.
-const CLIP_FEE_RATE = 0.0418;
+const CLIP_FEE_RATE = 0.0406;
 const ORLAN_FEE_RATE = 0.10;
 const PAYOUT_DUE_HOURS = 72;
-function splitSale(amount) {
+
+// ---- Planes de fotógrafo (decidido por Orlan 2026-11-24) ----
+// Gratis 15% sin mensualidad, tope 2,000 fotos/mes; Lite $299/mes 10%,
+// tope 4,000; Pro $499/mes 7%, tope 9,000. `legado` es solo para Sandy
+// (id 3) y Ricardo (id 95): 10% sin mensualidad, tope 2,000, mínimo $50;
+// no se puede elegir (selectable: false), solo lo asigna la migración.
+// El dueño (isOwner) está FUERA del sistema de planes: sin tope, exento
+// del mínimo de $50, y sus propias fotos se reparten al 10% histórico.
+const PLANS = {
+  gratis: { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000, storageGb: 5 },
+  lite: { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000, storageGb: 25 },
+  pro: { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000, storageGb: 100 },
+  legado: { id: 'legado', label: 'Legado (10%)', commissionRate: 0.10, monthlyFee: 0, uploadCap: 2000, storageGb: 5, selectable: false },
+};
+const MIN_PHOTO_PRICE_MXN = 50;
+const PLAN_GRACE_DAYS = 3;          // días de gracia tras vencer un plan pagado
+const PLAN_MONTH_DAYS = 30;         // un "mes" de plan = 30 días naturales
+
+// Plan efectivo de un usuario en un instante (función pura, no escribe
+// en BD). Plan desconocido o ausente → gratis. Dueño → fuera del
+// sistema: tasa 0.10 para sus propias ventas, sin tope ni vencimiento.
+// lite/pro: activo antes del vencimiento; en gracia (vencido hace menos
+// de 3 días) conserva comisión y tope; pasado la gracia → gratis
+// (status 'expired'). La baja a Gratis solo se PERSISTE en plan-status.
+function effectivePlan(user, nowMs) {
+  const now = Number(nowMs) || Date.now();
+  const base = (planId) => {
+    const p = PLANS[planId] || PLANS.gratis;
+    return { plan: p.id, label: p.label, commissionRate: p.commissionRate, rate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap, storageGb: p.storageGb };
+  };
+  if (user && user.isOwner) {
+    return { ...base('gratis'), commissionRate: ORLAN_FEE_RATE, rate: ORLAN_FEE_RATE, uploadCap: Infinity, status: 'owner', expiresAt: null, graceUntil: null };
+  }
+  const planId = (user && typeof user.plan === 'string' && PLANS[user.plan]) ? user.plan : 'gratis';
+  if (planId === 'gratis' || planId === 'legado') {
+    return { ...base(planId), status: 'active', expiresAt: null, graceUntil: null };
+  }
+  const expiresAt = user && user.planExpiresAt ? new Date(user.planExpiresAt).getTime() : NaN;
+  if (!Number.isFinite(expiresAt)) return { ...base(planId), status: 'active', expiresAt: null, graceUntil: null };
+  const graceUntilMs = expiresAt + PLAN_GRACE_DAYS * 24 * 3600 * 1000;
+  const graceUntil = new Date(graceUntilMs).toISOString();
+  const expiresIso = new Date(expiresAt).toISOString();
+  if (now < expiresAt) return { ...base(planId), status: 'active', expiresAt: expiresIso, graceUntil };
+  if (now < graceUntilMs) return { ...base(planId), status: 'grace', expiresAt: expiresIso, graceUntil };
+  return { ...base('gratis'), status: 'expired', expiresAt: expiresIso, graceUntil };
+}
+
+// Precio mínimo por foto ($50): el dueño pasa siempre; los demás
+// fotógrafos no pueden poner menos.
+function enforceMinPrice(user, price) {
+  if (user && user.isOwner) return;
+  if (Number(price) < MIN_PHOTO_PRICE_MXN) throw err(400, 'El precio mínimo por foto es $50 MXN.');
+  return;
+}
+
+function splitSale(amount, rate) {
+  const r = Number.isFinite(Number(rate)) ? Number(rate) : ORLAN_FEE_RATE;
   const totalCents = Math.round(Number(amount || 0) * 100);
   const clipCents = Math.round(totalCents * CLIP_FEE_RATE);
   const netCents = totalCents - clipCents;
-  const orlanCents = Math.round(netCents * ORLAN_FEE_RATE);
+  const orlanCents = Math.round(netCents * r);
   const photographerCents = netCents - orlanCents;
   return { amount: totalCents / 100, clipFee: clipCents / 100, orlanFee: orlanCents / 100, photographerShare: photographerCents / 100 };
 }
@@ -107,19 +164,20 @@ function splitSale(amount) {
 // calcula sobre lo que el comprador REALMENTE pagó; lo que falta lo
 // absorbe Orlan (su parte baja, nunca bajo cero).
 // Ejemplo exacto con foto de $25 y cupón 10% (pagó $22.50):
-//   splitSale(25)            -> Clip $1.04, Orlan $2.40, fotógrafo $21.56
-//   splitRewardSale(22.50, 25) -> Clip $0.94, Orlan $0.00, fotógrafo $21.56
+//   splitSale(25)            -> Clip $1.02, Orlan $2.40, fotógrafo $21.58
+//   splitRewardSale(22.50, 25) -> Clip $0.91, Orlan $0.01, fotógrafo $21.58
 // Es EXACTAMENTE el ejemplo que Orlan calculó a mano: el fotógrafo
-// cobra lo mismo con y sin cupón y Orlan se queda en $0.00.
-// (Nota: 2500 × 0.0418 da 104.4999… en punto flotante, así que
-// Math.round lo baja a 104 centavos: Clip cobra $1.04, no $1.05.
+// cobra lo mismo con y sin cupón; Orlan se queda en $0.01 (resto por
+// redondeo: lo que falta lo absorbe él, nunca bajo cero).
+// (Nota: 2500 × 0.0406 da 101.5 en punto flotante, así que
+// Math.round lo sube a 102 centavos: Clip cobra $1.02.
 // Eso es lo que el código ya hacía antes de Recompensas y no se toca;
 // el total siempre cuadra al centavo: Clip + Orlan + fotógrafo = pagado.)
-function splitRewardSale(paidAmount, baseAmount) {
+function splitRewardSale(paidAmount, baseAmount, rate) {
   const paidCents = Math.round(Number(paidAmount || 0) * 100);
   const baseCents = Math.round(Number(baseAmount != null ? baseAmount : paidAmount) * 100);
   const clipCents = Math.round(paidCents * CLIP_FEE_RATE);
-  const photographerCents = splitSale(baseCents / 100).photographerShare * 100;
+  const photographerCents = splitSale(baseCents / 100, rate).photographerShare * 100;
   const orlanCents = Math.max(0, paidCents - clipCents - Math.round(photographerCents));
   return { amount: paidCents / 100, clipFee: clipCents / 100, orlanFee: orlanCents / 100, photographerShare: Math.round(photographerCents) / 100 };
 }
@@ -134,9 +192,11 @@ function splitRewardSale(paidAmount, baseAmount) {
 // después de Clip, así que ahí el beneficio no suma nada).
 function splitDownload(d) {
   const amt = Number(d.amount || 0);
+  // Tasa guardada en la venta (NULL en ventas viejas → 0.10 histórico).
+  const rate = Number.isFinite(Number(d.commissionRate)) ? Number(d.commissionRate) : ORLAN_FEE_RATE;
   const normal = (d.baseAmount != null && Number(d.baseAmount) > amt)
-    ? splitRewardSale(amt, Number(d.baseAmount))
-    : splitSale(amt);
+    ? splitRewardSale(amt, Number(d.baseAmount), rate)
+    : splitSale(amt, rate);
   if (!d.commissionFree) return normal;
   const paidCents = Math.round(amt * 100);
   const freeShareCents = paidCents - Math.round(normal.clipFee * 100);
@@ -730,11 +790,18 @@ async function createEvent(store, user, body) {
   // evento, igual que siempre.
   const isUpcoming = user.isOwner && body.isUpcoming === true;
   const pm = Number(body.priceMxn);
+  // Precio mínimo $50 (planes 2026-11-24): solo en eventos de pago
+  // (no exclusivo ni freeMode). Sin precio y no siendo dueño, el
+  // default pasa de $20 a $50; el dueño sigue pudiendo poner $20 (o lo
+  // que quiera) y los precios ya guardados no se reescriben.
+  const paidEvent = !isExclusive && body.freeMode === false;
+  if (paidEvent && Number.isFinite(pm) && pm >= 1 && pm <= 5000) enforceMinPrice(user, pm);
+  const defaultPrice = paidEvent && !user.isOwner ? MIN_PHOTO_PRICE_MXN : 20;
   const ev = await store.createEvent({
     photographerId: user.id, name, sport: String(body.sport || 'Carrera'),
     eventDate: String(body.eventDate || ''), location: String(body.location || ''),
     freeMode: isExclusive ? true : body.freeMode !== false,
-    priceMxn: isExclusive ? 0 : ((Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : 20),
+    priceMxn: isExclusive ? 0 : ((Number.isFinite(pm) && pm >= 1 && pm <= 5000) ? pm : defaultPrice),
     isExclusive, isUpcoming,
   });
   // El creador ya es participante de su evento, con el precio del evento.
@@ -844,6 +911,16 @@ async function uploadPhoto(store, user, body) {
   const widthPx = Number(body.widthPx) || null;
   const heightPx = Number(body.heightPx) || null;
   const sizeKb = Number(body.sizeKb) || null;
+  // Tope de subidas por plan (2026-11-24): el dueño no tiene tope. El
+  // conteo es por fotos CREADAS en el mes calendario (UTC): borrar no
+  // libera tope. Si el store no tiene el método, se cae a 0 y la subida
+  // no se bloquea (patrón tryStore).
+  if (!user.isOwner) {
+    const ep = effectivePlan(user);
+    const nowD = new Date();
+    const used = (await tryStore(store, 'countPhotosByPhotographerInMonth', user.id, nowD.getUTCFullYear(), nowD.getUTCMonth() + 1)) || 0;
+    if (used >= ep.uploadCap) throw err(403, 'Llegaste a tu tope de ' + ep.uploadCap + ' fotos este mes (plan ' + ep.label + '). Sube de plan para seguir subiendo o espera al próximo mes.');
+  }
   // ¿Es la PRIMERA foto del evento? Si sí, hay atletas esperando el
   // aviso "Avísame cuando haya fotos": se les avisa una sola vez.
   const hadPhotos = (await store.listPhotos(ev.id).catch(() => [])).length > 0;
@@ -2256,19 +2333,32 @@ function clipStatusToPayment(status) {
 // quitada), se conserva su marca y NO se vuelve a gastar el banco.
 async function markPaymentPaid(store, payment, clipData) {
   const already = await store.hasDownload(payment.userId, payment.photoId);
+  // Tasa guardada de la venta (planes 2026-11-24): la efectiva del
+  // dueño de la foto en el momento de confirmarse el pago (dueño de la
+  // foto → 0.10). Las descargas gratis ($0) no llevan tasa (NULL).
+  let commissionRate = null;
+  if (Number(payment.amount || 0) > 0) {
+    try {
+      const photo = await store.getPhoto(payment.photoId).catch(() => null);
+      const ev = photo ? await store.getEvent(photo.eventId || payment.eventId).catch(() => null) : await store.getEvent(payment.eventId).catch(() => null);
+      const ownerId = photoOwnerId(photo, ev);
+      const ownerUser = ownerId != null ? await store.findUserById(ownerId).catch(() => null) : null;
+      commissionRate = effectivePlan(ownerUser).commissionRate;
+    } catch (_) { commissionRate = ORLAN_FEE_RATE; }
+  }
   let commissionFree = false;
   if (!already) {
     const existing = await store.getDownloadByUserPhoto(payment.userId, payment.photoId).catch(() => null);
     commissionFree = existing ? !!existing.commissionFree : await maybeApplyFreeSale(store, payment);
-    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount, baseAmount: payment.baseAmount != null ? payment.baseAmount : null, commissionFree });
+    await store.addDownload({ userId: payment.userId, photoId: payment.photoId, eventId: payment.eventId, amount: payment.amount, baseAmount: payment.baseAmount != null ? payment.baseAmount : null, commissionFree, commissionRate });
   } else {
     const existing = await store.getDownloadByUserPhoto(payment.userId, payment.photoId).catch(() => null);
     commissionFree = !!(existing && existing.commissionFree);
   }
   if (payment.status !== 'completed') {
-    await store.updatePaymentStatus(payment.id, { status: 'completed', receiptNo: (clipData && clipData.receipt_no) || payment.receiptNo || '', commissionFree });
+    await store.updatePaymentStatus(payment.id, { status: 'completed', receiptNo: (clipData && clipData.receipt_no) || payment.receiptNo || '', commissionFree, commissionRate });
   }
-  return { already, commissionFree };
+  return { already, commissionFree, commissionRate };
 }
 
 // Vuelve a consultar el estado real en Clip y actualiza TODAS las filas
@@ -2305,8 +2395,12 @@ async function notifySale(store, newlyPaid) {
     const total = items.reduce((s, it) => s + Number(it.payment.amount || 0), 0);
     // Con cupón de recompensa el fotógrafo cobra sobre el precio SIN
     // descuento (splitDownload): el correo le muestra lo que REALMENTE
-    // le toca, no el total pagado.
-    const share = items.reduce((s, it) => s + splitDownload({ amount: it.payment.amount, baseAmount: it.payment.baseAmount, commissionFree: !!it.payment.commissionFree }).photographerShare, 0);
+    // le toca, no el total pagado. La tasa es la guardada en la venta
+    // (sin tasa guardada, 10%).
+    const share = items.reduce((s, it) => s + splitDownload({ amount: it.payment.amount, baseAmount: it.payment.baseAmount, commissionFree: !!it.payment.commissionFree, commissionRate: it.payment.commissionRate }).photographerShare, 0);
+    const rate0 = items[0] && items[0].payment ? items[0].payment.commissionRate : null;
+    const ratePct = Math.round((Number.isFinite(Number(rate0)) ? Number(rate0) : ORLAN_FEE_RATE) * 100);
+    const rateTxt = ratePct + '% de OnlyClick';
     const freeCount = items.filter(it => it.payment.commissionFree).length;
     const lines = items.map(it => {
       const bib = (it.photo && it.photo.bibs && it.photo.bibs[0]) || '';
@@ -2316,7 +2410,7 @@ async function notifySale(store, newlyPaid) {
     await sendSaleEmail({
       to: ph.email,
       subject: `¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick! $${total.toFixed(2)} MXN`,
-      text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (${freeCount === n ? 'sin comisión de OnlyClick en esta venta: es una de tus ventas sin comisión 🎉' : freeCount > 0 ? 'incluye ' + freeCount + ' venta(s) sin comisión de OnlyClick 🎉; el resto, después de la comisión de Clip y el 10% de OnlyClick' : 'después de la comisión de Clip y el 10% de OnlyClick'}). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
+      text: `Hola ${displayNameFor(ph)},\n\n¡Vendiste ${n === 1 ? 'una foto' : n + ' fotos'} en OnlyClick!${buyerFirst ? ` La compró ${buyerFirst}.` : ''}\n\n${lines}\n\nTotal: $${total.toFixed(2)} MXN — tu parte: $${share.toFixed(2)} MXN (${freeCount === n ? 'sin comisión de OnlyClick en esta venta: es una de tus ventas sin comisión 🎉' : freeCount > 0 ? 'incluye ' + freeCount + ' venta(s) sin comisión de OnlyClick 🎉; el resto, después de la comisión de Clip y el ' + rateTxt : 'después de la comisión de Clip y el ' + rateTxt}). OnlyClick te lo manda a tu CLABE en máximo 72 horas.\n\nPuedes verlo en tu panel de fotógrafo.`,
     });
   }
 }
@@ -2358,7 +2452,7 @@ async function refreshPaymentsByClipId(store, clipId) {
     const newlyPaid = [];
     for (const p of payments) {
       const r = await markPaymentPaid(store, p, cur);
-      if (!r.already) { p.commissionFree = r.commissionFree; newlyPaid.push(p); }
+      if (!r.already) { p.commissionFree = r.commissionFree; p.commissionRate = r.commissionRate; newlyPaid.push(p); }
     }
     if (newlyPaid.length) {
       // Avisos (nunca rompen el pago): al fotógrafo por correo y al
@@ -2814,7 +2908,22 @@ async function clipWebhook(store, body, query) {
   // Un checkout puede cubrir varias fotos (carrito): todas sus filas
   // comparten el payment_request_id y se marcan juntas.
   const payments = await store.getPaymentsByClipId(id);
-  if (!payments.length) return { status: 200, data: { ok: true, ignored: 'unknown-payment' } };
+  if (!payments.length) {
+    // Pago de PLAN mensual (no de foto): si hay una fila de plan_payments
+    // con ese clip id y no está completada, se re-consulta Clip y si
+    // está COMPLETED se activa el plan. El flujo de fotos no se toca.
+    const planRow = (await tryStore(store, 'getPlanPaymentByClipId', id)) || null;
+    if (!planRow) return { status: 200, data: { ok: true, ignored: 'unknown-payment' } };
+    if (planRow.status === 'completed') return { status: 200, data: { ok: true, already: true } };
+    try {
+      const cur = await clip.getCheckout(id);
+      if (clipStatusToPayment(cur.status) !== 'completed') return { status: 200, data: { ok: true, paid: false, status: clipStatusToPayment(cur.status) } };
+      const done = await completePlanPayment(store, planRow);
+      return { status: 200, data: { ok: true, paid: true, status: 'completed', plan: planRow.plan, expiresAt: done.expiresAt } };
+    } catch (_) {
+      return { status: 200, data: { ok: false, reason: 'clip-error' } };
+    }
+  }
   if (payments.every(p => p.status === 'completed')) return { status: 200, data: { ok: true, already: true } };
   try {
     const r = await refreshPaymentsByClipId(store, id);
@@ -2835,6 +2944,7 @@ async function setEventPrice(store, user, body) {
   if (ev.isExclusive) throw err(400, 'Un álbum exclusivo OnlyClick no tiene precio: las fotos son gratis.');
   const price = Number(body.priceMxn);
   if (!Number.isFinite(price) || price < 1 || price > 5000) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
+  enforceMinPrice(user, price);
   const updated = await store.updateEvent(ev.id, { priceMxn: Math.round(price * 100) / 100 });
   // El precio que se ve en cada foto sale de la fila de participante del
   // fotógrafo (photoPrice), no del evento: si solo se actualiza el
@@ -2845,6 +2955,168 @@ async function setEventPrice(store, user, body) {
   // precio del evento (mismo patrón que createEvent).
   try { await store.joinEvent(ev.id, user.id, updated.priceMxn); } catch (_) {}
   return { status: 200, data: { event: updated } };
+}
+
+// ---- Planes de fotógrafo (2026-11-24) ----
+function publicPlanPayment(r) {
+  return r ? { id: r.id, photographerId: r.photographerId, plan: r.plan, amountMxn: Number(r.amountMxn || 0), clipPaymentRequestId: r.clipPaymentRequestId || null, paymentUrl: r.paymentUrl || null, status: r.status, createdAt: r.createdAt || null, paidAt: r.paidAt || null } : null;
+}
+
+// Activa (o renueva) un plan pagado: el mes nuevo corre desde la fecha
+// de pago, no desde el vencimiento viejo. Se usa desde el webhook, desde
+// plan-payment-status y desde plan-payment-mark-paid. La fila de
+// plan_payments se marca completed DESPUÉS de que esto no falle: si el
+// updateUser falla, no se marca nada como pagado.
+async function activatePlan(store, photographerId, plan) {
+  if (plan !== 'lite' && plan !== 'pro') throw err(400, 'Plan no válido.');
+  const expiresAt = new Date(Date.now() + PLAN_MONTH_DAYS * 24 * 3600 * 1000).toISOString();
+  const updated = await store.updateUser(photographerId, { plan, planExpiresAt: expiresAt });
+  if (!updated) throw err(404, 'Fotógrafo no encontrado.');
+  return updated;
+}
+
+async function planStatus(store, user) {
+  requirePhotographer(user);
+  let ep = effectivePlan(user);
+  // Baja perezosa: solo aquí se persiste la baja a Gratis cuando el
+  // plan pagado ya pasó la gracia.
+  if (ep.status === 'expired') {
+    const updated = await store.updateUser(user.id, { plan: 'gratis', planExpiresAt: null });
+    ep = effectivePlan(updated || { ...user, plan: 'gratis', planExpiresAt: null });
+  }
+  const nowD = new Date();
+  const uploadsUsed = user.isOwner ? 0 : ((await tryStore(store, 'countPhotosByPhotographerInMonth', user.id, nowD.getUTCFullYear(), nowD.getUTCMonth() + 1)) || 0);
+  const cap = ep.uploadCap;
+  const pendingList = (await tryStore(store, 'listPlanPaymentsByPhotographer', user.id)) || [];
+  const pending = (pendingList || []).find(r => r.status === 'pending') || null;
+  return { status: 200, data: {
+    plan: ep.plan, label: ep.label, commissionRate: ep.commissionRate, monthlyFee: ep.monthlyFee,
+    uploadCap: Number.isFinite(cap) ? cap : null, storageGb: ep.storageGb,
+    uploadsUsed, uploadsLeft: Number.isFinite(cap) ? Math.max(0, cap - uploadsUsed) : null,
+    expiresAt: ep.expiresAt, graceUntil: ep.graceUntil, status: ep.status,
+    pendingPayment: publicPlanPayment(pending),
+    plans: ['gratis', 'lite', 'pro'].map(id => { const p = PLANS[id]; return { id: p.id, label: p.label, commissionRate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap, storageGb: p.storageGb }; }),
+  } };
+}
+
+// POST /api/plan-select { plan } — el fotógrafo elige plan. Gratis =
+// baja inmediata. lite/pro = crea (o devuelve) la fila pendiente de
+// plan_payments; NO activa el plan (eso lo hace el pago). Si ya está en
+// ese plan pagado y activo, no crea nada.
+async function planSelect(store, user, body) {
+  requirePhotographer(user);
+  const plan = String(body.plan || '').trim().toLowerCase();
+  if (plan !== 'gratis' && plan !== 'lite' && plan !== 'pro') throw err(400, 'Plan no válido. Elige Gratis, Lite o Pro.');
+  if (plan === 'gratis') {
+    await store.updateUser(user.id, { plan: 'gratis', planExpiresAt: null });
+    return { status: 200, data: { ok: true, plan: 'gratis', planPayment: null } };
+  }
+  const ep = effectivePlan(user);
+  if (ep.plan === plan && (ep.status === 'active' || ep.status === 'grace')) {
+    return { status: 200, data: { ok: true, alreadyActive: true, plan, status: ep.status, expiresAt: ep.expiresAt, planPayment: null } };
+  }
+  if (typeof store.createPlanPayment !== 'function' || typeof store.listPlanPaymentsByPhotographer !== 'function') throw err(503, 'Los pagos de planes aún no están activados.');
+  const existing = (await store.listPlanPaymentsByPhotographer(user.id).catch(() => [])) || [];
+  const pending = existing.find(r => r.status === 'pending' && r.plan === plan);
+  if (pending) return { status: 200, data: { ok: true, plan, planPayment: publicPlanPayment(pending) } };
+  const row = await store.createPlanPayment({ photographerId: user.id, plan, amountMxn: PLANS[plan].monthlyFee, status: 'pending' });
+  return { status: 200, data: { ok: true, plan, planPayment: publicPlanPayment(row) } };
+}
+
+// POST /api/plan-payment-create { planPaymentId } — SOLO dueño. Genera
+// el link de Clip para cobrar la mensualidad. Si la fila ya tiene link,
+// lo devuelve sin crear otro.
+async function planPaymentCreate(store, user, body) {
+  requireOwner(user);
+  const id = Number(body.planPaymentId);
+  if (!id) throw err(400, 'Falta el pago de plan.');
+  const row = typeof store.getPlanPaymentById === 'function' ? await store.getPlanPaymentById(id).catch(() => null) : null;
+  if (!row) throw err(404, 'Pago de plan no encontrado.');
+  if (row.paymentUrl) return { status: 200, data: { planPayment: publicPlanPayment(row), paymentUrl: row.paymentUrl } };
+  const base = publicBase();
+  const ref = ('OC-PLAN-' + row.id + '-' + crypto.randomBytes(4).toString('hex')).slice(0, 36);
+  const label = row.plan === 'pro' ? 'Pro' : 'Lite';
+  const created = await createClipLink({
+    amount: Number(row.amountMxn || 0),
+    currency: 'MXN',
+    purchase_description: ('Plan ' + label + ' OnlyClick (1 mes)').slice(0, 255),
+    redirection_url: { success: base + '/?plan=pagado', error: base + '/?plan=error', default: base + '/?plan=error' },
+    metadata: { external_reference: ref },
+    webhook_url: webhookUrl(),
+    override_settings: { locale: 'es-MX', tip_enabled: false },
+  });
+  const updated = await store.updatePlanPayment(row.id, { clipPaymentRequestId: created.payment_request_id, paymentUrl: created.payment_request_url });
+  const out = publicPlanPayment(updated || row);
+  return { status: 200, data: { planPayment: out, paymentUrl: out.paymentUrl } };
+}
+
+// Activa el plan de una fila de plan_payments ya confirmada en Clip
+// (o marcada a mano): primero el plan, luego la fila completed+paidAt.
+async function completePlanPayment(store, row) {
+  const updatedUser = await activatePlan(store, row.photographerId, row.plan);
+  const paidAt = new Date().toISOString();
+  const updated = await store.updatePlanPayment(row.id, { status: 'completed', paidAt });
+  return { planPayment: publicPlanPayment(updated || row), expiresAt: updatedUser ? (updatedUser.planExpiresAt || null) : null };
+}
+
+// POST /api/plan-payment-status { planPaymentId } — el fotógrafo dueño
+// de la fila (o el dueño) re-consulta Clip; si está COMPLETED activa
+// el plan.
+async function planPaymentStatus(store, user, body) {
+  requireUser(user);
+  const id = Number(body.planPaymentId);
+  if (!id) throw err(400, 'Falta el pago de plan.');
+  const row = typeof store.getPlanPaymentById === 'function' ? await store.getPlanPaymentById(id).catch(() => null) : null;
+  if (!row) throw err(404, 'Pago de plan no encontrado.');
+  if (Number(row.photographerId) !== Number(user.id) && !user.isOwner) throw err(403, 'Ese pago de plan no es tuyo.');
+  if (row.status === 'completed') {
+    const u = await store.findUserById(row.photographerId).catch(() => null);
+    return { status: 200, data: { status: 'completed', plan: row.plan, expiresAt: u ? (u.planExpiresAt || null) : null } };
+  }
+  if (!row.clipPaymentRequestId) return { status: 200, data: { status: row.status, plan: row.plan, expiresAt: null } };
+  const cur = await clip.getCheckout(row.clipPaymentRequestId);
+  const status = clipStatusToPayment(cur.status);
+  if (status === 'completed') {
+    const done = await completePlanPayment(store, row);
+    return { status: 200, data: { status: 'completed', plan: row.plan, expiresAt: done.expiresAt } };
+  }
+  if (status !== row.status) await store.updatePlanPayment(row.id, { status }).catch(() => null);
+  return { status: 200, data: { status, plan: row.plan, expiresAt: null } };
+}
+
+// POST /api/plan-payment-mark-paid { planPaymentId } — SOLO dueño.
+// Equivalente manual de "Marcar como pagado" (transferencia/efectivo):
+// marca la fila completed + paidAt y activa el plan.
+async function planPaymentMarkPaid(store, user, body) {
+  requireOwner(user);
+  const id = Number(body.planPaymentId);
+  if (!id) throw err(400, 'Falta el pago de plan.');
+  const row = typeof store.getPlanPaymentById === 'function' ? await store.getPlanPaymentById(id).catch(() => null) : null;
+  if (!row) throw err(404, 'Pago de plan no encontrado.');
+  if (row.status === 'completed') {
+    const u = await store.findUserById(row.photographerId).catch(() => null);
+    return { status: 200, data: { planPayment: publicPlanPayment(row), plan: row.plan, expiresAt: u ? (u.planExpiresAt || null) : null } };
+  }
+  const done = await completePlanPayment(store, row);
+  return { status: 200, data: { planPayment: done.planPayment, plan: row.plan, expiresAt: done.expiresAt } };
+}
+
+// GET /api/plan-payments — SOLO dueño. Todas las filas, recientes primero.
+async function planPayments(store, user) {
+  requireOwner(user);
+  const rows = (await tryStore(store, 'listPlanPayments')) || [];
+  const ids = [...new Set(rows.map(r => Number(r.photographerId)).filter(Boolean))];
+  const users = (await tryStore(store, 'findUsersByIds', ids)) || [];
+  const names = new Map((users || []).map(u => [u.id, u.name || '']));
+  if (!users.length) {
+    for (const r of rows) {
+      if (!names.has(Number(r.photographerId))) {
+        const u = await store.findUserById(Number(r.photographerId)).catch(() => null);
+        if (u) names.set(u.id, u.name || '');
+      }
+    }
+  }
+  return { status: 200, data: { planPayments: rows.map(r => ({ ...publicPlanPayment(r), photographerName: names.get(Number(r.photographerId)) || '' })) } };
 }
 
 // ---- Multi-fotógrafo: aprobación (solo el dueño) ----
@@ -2901,7 +3173,11 @@ async function listPhotographers(store, user) {
     let eventCount = 0, totalSold = 0;
     for (const e of events) if (e.photographerId === ph.id) eventCount++;
     for (const d of downloads) if ((await ownerOfDownload(d)) === ph.id) totalSold += Number(d.amount || 0);
-    rows.push({ id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', displayName: displayNameFor(ph), eventCount, totalSold: Math.round(totalSold * 100) / 100, hasApplication: linked.has(ph.id) });
+    const ep = effectivePlan(ph);
+    rows.push({ id: ph.id, name: ph.name, email: ph.email, approved: ph.approved !== false, isOwner: !!ph.isOwner, payoutClabe: ph.payoutClabe || '', displayName: displayNameFor(ph), eventCount, totalSold: Math.round(totalSold * 100) / 100, hasApplication: linked.has(ph.id),
+      // Plan del fotógrafo (2026-11-24): sin consultas extra, con
+      // effectivePlan sobre la fila que ya se tiene.
+      plan: ep.plan, planLabel: ep.label, commissionRate: ep.commissionRate, planExpiresAt: ph.planExpiresAt || null, planStatus: ep.status });
   }
   return { status: 200, data: { photographers: rows } };
 }
@@ -3247,7 +3523,7 @@ async function notifyPayout(store, ph, payout, settledCount, pendingTotals) {
   const date = String(payout.paidAt || '').slice(0, 10);
   const n = Number(settledCount || 0);
   // El texto plano también abre con el encabezado (decisión de Orlan).
-  const text = `Recibiste pago de OnlyClick\n\nHola ${displayNameFor(ph)},\n\nOnlyClick te depositó $${w.toFixed(2)} MXN ${clabeTxt}.\n\nDesglose de este pago:\n• Fotos vendidas pagadas: ${n}\n• Total vendido: $${t.toFixed(2)} MXN\n• Comisión Clip (4.18%): $${y.toFixed(2)} MXN\n• Comisión OnlyClick (10%): $${z.toFixed(2)} MXN\n• Te depositamos: $${w.toFixed(2)} MXN\n\nFecha del pago: ${date}\n\nPuedes verlo en tu panel de fotógrafo.`;
+  const text = `Recibiste pago de OnlyClick\n\nHola ${displayNameFor(ph)},\n\nOnlyClick te depositó $${w.toFixed(2)} MXN ${clabeTxt}.\n\nDesglose de este pago:\n• Fotos vendidas pagadas: ${n}\n• Total vendido: $${t.toFixed(2)} MXN\n• Comisión Clip (4.06%): $${y.toFixed(2)} MXN\n• Comisión OnlyClick: $${z.toFixed(2)} MXN\n• Te depositamos: $${w.toFixed(2)} MXN\n\nFecha del pago: ${date}\n\nPuedes verlo en tu panel de fotógrafo.`;
   // HTML propio (no el <br> automático): encabezado GRANDE con el título,
   // el monto depositado destacado y el desglose como lista.
   const html = `<h1 style="font-size:28px;line-height:1.2;color:#b8860b;margin:0 0 8px;">Recibiste pago de OnlyClick</h1>`
@@ -3258,8 +3534,8 @@ async function notifyPayout(store, ph, payout, settledCount, pendingTotals) {
     + `<ul style="font-size:15px;color:#222222;">`
     + `<li>Fotos vendidas pagadas: ${n}</li>`
     + `<li>Total vendido: $${t.toFixed(2)} MXN</li>`
-    + `<li>Comisión Clip (4.18%): $${y.toFixed(2)} MXN</li>`
-    + `<li>Comisión OnlyClick (10%): $${z.toFixed(2)} MXN</li>`
+    + `<li>Comisión Clip (4.06%): $${y.toFixed(2)} MXN</li>`
+    + `<li>Comisión OnlyClick: $${z.toFixed(2)} MXN</li>`
     + `<li><strong>Te depositamos: $${w.toFixed(2)} MXN</strong></li>`
     + `</ul>`
     + `<p style="font-size:15px;color:#222222;">Fecha del pago: ${date}</p>`
@@ -3331,6 +3607,7 @@ async function joinEvent(store, user, body) {
   // Álbum exclusivo OnlyClick: ningún otro fotógrafo se puede unir ni
   // vender fotos ahí; solo el dueño sube fotos.
   if (ev.isExclusive) throw err(403, 'Este álbum es exclusivo OnlyClick: solo el dueño sube fotos.');
+  enforceMinPrice(user, price);
   const row = await store.joinEvent(ev.id, user.id, price);
   return { status: 200, data: { ok: true, eventId: ev.id, photographerId: user.id, priceMxn: row.priceMxn } };
 }
@@ -3389,6 +3666,7 @@ async function setMyEventPrice(store, user, body) {
   if (ev.isExclusive) throw err(400, 'Un álbum exclusivo OnlyClick no tiene precio: las fotos son gratis.');
   const price = validPrice(body.priceMxn);
   if (price == null) throw err(400, 'El precio por foto debe ser entre $1 y $5,000 MXN.');
+  enforceMinPrice(user, price);
   if (ev.photographerId === user.id) {
     const updated = await store.updateEvent(ev.id, { priceMxn: price });
     // Igual que set-event-price: el precio de cada foto sale de la fila
@@ -3480,9 +3758,15 @@ async function dispatch(route, req) {
     case 'event-participants': return eventParticipants(store, user, req.query);
     case 'set-display-name': return setDisplayName(store, user, b);
     case 'set-my-event-price': return setMyEventPrice(store, user, b);
+    case 'plan-status': return planStatus(store, user);
+    case 'plan-select': return planSelect(store, user, b);
+    case 'plan-payment-create': return planPaymentCreate(store, user, b);
+    case 'plan-payment-status': return planPaymentStatus(store, user, b);
+    case 'plan-payment-mark-paid': return planPaymentMarkPaid(store, user, b);
+    case 'plan-payments': return planPayments(store, user);
     case 'photo-file': return photoFile(store, user, req.query.id, req);
     default: throw err(404, 'Ruta no encontrada: ' + route);
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, makeReferralCode, referralLink, referralShareLink, early100ShareText, referralInviteShareText, photographerShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, maybeGrantPhotographerRewards, maybeApplyFreeSale, PHOTOG_REWARD_MILESTONE, PHOTOG_REWARD_PER_BLOCK, PHOTOG_REWARD_REFERRAL_STARS, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, PLANS, MIN_PHOTO_PRICE_MXN, PLAN_GRACE_DAYS, PLAN_MONTH_DAYS, effectivePlan, activatePlan, makeReferralCode, referralLink, referralShareLink, early100ShareText, referralInviteShareText, photographerShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, maybeGrantPhotographerRewards, maybeApplyFreeSale, PHOTOG_REWARD_MILESTONE, PHOTOG_REWARD_PER_BLOCK, PHOTOG_REWARD_REFERRAL_STARS, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
