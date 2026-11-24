@@ -2999,10 +2999,34 @@ async function planStatus(store, user) {
   } };
 }
 
+// Genera (o reutiliza) el link de Clip de una fila de plan_payments.
+// Lo usan plan-select (la fotógrafa paga sola, sin Orlan) y
+// plan-payment-create (respaldo del dueño). Si la fila ya tiene link,
+// lo devuelve sin llamar a Clip.
+async function ensurePlanPaymentLink(store, row) {
+  if (row.paymentUrl) return publicPlanPayment(row);
+  const base = publicBase();
+  const ref = ('OC-PLAN-' + row.id + '-' + crypto.randomBytes(4).toString('hex')).slice(0, 36);
+  const label = row.plan === 'pro' ? 'Pro' : 'Lite';
+  const created = await createClipLink({
+    amount: Number(row.amountMxn || 0),
+    currency: 'MXN',
+    purchase_description: ('Plan ' + label + ' OnlyClick (1 mes)').slice(0, 255),
+    redirection_url: { success: base + '/?plan=pagado', error: base + '/?plan=error', default: base + '/?plan=error' },
+    metadata: { external_reference: ref },
+    webhook_url: webhookUrl(),
+    override_settings: { locale: 'es-MX', tip_enabled: false },
+  });
+  const updated = await store.updatePlanPayment(row.id, { clipPaymentRequestId: created.payment_request_id, paymentUrl: created.payment_request_url });
+  return publicPlanPayment(updated || row);
+}
+
 // POST /api/plan-select { plan } — el fotógrafo elige plan. Gratis =
 // baja inmediata. lite/pro = crea (o devuelve) la fila pendiente de
-// plan_payments; NO activa el plan (eso lo hace el pago). Si ya está en
-// ese plan pagado y activo, no crea nada.
+// plan_payments CON el link de Clip ya generado, para que la fotógrafa
+// pague sola sin Orlan; NO activa el plan (eso lo hace el pago).
+// Si ya está en ese plan pagado y activo, no crea nada. Si ya hay un
+// pendiente del mismo plan, devuelve la misma fila (con su link).
 async function planSelect(store, user, body) {
   requirePhotographer(user);
   const plan = String(body.plan || '').trim().toLowerCase();
@@ -3018,35 +3042,28 @@ async function planSelect(store, user, body) {
   if (typeof store.createPlanPayment !== 'function' || typeof store.listPlanPaymentsByPhotographer !== 'function') throw err(503, 'Los pagos de planes aún no están activados.');
   const existing = (await store.listPlanPaymentsByPhotographer(user.id).catch(() => [])) || [];
   const pending = existing.find(r => r.status === 'pending' && r.plan === plan);
-  if (pending) return { status: 200, data: { ok: true, plan, planPayment: publicPlanPayment(pending) } };
+  if (pending) {
+    // Pendiente del flujo viejo (sin link) o con link: en ambos casos
+    // se devuelve la misma fila con su link, sin duplicar.
+    const out = await ensurePlanPaymentLink(store, pending);
+    return { status: 200, data: { ok: true, plan, planPayment: out } };
+  }
   const row = await store.createPlanPayment({ photographerId: user.id, plan, amountMxn: PLANS[plan].monthlyFee, status: 'pending' });
-  return { status: 200, data: { ok: true, plan, planPayment: publicPlanPayment(row) } };
+  const out = await ensurePlanPaymentLink(store, row);
+  return { status: 200, data: { ok: true, plan, planPayment: out } };
 }
 
 // POST /api/plan-payment-create { planPaymentId } — SOLO dueño. Genera
 // el link de Clip para cobrar la mensualidad. Si la fila ya tiene link,
-// lo devuelve sin crear otro.
+// lo devuelve sin crear otro. Respaldo para transferencias o si el link
+// de plan-select falló; la fotógrafa ya no necesita este paso.
 async function planPaymentCreate(store, user, body) {
   requireOwner(user);
   const id = Number(body.planPaymentId);
   if (!id) throw err(400, 'Falta el pago de plan.');
   const row = typeof store.getPlanPaymentById === 'function' ? await store.getPlanPaymentById(id).catch(() => null) : null;
   if (!row) throw err(404, 'Pago de plan no encontrado.');
-  if (row.paymentUrl) return { status: 200, data: { planPayment: publicPlanPayment(row), paymentUrl: row.paymentUrl } };
-  const base = publicBase();
-  const ref = ('OC-PLAN-' + row.id + '-' + crypto.randomBytes(4).toString('hex')).slice(0, 36);
-  const label = row.plan === 'pro' ? 'Pro' : 'Lite';
-  const created = await createClipLink({
-    amount: Number(row.amountMxn || 0),
-    currency: 'MXN',
-    purchase_description: ('Plan ' + label + ' OnlyClick (1 mes)').slice(0, 255),
-    redirection_url: { success: base + '/?plan=pagado', error: base + '/?plan=error', default: base + '/?plan=error' },
-    metadata: { external_reference: ref },
-    webhook_url: webhookUrl(),
-    override_settings: { locale: 'es-MX', tip_enabled: false },
-  });
-  const updated = await store.updatePlanPayment(row.id, { clipPaymentRequestId: created.payment_request_id, paymentUrl: created.payment_request_url });
-  const out = publicPlanPayment(updated || row);
+  const out = await ensurePlanPaymentLink(store, row);
   return { status: 200, data: { planPayment: out, paymentUrl: out.paymentUrl } };
 }
 
