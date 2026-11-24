@@ -2154,7 +2154,7 @@ function planSectionHtml(s, isOwner) {
   const pendingHtml = pp ? `<div class="panel-sec">Pago pendiente</div>
     <div class="sec-card">
     <p><strong>Pago pendiente: Plan ${esc(planLabelOf(pp.plan))} — $${Number(pp.amountMxn || 0)} MXN</strong></p>
-    ${pp.paymentUrl ? `<p><a href="${esc(pp.paymentUrl)}" target="_blank" rel="noopener">Pagar con Clip</a></p>` : '<p class="muted">Orlan te manda el link de pago de Clip.</p>'}
+    ${pp.paymentUrl ? `<p><button type="button" class="primary sec-btn-gold" data-plan-payurl="${esc(pp.paymentUrl)}">Pagar $${Number(pp.amountMxn || 0)} MXN con Clip</button></p><p class="muted">Paga aquí con Clip y tu plan se activa solo. Después de pagar, pica "Verificar pago".</p>` : '<p class="muted">Orlan te manda el link de pago de Clip.</p>'}
     <button type="button" id="planVerifyBtn" class="primary sec-btn-gold" data-plan-payment-id="${Number(pp.id)}">Verificar pago</button>
     <p id="planVerifyStatus" class="muted"></p>
     </div>` : '';
@@ -2180,7 +2180,7 @@ function planSectionHtml(s, isOwner) {
     ${pendingHtml}
     <div class="panel-sec">Cambiar de plan</div>
     <div class="sec-card">
-    <p class="muted">Al elegir un plan de pago se crea tu pago pendiente y Orlan te manda el link de Clip. Si ya no quieres un plan de pago, elige Gratis y bajas luego luego.</p>
+    <p class="muted">Al elegir un plan de pago se crea tu pago y el botón para pagar con Clip aparece aquí mismo; tu plan se activa solo cuando Clip confirma el pago. Si ya no quieres un plan de pago, elige Gratis y bajas luego luego.</p>
     ${cardsHtml}
     </div>`;
 }
@@ -2693,7 +2693,7 @@ async function loadPhotographer() {
   const planRetryBtn = $('#planRetry');
   if (planRetryBtn) planRetryBtn.onclick = () => loadPhotographer();
   // Elegir un plan: Gratis baja luego luego; Lite/Pro crean el pago
-  // pendiente y Orlan manda el link de Clip.
+  // pendiente CON su link de Clip, para pagar aquí mismo sin Orlan.
   document.querySelectorAll('[data-plan-select]').forEach(b => b.onclick = async () => {
     const plan = b.dataset.planSelect;
     b.disabled = true;
@@ -2701,11 +2701,15 @@ async function loadPhotographer() {
       const r = await api('/api/plan-select', { method: 'POST', body: JSON.stringify({ plan }) });
       const pp = (r && r.planPayment) || (r && r.id ? r : null);
       if (plan === 'gratis') alert('Listo: volviste al plan Gratis.');
-      else if (pp) alert('Se creó tu pago pendiente del plan. Orlan te manda el link de pago de Clip para activarlo.');
+      else if (pp) alert('Tu pago del plan está listo: pica "Pagar" aquí mismo y paga con Clip; tu plan se activa solo cuando se confirma el pago.');
       else alert('Plan actualizado.');
       loadPhotographer();
     } catch (e) { alert(e.message); b.disabled = false; }
   });
+  // Pagar la mensualidad: abre el link de Clip en otra pestaña (el
+  // link lo genera plan-select al elegir el plan, sin Orlan).
+  const planPayBtn = document.querySelector('[data-plan-payurl]');
+  if (planPayBtn) planPayBtn.onclick = () => window.open(planPayBtn.dataset.planPayurl, '_blank', 'noopener');
   // Verificar si el pago pendiente del plan ya se confirmó en Clip.
   const planVerifyBtn = $('#planVerifyBtn');
   if (planVerifyBtn) planVerifyBtn.onclick = async () => {
