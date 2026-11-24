@@ -46,6 +46,8 @@ let lightboxFreeMode = true;
 let lightboxPriceMxn = 0;
 let currentEventHidden = false; // ¿el evento abierto es oculto? (para el token de la foto ampliada)
 let payReturnHandled = false; // regreso desde Clip ya procesado (no abrir links profundos encima)
+let pendingCapError = ''; // error de tope de subida: se muestra al terminar de redibujar el panel
+let planReturnNotice = ''; // aviso de ?plan=pagado|error: se muestra en la pestaña Mi plan
 // Navegación con la flecha de atrás del teléfono (historial del navegador)
 let currentView = 'home';
 let suppressPush = false;
@@ -1423,7 +1425,7 @@ const LEGAL_DOCS = {
 <h3>6. Precios y descuentos</h3>
 <p>El precio por foto lo fija cada fotógrafo para su evento. Aplican descuentos por volumen: la 4ª y 5ª foto tienen 20% de descuento, y el paquete de 10 fotos tiene 25% de descuento sobre el total. Los precios se muestran en pesos mexicanos (MXN) y pueden cambiar para eventos nuevos sin afectar compras ya hechas.</p>
 <h3>7. Comisiones y pagos a fotógrafos</h3>
-<p>Por cada venta se descuenta en total el <strong>13.8%</strong>: la comisión del procesador de pagos (Clip, 4.18% con IVA incluido) y la comisión de OnlyClick (10% después de Clip). El fotógrafo se queda con el <strong>86.2%</strong> restante. Ejemplo: en una foto de $20 MXN, Clip se queda $0.84, OnlyClick $1.92 y el fotógrafo $17.24.</p>
+<p>Por cada venta se descuenta en total el <strong>13.65%</strong>: la comisión del procesador de pagos (Clip, 4.06% con IVA incluido) y la comisión de OnlyClick (10% después de Clip). El fotógrafo se queda con el <strong>86.35%</strong> restante. Ejemplo: en una foto de $20 MXN, Clip se queda $0.81, OnlyClick $1.92 y el fotógrafo $17.27.</p>
 <p>Todo el dinero de las ventas cae en la cuenta de OnlyClick y OnlyClick le transfiere su parte a cada fotógrafo a su CLABE en un <strong>máximo de 72 horas</strong> después de la venta, y marca el pago como pagado en la plataforma. El fotógrafo puede ver su desglose (ventas, comisiones y pendiente por pagar) en su panel.</p>
 <h3>8. Compras y uso permitido</h3>
 <p>Cuando compras una foto recibes una licencia personal y no exclusiva para uso privado: imprimirla, guardarla y compartirla en tus redes sociales. No se permite el uso comercial, la reventa, cederla a medios ni usarla en publicidad sin autorización expresa por escrito del fotógrafo. Las vistas previas sin pagar llevan marca de agua ("ONLYCLICK • VISTA PREVIA"); quitar la marca de agua o redistribuir fotos descargadas está prohibido.</p>
@@ -1976,7 +1978,7 @@ async function loadEventDetail(eventId, push) {
     ${r.participants && r.participants.length > 1 ? `<p><span class="badge">Evento compartido · ${r.participants.length} fotógrafos</span></p><p class="muted">Participan: ${r.participants.map(pt => esc(pt.displayName) + ' ($' + pt.priceMxn + '/foto)').join(' · ')}</p>` : ''}
     ${me && me.role === 'photographer' && me.approved !== false && r.event.photographerId !== me.id && !r.event.isExclusive ? (r.isParticipant
       ? `<p class="ok">Ya participas en este evento · Tu precio: $${r.myPrice || r.event.priceMxn} MXN por foto</p>`
-      : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="1" max="5000" value="20" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div><p id="joinStatus" class="muted"></p></div>`) : ''}
+      : `<div class="card"><p><strong>¿Vas a cubrir este evento?</strong> Únete y sube tus fotos aquí: cada quien vende las suyas a su precio.</p><div class="row"><input id="joinPrice" type="number" min="${me && me.isOwner ? 1 : 50}" max="5000" value="${me && me.isOwner ? 20 : 50}" style="max-width:130px"><button id="joinBtn" class="primary">Unirme a este evento</button></div>${me && !me.isOwner ? '<p class="muted">Mínimo $50 por foto</p>' : ''}<p id="joinStatus" class="muted"></p></div>`) : ''}
     ${r.event.coverPath ? `<img src="${coverImgUrl(eventId, !!r.event.isHidden)}" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px">` : ''}
     <p class="muted">${esc(r.event.sport)} · ${esc(r.event.eventDate)} · ${esc(r.event.location)} · ${r.event.freeMode ? 'Descarga gratis' : 'De pago · $' + (r.event.priceMxn || 20) + ' MXN por foto'}</p>
     <div class="row"><button class="primary search-all-btn" style="width:100%">Buscar por selfie o dorsal</button></div>
@@ -2041,7 +2043,7 @@ async function loadEventDetail(eventId, push) {
   const joinBtn = $('#joinBtn');
   if (joinBtn) joinBtn.onclick = async () => {
     try {
-      await api('/api/join-event', { method: 'POST', body: JSON.stringify({ eventId, priceMxn: Number($('#joinPrice').value || 20) }) });
+      await api('/api/join-event', { method: 'POST', body: JSON.stringify({ eventId, priceMxn: Number($('#joinPrice').value || (me && me.isOwner ? 20 : 50)) }) });
       loadEventDetail(eventId);
     } catch (e) { const st = $('#joinStatus'); if (st) st.textContent = e.message; }
   };
@@ -2114,6 +2116,115 @@ function appInviteHtml(a) {
   <button data-app-wa="${a.id}" class="primary">Enviar por WhatsApp</button>`;
 }
 
+// ---- Planes de fotógrafos (2026-11-24) ----
+// Catálogo de respaldo si /api/plan-status no trae la lista `plans`
+// (el servidor es la fuente de verdad; esto solo evita una pestaña
+// vacía si el endpoint viejo no la manda). Coincide con el contrato:
+// Gratis 15% $0 tope 2,000 · Lite 10% $299 tope 4,000 · Pro 7% $499
+// tope 9,000. El plan Legado (10%) no se ofrece: solo lo asigna la
+// migración a Sandy y Ricardo.
+const PLAN_FALLBACK = [
+  { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000, storageGb: 5 },
+  { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000, storageGb: 25 },
+  { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000, storageGb: 100 },
+];
+function planLabelOf(id) {
+  const found = PLAN_FALLBACK.find(p => p.id === id);
+  if (found) return found.label;
+  return id === 'legado' ? 'Legado (10%)' : 'Gratis';
+}
+// Pestaña "Mi plan": resumen del plan actual + tarjetas para cambiar.
+// El dueño está fuera del sistema de planes: sin tope ni mensualidad.
+function planSectionHtml(s, isOwner) {
+  const notice = planReturnNotice; planReturnNotice = '';
+  const noticeHtml = notice ? `<p class="ok">${esc(notice)}</p>` : '';
+  if (!s) return `${noticeHtml}<p class="error">No se pudo cargar tu plan: el servidor tardó demasiado en responder.</p><button type="button" id="planRetry" class="primary">Reintentar</button>`;
+  if (isOwner) return `${noticeHtml}<p><strong>Eres el dueño: sin límites de plan.</strong></p><p class="muted">Tu cuenta no tiene tope de subidas ni precio mínimo por foto, y tus propias fotos se reparten con la tasa histórica del 10%.</p>`;
+  const used = Number(s.uploadsUsed || 0);
+  const cap = Number(s.uploadCap || 0);
+  const left = s.uploadsLeft != null ? Number(s.uploadsLeft) : Math.max(0, cap - used);
+  const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+  const statusLabel = { active: 'Activo', grace: 'En gracia', expired: 'Vencido' }[s.status] || s.status || '';
+  const dateOf = v => String(v || '').slice(0, 10);
+  let expiryHtml = '<p class="muted">Sin vencimiento.</p>';
+  if (s.status === 'grace') expiryHtml = `<p><span class="sec-danger">● Tu plan venció el ${esc(dateOf(s.expiresAt))}. Tienes hasta el ${esc(dateOf(s.graceUntil))} para pagar o bajas al plan Gratis.</span></p>`;
+  else if (s.status === 'expired') expiryHtml = '<p><span class="sec-danger">● Tu plan pagado venció y bajaste al plan Gratis.</span></p>';
+  else if (s.expiresAt) expiryHtml = `<p class="muted">Vence el ${esc(dateOf(s.expiresAt))}.</p>`;
+  const pp = s.pendingPayment || null;
+  const pendingHtml = pp ? `<div class="panel-sec">Pago pendiente</div>
+    <div class="sec-card">
+    <p><strong>Pago pendiente: Plan ${esc(planLabelOf(pp.plan))} — $${Number(pp.amountMxn || 0)} MXN</strong></p>
+    ${pp.paymentUrl ? `<p><a href="${esc(pp.paymentUrl)}" target="_blank" rel="noopener">Pagar con Clip</a></p>` : '<p class="muted">Orlan te manda el link de pago de Clip.</p>'}
+    <button type="button" id="planVerifyBtn" class="primary sec-btn-gold" data-plan-payment-id="${Number(pp.id)}">Verificar pago</button>
+    <p id="planVerifyStatus" class="muted"></p>
+    </div>` : '';
+  const plans = (Array.isArray(s.plans) && s.plans.length ? s.plans : PLAN_FALLBACK);
+  const cardsHtml = plans.map(p => {
+    const isCurrent = p.id === s.plan;
+    return `<div class="sec-subcard">
+      <p><strong>Plan ${esc(p.label)}</strong>${isCurrent ? ' · <span class="ok">Tu plan actual</span>' : ''}</p>
+      <p class="muted">Comisión OnlyClick: ${Math.round(Number(p.commissionRate || 0) * 100)}% · ${Number(p.monthlyFee || 0) ? '$' + Number(p.monthlyFee) + ' MXN/mes' : 'Sin mensualidad'}</p>
+      <p class="muted">Tope: ${Number(p.uploadCap || 0).toLocaleString('es-MX')} fotos subidas por mes · ${Number(p.storageGb || 0)} GB</p>
+      <button type="button" data-plan-select="${esc(p.id)}" class="primary" ${isCurrent ? 'disabled' : ''}>${isCurrent ? 'Tu plan actual' : 'Elegir ' + esc(p.label)}</button>
+    </div>`;
+  }).join('');
+  return `${noticeHtml}
+    <div class="panel-sec">Tu plan actual</div>
+    <div class="sec-card">
+    <p><strong>Plan ${esc(s.label || planLabelOf(s.plan))}</strong> · ${esc(statusLabel)}</p>
+    <p class="muted">Comisión OnlyClick: ${Math.round(Number(s.commissionRate || 0) * 100)}% · ${Number(s.monthlyFee || 0) ? '$' + Number(s.monthlyFee) + ' MXN/mes' : 'Sin mensualidad'}</p>
+    <p><strong>${used.toLocaleString('es-MX')} de ${cap.toLocaleString('es-MX')} fotos subidas este mes</strong> · te quedan ${left.toLocaleString('es-MX')}</p>
+    <div style="background:#222;border-radius:8px;height:10px;overflow:hidden"><div style="width:${pct}%;height:10px;background:#d4af37"></div></div>
+    ${expiryHtml}
+    </div>
+    ${pendingHtml}
+    <div class="panel-sec">Cambiar de plan</div>
+    <div class="sec-card">
+    <p class="muted">Al elegir un plan de pago se crea tu pago pendiente y Orlan te manda el link de Clip. Si ya no quieres un plan de pago, elige Gratis y bajas luego luego.</p>
+    ${cardsHtml}
+    </div>`;
+}
+// Bloque "Pagos de planes" del dueño (pestaña Fotógrafos): filas de
+// plan_payments, las más recientes primero. Solo las pendientes llevan
+// botones: generar el link de Clip o marcar pagado a mano.
+function planPaymentsHtml(planPayments) {
+  const rows = (planPayments && planPayments.planPayments) || [];
+  if (!rows.length) return `<div class="panel-sec">Pagos de planes</div><div class="sec-card"><p class="muted">Todavía no hay pagos de planes.</p></div>`;
+  return `<div class="panel-sec">Pagos de planes</div><div class="sec-card">
+    <p class="muted">Mensualidades Lite ($299) y Pro ($499) por link de Clip. "Generar link" crea el link de pago; "Marcar pagado" activa el plan por 30 días (para transferencias o efectivo).</p>
+    ${rows.map(pp => `<div class="sec-subcard">
+      <p><strong>${esc(pp.photographerName || ('Fotógrafo ' + pp.photographerId))}</strong> · Plan ${esc(planLabelOf(pp.plan))} · $${Number(pp.amountMxn || 0)} MXN · ${esc(pp.status || '')} · ${String(pp.createdAt || '').slice(0, 10)}</p>
+      ${pp.paidAt ? `<p class="muted">Pagado el ${String(pp.paidAt).slice(0, 10)}</p>` : ''}
+      ${pp.paymentUrl ? `<p style="word-break:break-all"><a href="${esc(pp.paymentUrl)}" target="_blank" rel="noopener">Abrir link de pago</a></p>` : ''}
+      ${pp.status === 'pending' ? `<div class="sec-actions"><button type="button" data-plan-genlink="${Number(pp.id)}" class="primary">Generar link de pago</button> <button type="button" data-plan-markpaid="${Number(pp.id)}">Marcar pagado</button></div>` : ''}
+    </div>`).join('')}
+    </div>`;
+}
+// Error de tope al subir: se guarda al fallar la subida y se muestra
+// aquí, al terminar de redibujar el panel (la subida redibuja el panel
+// y borraría el mensaje si se pusiera antes).
+function showUploadCapError() {
+  const msg = pendingCapError; pendingCapError = '';
+  if (!msg) return;
+  const st = document.getElementById('upStatus');
+  if (!st) return;
+  st.textContent = msg + ' ';
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'primary'; b.textContent = 'Ver mi plan';
+  b.onclick = () => goPanelSection('plan');
+  st.appendChild(b);
+}
+// Regreso del link de pago de un plan (Clip redirige a /?plan=pagado
+// o /?plan=error): aviso y limpieza del parámetro, como handlePayReturn.
+function handlePlanReturn() {
+  const q = new URLSearchParams(location.search);
+  const plan = q.get('plan');
+  if (!plan) return;
+  try { history.replaceState({}, '', location.pathname); } catch (_) {}
+  if (plan === 'pagado') { planReturnNotice = 'Pago recibido, tu plan se activó.'; alert('Pago recibido, tu plan se activó.'); }
+  else if (plan === 'error') { planReturnNotice = 'El pago no se completó, inténtalo de nuevo.'; alert('El pago no se completó, inténtalo de nuevo.'); }
+}
+
 async function loadPhotographer() {
   const box = $('#photoPanel');
   if (!me || me.role !== 'photographer') { box.innerHTML = '<p>Solo la cuenta de fotógrafo ve este panel.</p>'; return; }
@@ -2130,6 +2241,7 @@ async function loadPhotographer() {
     users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 15.4c2 .7 3.4 2.2 3.9 4.6"/></svg>',
     wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2.5"/><path d="M3 10h18M16 15h2"/></svg>',
     gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"/></svg>',
+    plan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2.5"/><path d="M3 10h18M7 15h4"/></svg>',
     logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/></svg>',
   };
   const panelRow = (icon, label, onclick, danger) => `<button type="button" class="panel-row${danger ? ' danger' : ''}" onclick="${onclick}"><span class="panel-ico">${pIco[icon]}</span><span class="panel-label">${label}</span><span class="panel-chev">›</span></button>`;
@@ -2149,6 +2261,7 @@ async function loadPhotographer() {
     <div class="panel-list">
     ${panelRow('chart', 'Estadísticas', "goPanelSection('estadisticas')")}
     ${me.isOwner ? panelRow('users', 'Fotógrafos', "goPanelSection('fotografos')") : panelRow('wallet', 'Mis ganancias', "goPanelSection('ganancias')")}
+    ${panelRow('plan', 'Mi plan', "goPanelSection('plan')")}
     ${panelRow('gear', 'Gestión', "goPanelSection('gestion')")}
     </div>
     <div class="panel-sec">CUENTA</div>
@@ -2165,7 +2278,7 @@ async function loadPhotographer() {
   const panelWasOpen = !!homeBefore && homeBefore.classList.contains('hidden');
   box.innerHTML = panelHomeHtml(0) +
     '<button type="button" id="panelBack" class="panel-back hidden" onclick="showPanelHome()">‹ Panel fotógrafo</button>' +
-    [['gestion', 'Gestión'], ['ventas', 'Fotos vendidas'], ['ganancias', 'Mis ganancias'], ['fotografos', 'Fotógrafos'], ['estadisticas', 'Estadísticas']].map(([t, title]) => `<section data-tabpanel="${t}" class="hidden"><h2 class="sec-title">${title}</h2><p class="muted">Cargando…</p></section>`).join('');
+    [['gestion', 'Gestión'], ['ventas', 'Fotos vendidas'], ['ganancias', 'Mis ganancias'], ['fotografos', 'Fotógrafos'], ['estadisticas', 'Estadísticas'], ['plan', 'Mi plan']].map(([t, title]) => `<section data-tabpanel="${t}" class="hidden"><h2 class="sec-title">${title}</h2><p class="muted">Cargando…</p></section>`).join('');
   // Todas las peticiones del panel salen A LA VEZ: antes iban una por
   // una, esperando cada respuesta, y el panel tardaba 10-20 s en abrir.
   // Ahora el tiempo total es más o menos el de la petición más lenta.
@@ -2190,6 +2303,8 @@ async function loadPhotographer() {
     me.isOwner ? panelApi('/api/payouts-history', { payouts: [] }, 'payoutHistory') : Promise.resolve({ payouts: [] }),
     me.isOwner ? panelApi('/api/list-photographers', { photographers: [] }, 'photographers') : Promise.resolve({ photographers: [] }),
     me.isOwner ? panelApi('/api/list-applications', { applications: [] }, 'applications') : Promise.resolve({ applications: [] }),
+    panelApi('/api/plan-status', null, 'plan'),
+    me.isOwner ? panelApi('/api/plan-payments', { planPayments: [] }, 'planPayments') : Promise.resolve({ planPayments: [] }),
   ]).catch(() => null);
   const panelFailedAny = Object.keys(panelFailed).length > 0;
   if (!panelResults) {
@@ -2198,7 +2313,7 @@ async function loadPhotographer() {
       '<p class="error">No se pudo cargar el panel. Revisa tu conexión.</p><button class="primary" onclick="loadPhotographer()">Reintentar</button>';
     return;
   }
-  const [eventsRes, sales, stats, earnings, payouts, payoutHistory, photographers, applications] = panelResults;
+  const [eventsRes, sales, stats, earnings, payouts, payoutHistory, photographers, applications, planStatus, planPayments] = panelResults;
   const events = eventsRes.events;
   // Cada fotógrafo ve solo SUS eventos en el panel; el dueño ve todos.
   const myEvents = me.isOwner ? events : events.filter(e => e.photographerId === me.id);
@@ -2262,15 +2377,19 @@ async function loadPhotographer() {
   // activa sí se recuerda mientras se navega).
   panelPages = {};
   const panelTabs = me.isOwner
-    ? [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['fotografos', 'Fotógrafos'], ['gestion', 'Gestión']]
-    : [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['ganancias', 'Mis ganancias'], ['gestion', 'Gestión']];
+    ? [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['fotografos', 'Fotógrafos'], ['gestion', 'Gestión'], ['plan', 'Mi plan']]
+    : [['ventas', 'Ventas'], ['estadisticas', 'Estadísticas'], ['ganancias', 'Mis ganancias'], ['gestion', 'Gestión'], ['plan', 'Mi plan']];
   if (!panelTabs.some(t => t[0] === panelTab)) panelTab = 'ventas';
   // "Mis ganancias" es el mismo bloque para todos: el dueño lo ve dentro
   // de la pestaña Fotógrafos y los demás fotógrafos en su propia pestaña.
   // Fila etiqueta / valor (el total en dorado), como en el resto de las
   // secciones acomodadas.
   const kv = (label, value, gold) => `<div class="sec-kv"><span>${label}</span><span class="sec-val${gold ? ' gold' : ''}">${value}</span></div>`;
-  const earningsHtml = earnings ? `${kv('Total vendido', fmtMxn(earnings.totalSold))}${kv('Comisión Clip', fmtMxn(earnings.clipFee))}${kv('Comisión ONLYCLICK (10%)', fmtMxn(earnings.orlanFee))}${kv('Mi parte', fmtMxn(earnings.photographerShare), true)}${kv('Pendiente por pagarme', fmtMxn(earnings.pendingBalance))}${kv('Ya me pagaron', fmtMxn(earnings.paidShare))}${earnings.lastPayout ? kv('Último pago', fmtMxn(earnings.lastPayout.amountMxn) + ' el ' + String(earnings.lastPayout.paidAt || '').slice(0, 10)) : ''}<p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.18% primero y ONLYCLICK se queda el 10% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
+  // La comisión de OnlyClick depende del plan del fotógrafo (Gratis 15%,
+  // Lite 10%, Pro 7%, Legado 10%; dueño 10% histórico): el % que se
+  // muestra sale de plan-status, no de un texto fijo.
+  const planRatePct = planStatus && Number.isFinite(Number(planStatus.commissionRate)) ? Math.round(Number(planStatus.commissionRate) * 100) : 10;
+  const earningsHtml = earnings ? `${kv('Total vendido', fmtMxn(earnings.totalSold))}${kv('Comisión Clip', fmtMxn(earnings.clipFee))}${kv('Comisión ONLYCLICK (' + planRatePct + '%)', fmtMxn(earnings.orlanFee))}${kv('Mi parte', fmtMxn(earnings.photographerShare), true)}${kv('Pendiente por pagarme', fmtMxn(earnings.pendingBalance))}${kv('Ya me pagaron', fmtMxn(earnings.paidShare))}${earnings.lastPayout ? kv('Último pago', fmtMxn(earnings.lastPayout.amountMxn) + ' el ' + String(earnings.lastPayout.paidAt || '').slice(0, 10)) : ''}<p class="muted">ONLYCLICK te paga tu parte cada 72 horas a tu CLABE. Clip quita 4.06% primero y ONLYCLICK se queda el ${planRatePct}% de lo que queda.</p>` : '<p class="muted">Sin datos todavía.</p>';
   // Fila de un evento propio en "Mis eventos": encabezado con nombre y
   // resumen; los controles (precio, dorsales, ocultar, eliminar) salen
   // debajo al picarla. Cada fila es UN hijo de [data-pg="events"], así
@@ -2283,14 +2402,14 @@ async function loadPhotographer() {
       </button>
       <div class="sec-ev-body hidden">
         ${e.isExclusive ? '' : `<button data-free="${e.id}">${e.freeMode ? 'Cambiar a pago' : 'Cambiar a gratis'}</button>`}
-        ${e.freeMode ? '' : `<div class="sec-field"><span class="muted">Precio por foto: $</span> <input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button></div>`}
+        ${e.freeMode ? '' : `<div class="sec-field"><span class="muted">Precio por foto: $</span> <input type="number" data-price="${e.id}" value="${Number(e.priceMxn || 20)}" min="${me.isOwner ? 1 : 50}" max="5000" style="width:90px;display:inline-block"> <button data-saveprice="${e.id}">Guardar precio</button>${me.isOwner ? '' : ' <span class="muted">Mínimo $50 por foto</span>'}</div>`}
         <div class="sec-actions"><button data-rev="${e.id}">Revisar dorsales</button>${me.isOwner ? ` <button data-hide="${e.id}">${e.isHidden ? 'Mostrar álbum' : 'Ocultar álbum'}</button> <button data-upcoming="${e.id}">${e.isUpcoming ? 'Quitar “Próximo evento”' : 'Marcar como próximo evento'}</button>` : ''} <button data-del="${e.id}">Eliminar evento</button></div>
       </div>
     </div>`;
   const joinedRowHtml = e => `
     <div class="sec-joined">
       <p><strong>${esc(e.name)}</strong> — ${e.photoCount || 0} foto(s) · ${e.freeMode ? 'Gratis' : 'De pago'}</p>
-      <div class="sec-inline"><span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="1" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button></div>
+      <div class="sec-inline"><span class="muted">Mi precio: $</span><input type="number" data-myprice="${e.id}" value="${Number(e.myPrice || e.priceMxn || 20)}" min="${me.isOwner ? 1 : 50}" max="5000" style="width:90px;display:inline-block"> <button data-savemyprice="${e.id}">Guardar mi precio</button> <button data-leave="${e.id}">Salir del evento</button>${me.isOwner ? '' : ' <span class="muted">Mínimo $50 por foto</span>'}</div>
     </div>`;
   // ¿El usuario abrió una sección MIENTRAS cargaba? El esqueleto se
   // reemplaza aquí: si la lista está oculta es que hay una sección
@@ -2401,6 +2520,10 @@ async function loadPhotographer() {
     <div data-pg-controls="sales"></div>
     </div>
     </section>
+    <section data-tabpanel="plan">
+    <h2 class="sec-title">Mi plan</h2>
+    ${planSectionHtml(planStatus, me.isOwner)}
+    </section>
     ${me.isOwner ? '' : `<section data-tabpanel="ganancias">
     <h2 class="sec-title">Mis ganancias</h2>
     <div class="panel-sec">Mis ganancias</div>
@@ -2417,7 +2540,7 @@ async function loadPhotographer() {
     <div class="panel-sec">Pagos a fotógrafos</div>
     <div class="sec-card">
     <p class="muted">Todo el dinero cae en tu cuenta de Clip. Cada 72 horas desde la primera venta sin pagar, el pago se vence y sale en rojo. Mándale el dinero a su CLABE y luego marca "Pagado".</p>
-    ${kv('Vendido', fmtMxn(payouts.totals.totalSold))}${kv('Clip', fmtMxn(payouts.totals.clipFee))}${kv('Tu comisión (10%)', fmtMxn(payouts.totals.orlanFee))}${kv('Para fotógrafos', fmtMxn(payouts.totals.photographerShare))}${kv('Pendiente por pagar', fmtMxn(payouts.totals.pendingBalance), true)}
+    ${kv('Vendido', fmtMxn(payouts.totals.totalSold))}${kv('Clip', fmtMxn(payouts.totals.clipFee))}${kv('Tu comisión', fmtMxn(payouts.totals.orlanFee))}${kv('Para fotógrafos', fmtMxn(payouts.totals.photographerShare))}${kv('Pendiente por pagar', fmtMxn(payouts.totals.pendingBalance), true)}
     <div data-pg="payouts">${(payouts.photographers || []).length ? (payouts.photographers || []).map(p => `
     <div class="sec-subcard">
       <p><strong>${esc(p.name)}</strong> ${p.approved ? '<span class="sec-pill">Aprobada</span>' : '<span class="error">(pendiente de aprobación)</span>'} · ${esc(p.email)}</p>
@@ -2434,9 +2557,10 @@ async function loadPhotographer() {
     <div class="panel-sec">Fotógrafos</div>
     <div class="sec-card">
     <p class="muted">Aprueba a los fotógrafos nuevos para que puedan crear eventos y vender. Solo tú ves esta lista.</p>
-    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<div class="sec-photog"><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${(!ph.isOwner && !ph.hasApplication) ? '<span class="error">Sin solicitud</span>' : ''} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</div>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
+    <div data-pg="photogs">${(photographers && photographers.photographers && photographers.photographers.length) ? photographers.photographers.map(ph => `<div class="sec-photog"><strong>${esc(ph.name)}</strong> · ${esc(ph.email)} · ${ph.eventCount || 0} evento(s) · Vendido: ${fmtMxn(ph.totalSold)} · Plan ${esc(ph.planLabel || planLabelOf(ph.plan))}${ph.planExpiresAt ? ' · vence ' + String(ph.planExpiresAt).slice(0, 10) : ''} · ${ph.isOwner ? '<span class="muted">Dueño</span>' : (ph.approved ? '<span class="ok">Aprobado</span>' : '<span class="error">Pendiente</span>')} ${(!ph.isOwner && !ph.hasApplication) ? '<span class="error">Sin solicitud</span>' : ''} ${ph.isOwner ? '' : (ph.approved ? `<button data-reject="${ph.id}">Quitar aprobación</button>` : `<button data-approve="${ph.id}" class="primary">Aprobar</button>`)}</div>`).join('') : '<p class="muted">No hay fotógrafos registrados.</p>'}</div>
     <div data-pg-controls="photogs"></div>
     </div>
+    ${planPaymentsHtml(planPayments)}
     </section>` : ''}
     <section data-tabpanel="estadisticas">
     <h2 class="sec-title">Estadísticas</h2>
@@ -2564,6 +2688,58 @@ async function loadPhotographer() {
       if (st) st.textContent = 'Lista descargada: ' + avail.length + ' código(s) disponible(s).';
     } catch (e) { if (st) st.textContent = e.message; }
   };
+  // ---- Planes de fotógrafos (2026-11-24) ----
+  // Reintentar si /api/plan-status falló al cargar el panel.
+  const planRetryBtn = $('#planRetry');
+  if (planRetryBtn) planRetryBtn.onclick = () => loadPhotographer();
+  // Elegir un plan: Gratis baja luego luego; Lite/Pro crean el pago
+  // pendiente y Orlan manda el link de Clip.
+  document.querySelectorAll('[data-plan-select]').forEach(b => b.onclick = async () => {
+    const plan = b.dataset.planSelect;
+    b.disabled = true;
+    try {
+      const r = await api('/api/plan-select', { method: 'POST', body: JSON.stringify({ plan }) });
+      const pp = (r && r.planPayment) || (r && r.id ? r : null);
+      if (plan === 'gratis') alert('Listo: volviste al plan Gratis.');
+      else if (pp) alert('Se creó tu pago pendiente del plan. Orlan te manda el link de pago de Clip para activarlo.');
+      else alert('Plan actualizado.');
+      loadPhotographer();
+    } catch (e) { alert(e.message); b.disabled = false; }
+  });
+  // Verificar si el pago pendiente del plan ya se confirmó en Clip.
+  const planVerifyBtn = $('#planVerifyBtn');
+  if (planVerifyBtn) planVerifyBtn.onclick = async () => {
+    const id = Number(planVerifyBtn.dataset.planPaymentId);
+    const st = $('#planVerifyStatus');
+    planVerifyBtn.disabled = true;
+    if (st) st.textContent = 'Verificando tu pago con Clip…';
+    try {
+      const r = await api('/api/plan-payment-status', { method: 'POST', body: JSON.stringify({ planPaymentId: id }) });
+      if (r.status === 'completed') { alert('Pago confirmado: tu plan se activó.'); loadPhotographer(); }
+      else { if (st) st.textContent = 'Tu pago todavía no está confirmado. Si ya pagaste, espera unos minutos y vuelve a intentarlo.'; planVerifyBtn.disabled = false; }
+    } catch (e) { if (st) st.textContent = e.message; planVerifyBtn.disabled = false; }
+  };
+  // Dueño: generar el link de Clip para un pago de plan pendiente.
+  document.querySelectorAll('[data-plan-genlink]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await api('/api/plan-payment-create', { method: 'POST', body: JSON.stringify({ planPaymentId: Number(b.dataset.planGenlink) }) });
+      const url = (r && (r.paymentUrl || (r.planPayment && r.planPayment.paymentUrl))) || '';
+      if (url) {
+        try { await navigator.clipboard.writeText(url); alert('Link de pago generado y copiado: ' + url); }
+        catch (_) { alert('Link de pago: ' + url); }
+      } else alert('Link generado.');
+      loadPhotographer();
+    } catch (e) { alert(e.message); b.disabled = false; }
+  });
+  // Dueño: marcar un pago de plan como pagado a mano (transferencia o
+  // efectivo): activa el plan del fotógrafo por 30 días.
+  document.querySelectorAll('[data-plan-markpaid]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Marcar este pago de plan como pagado? Se activa el plan del fotógrafo por 30 días.')) return;
+    b.disabled = true;
+    try { await api('/api/plan-payment-mark-paid', { method: 'POST', body: JSON.stringify({ planPaymentId: Number(b.dataset.planMarkpaid) }) }); alert('Pago de plan registrado y plan activado.'); loadPhotographer(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
   $('#evCreate').onclick = async () => {
     try { await api('/api/event-create', { method: 'POST', body: JSON.stringify({ name: $('#evName').value, sport: $('#evSport').value, eventDate: $('#evDate').value, location: $('#evPlace').value, isExclusive: !!($('#evExclusive') && $('#evExclusive').checked), isUpcoming: !!($('#evUpcoming') && $('#evUpcoming').checked) }) }); alert('Evento creado.'); loadPhotographer(); loadEvents(); } catch (e) { alert(e.message); }
   };
@@ -2799,7 +2975,12 @@ async function loadPhotographer() {
         const bibs = String(row.bibs || '').split(',').map(s => s.trim()).filter(Boolean);
         await api('/api/photo-upload', { method: 'POST', body: JSON.stringify({ eventId, filename: row.file.name, mimeType: 'image/jpeg', dataBase64: b64, thumbBase64: thumbB64, bibs, price: (upEv && upEv.isExclusive) ? 0 : Number($('#upPrice').value || 0), widthPx, heightPx, sizeKb }) });
         n++;
-      } catch (_) { fails++; }
+      } catch (e) {
+        // Tope del plan (403): se guarda el mensaje para mostrarlo con
+        // el botón "Ver mi plan" al terminar de redibujar el panel.
+        if (e && /tope/i.test(e.message || '')) pendingCapError = e.message;
+        fails++;
+      }
       $('#upStatus').textContent = 'Subiendo… ' + (n + fails) + '/' + files.length + (fails ? ' · ' + fails + ' fallaron' : '');
     });
     alert(n + ' foto(s) subida(s).' + (fails ? ' ' + fails + ' fallaron, inténtalas de nuevo.' : ''));
@@ -2829,11 +3010,13 @@ async function loadPhotographer() {
   document.querySelectorAll('[data-saveprice]').forEach(b => b.onclick = async () => {
     const id = Number(b.dataset.saveprice);
     const inp = document.querySelector(`[data-price="${id}"]`);
+    if (!me.isOwner && Number(inp.value) < 50) return alert('El precio mínimo por foto es $50 MXN.');
     try { await api('/api/set-event-price', { method: 'POST', body: JSON.stringify({ eventId: id, priceMxn: Number(inp.value) }) }); alert('Precio guardado: $' + inp.value + ' MXN por foto.'); loadPhotographer(); } catch (e) { alert(e.message); }
   });
   document.querySelectorAll('[data-savemyprice]').forEach(b => b.onclick = async () => {
     const id = Number(b.dataset.savemyprice);
     const inp = document.querySelector(`[data-myprice="${id}"]`);
+    if (!me.isOwner && Number(inp.value) < 50) return alert('El precio mínimo por foto es $50 MXN.');
     try { await api('/api/set-my-event-price', { method: 'POST', body: JSON.stringify({ eventId: id, priceMxn: Number(inp.value) }) }); alert('Tu precio en este evento: $' + inp.value + ' MXN por foto.'); loadPhotographer(); } catch (e) { alert(e.message); }
   });
   document.querySelectorAll('[data-leave]').forEach(b => b.onclick = async () => {
@@ -2971,6 +3154,9 @@ async function loadPhotographer() {
   // queda donde estaba.
   if ((panelWasOpen || panelOpenedWhileLoading) && document.querySelector(`#photoPanel [data-tabpanel="${panelTab}"]`)) showPanelTab(panelTab); else showPanelHome();
   applyPanelPagination();
+  // Si la última subida pegó en el tope del plan, el mensaje + botón
+  // "Ver mi plan" se dibujan aquí (la subida redibuja el panel).
+  if (pendingCapError) showUploadCapError();
 }
 
 function showView(v) {
@@ -3557,6 +3743,7 @@ $('#session').addEventListener('click', (e) => { if (e.target.closest && e.targe
 refreshAuth().finally(() => {
   loadHome();
   handlePayReturn();
+  handlePlanReturn();
   handleDeepLinks();
   updateCartBadge();
 });
