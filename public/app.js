@@ -2124,9 +2124,9 @@ function appInviteHtml(a) {
 // tope 9,000. El plan Legado (10%) no se ofrece: solo lo asigna la
 // migración a Sandy y Ricardo.
 const PLAN_FALLBACK = [
-  { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000, storageGb: 5 },
-  { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000, storageGb: 25 },
-  { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000, storageGb: 100 },
+  { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000 },
+  { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000 },
+  { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000 },
 ];
 function planLabelOf(id) {
   const found = PLAN_FALLBACK.find(p => p.id === id);
@@ -2167,7 +2167,7 @@ function planSectionHtml(s, isOwner) {
     return `<div class="sec-subcard">
       <p><strong>Plan ${esc(p.label)}</strong>${isCurrent ? ' · <span class="ok">Tu plan actual</span>' : ''}</p>
       <p class="muted">Comisión OnlyClick: ${Math.round(Number(p.commissionRate || 0) * 100)}% · ${Number(p.monthlyFee || 0) ? '$' + Number(p.monthlyFee) + ' MXN/mes' : 'Sin mensualidad'}</p>
-      <p class="muted">Tope: ${Number(p.uploadCap || 0).toLocaleString('es-MX')} fotos subidas por mes · ${Number(p.storageGb || 0)} GB</p>
+      <p class="muted">Tope: ${Number(p.uploadCap || 0).toLocaleString('es-MX')} fotos subidas por mes</p>
       <button type="button" data-plan-select="${esc(p.id)}" class="primary" ${isCurrent ? 'disabled' : ''}>${isCurrent ? 'Tu plan actual' : 'Elegir ' + esc(p.label)}</button>
     </div>`;
   }).join('');
