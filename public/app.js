@@ -2150,14 +2150,17 @@ function planSectionHtml(s, isOwner) {
   if (s.status === 'grace') expiryHtml = `<p><span class="sec-danger">● Tu plan venció el ${esc(dateOf(s.expiresAt))}. Tienes hasta el ${esc(dateOf(s.graceUntil))} para pagar o bajas al plan Gratis.</span></p>`;
   else if (s.status === 'expired') expiryHtml = '<p><span class="sec-danger">● Tu plan pagado venció y bajaste al plan Gratis.</span></p>';
   else if (s.expiresAt) expiryHtml = `<p class="muted">Vence el ${esc(dateOf(s.expiresAt))}.</p>`;
-  const pp = s.pendingPayment || null;
-  const pendingHtml = pp ? `<div class="panel-sec">Pago pendiente</div>
-    <div class="sec-card">
+  // Todos los pagos pendientes (del más nuevo al más viejo); si el
+  // servidor viejo solo manda pendingPayment, se dibuja ese único.
+  // Cada bloque lleva su propio botón dorado de pago y su propio
+  // "Verificar pago" (data-plan-verify), nunca ids duplicados.
+  const pps = (Array.isArray(s.pendingPayments) && s.pendingPayments.length ? s.pendingPayments : (s.pendingPayment ? [s.pendingPayment] : []));
+  const pendingHtml = pps.length ? `<div class="panel-sec">Pago${pps.length > 1 ? 's' : ''} pendiente${pps.length > 1 ? 's' : ''}</div>` + pps.map(pp => `<div class="sec-card">
     <p><strong>Pago pendiente: Plan ${esc(planLabelOf(pp.plan))} — $${Number(pp.amountMxn || 0)} MXN</strong></p>
     ${pp.paymentUrl ? `<p><button type="button" class="primary sec-btn-gold" data-plan-payurl="${esc(pp.paymentUrl)}">Pagar $${Number(pp.amountMxn || 0)} MXN con Clip</button></p><p class="muted">Paga aquí con Clip y tu plan se activa solo. Después de pagar, pica "Verificar pago".</p>` : '<p class="muted">Orlan te manda el link de pago de Clip.</p>'}
-    <button type="button" id="planVerifyBtn" class="primary sec-btn-gold" data-plan-payment-id="${Number(pp.id)}">Verificar pago</button>
-    <p id="planVerifyStatus" class="muted"></p>
-    </div>` : '';
+    <button type="button" class="primary sec-btn-gold" data-plan-verify="${Number(pp.id)}">Verificar pago</button>
+    <p class="muted plan-verify-status"></p>
+    </div>`).join('') : '';
   const plans = (Array.isArray(s.plans) && s.plans.length ? s.plans : PLAN_FALLBACK);
   const cardsHtml = plans.map(p => {
     const isCurrent = p.id === s.plan;
@@ -2701,28 +2704,31 @@ async function loadPhotographer() {
       const r = await api('/api/plan-select', { method: 'POST', body: JSON.stringify({ plan }) });
       const pp = (r && r.planPayment) || (r && r.id ? r : null);
       if (plan === 'gratis') alert('Listo: volviste al plan Gratis.');
-      else if (pp) alert('Tu pago del plan está listo: pica "Pagar" aquí mismo y paga con Clip; tu plan se activa solo cuando se confirma el pago.');
+      // El aviso de éxito SOLO si el pago trae link de verdad: sin link
+      // no hay botón para pagar y el aviso mentiría (caso Sandy/Lite).
+      else if (pp && pp.paymentUrl) alert('Tu pago del plan está listo: pica "Pagar" aquí mismo y paga con Clip; tu plan se activa solo cuando se confirma el pago.');
+      else if (pp) alert('No se pudo generar el link de pago de Clip. Inténtalo de nuevo.');
       else alert('Plan actualizado.');
       loadPhotographer();
     } catch (e) { alert(e.message); b.disabled = false; }
   });
   // Pagar la mensualidad: abre el link de Clip en otra pestaña (el
-  // link lo genera plan-select al elegir el plan, sin Orlan).
-  const planPayBtn = document.querySelector('[data-plan-payurl]');
-  if (planPayBtn) planPayBtn.onclick = () => window.open(planPayBtn.dataset.planPayurl, '_blank', 'noopener');
-  // Verificar si el pago pendiente del plan ya se confirmó en Clip.
-  const planVerifyBtn = $('#planVerifyBtn');
-  if (planVerifyBtn) planVerifyBtn.onclick = async () => {
-    const id = Number(planVerifyBtn.dataset.planPaymentId);
-    const st = $('#planVerifyStatus');
-    planVerifyBtn.disabled = true;
+  // link lo genera plan-select al elegir el plan, sin Orlan). Uno por
+  // cada pago pendiente.
+  document.querySelectorAll('[data-plan-payurl]').forEach(btn => { btn.onclick = () => window.open(btn.dataset.planPayurl, '_blank', 'noopener'); });
+  // Verificar si un pago pendiente del plan ya se confirmó en Clip.
+  // Uno por cada pago pendiente: el estado vive dentro de su tarjeta.
+  document.querySelectorAll('[data-plan-verify]').forEach(btn => { btn.onclick = async () => {
+    const id = Number(btn.dataset.planVerify);
+    const st = btn.parentElement ? btn.parentElement.querySelector('.plan-verify-status') : null;
+    btn.disabled = true;
     if (st) st.textContent = 'Verificando tu pago con Clip…';
     try {
       const r = await api('/api/plan-payment-status', { method: 'POST', body: JSON.stringify({ planPaymentId: id }) });
       if (r.status === 'completed') { alert('Pago confirmado: tu plan se activó.'); loadPhotographer(); }
-      else { if (st) st.textContent = 'Tu pago todavía no está confirmado. Si ya pagaste, espera unos minutos y vuelve a intentarlo.'; planVerifyBtn.disabled = false; }
-    } catch (e) { if (st) st.textContent = e.message; planVerifyBtn.disabled = false; }
-  };
+      else { if (st) st.textContent = 'Tu pago todavía no está confirmado. Si ya pagaste, espera unos minutos y vuelve a intentarlo.'; btn.disabled = false; }
+    } catch (e) { if (st) st.textContent = e.message; btn.disabled = false; }
+  }; });
   // Dueño: generar el link de Clip para un pago de plan pendiente.
   document.querySelectorAll('[data-plan-genlink]').forEach(b => b.onclick = async () => {
     b.disabled = true;
