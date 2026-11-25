@@ -109,6 +109,7 @@ const PLANS = {
 const MIN_PHOTO_PRICE_MXN = 50;
 const PLAN_GRACE_DAYS = 3;          // días de gracia tras vencer un plan pagado
 const PLAN_MONTH_DAYS = 30;         // un "mes" de plan = 30 días naturales
+const PLAN_PENDING_EXPIRY_DAYS = 3; // un pendiente de plan sin pagar vence a los 3 días
 
 // Plan efectivo de un usuario en un instante (función pura, no escribe
 // en BD). Plan desconocido o ausente → gratis. Dueño → fuera del
@@ -2933,6 +2934,14 @@ async function clipWebhook(store, body, query) {
     const planRow = (await tryStore(store, 'getPlanPaymentByClipId', id)) || null;
     if (!planRow) return { status: 200, data: { ok: true, ignored: 'unknown-payment' } };
     if (planRow.status === 'completed') return { status: 200, data: { ok: true, already: true } };
+    // Un pendiente cancelado o vencido NO se activa solo por el webhook:
+    // si el dinero llegó tarde a Clip, el dueño lo activa a mano con
+    // "Marcar pagado".
+    if (planRow.status === 'cancelled' || planRow.status === 'expired') return { status: 200, data: { ok: true, ignored: planRow.status } };
+    if (isPlanPaymentExpired(planRow)) {
+      await tryStore(store, 'updatePlanPayment', planRow.id, { status: 'expired' });
+      return { status: 200, data: { ok: true, paid: false, status: 'expired' } };
+    }
     try {
       const cur = await clip.getCheckout(id);
       if (clipStatusToPayment(cur.status) !== 'completed') return { status: 200, data: { ok: true, paid: false, status: clipStatusToPayment(cur.status) } };
@@ -2980,6 +2989,51 @@ function publicPlanPayment(r) {
   return r ? { id: r.id, photographerId: r.photographerId, plan: r.plan, amountMxn: Number(r.amountMxn || 0), clipPaymentRequestId: r.clipPaymentRequestId || null, paymentUrl: r.paymentUrl || null, status: r.status, createdAt: r.createdAt || null, paidAt: r.paidAt || null } : null;
 }
 
+// Vencimiento de un pendiente de plan: 3 días sin pagar desde que se
+// creó (misma ventana que la gracia del plan, pero esto vence el PAGO,
+// no los beneficios). Un pendiente vencido ya no se activa solo: el
+// dueño puede activarlo a mano con "Marcar pagado" si el dinero llegó
+// a Clip. La migración ya acepta los estados 'cancelled' y 'expired'.
+function planPaymentExpiresAtMs(row) {
+  const t = row && row.createdAt ? new Date(row.createdAt).getTime() : NaN;
+  return Number.isFinite(t) ? t + PLAN_PENDING_EXPIRY_DAYS * 24 * 3600 * 1000 : null;
+}
+function isPlanPaymentExpired(row, nowMs) {
+  const exp = planPaymentExpiresAtMs(row);
+  return exp !== null && (Number(nowMs) || Date.now()) >= exp;
+}
+
+// Vencimiento perezoso: marca 'expired' los pendientes de un fotógrafo
+// con más de 3 días y devuelve SOLO los que siguen vivos (pending).
+// Los 'completed' no se tocan. Si el store no tiene los métodos,
+// devuelve la lista tal cual (sin vencer nada).
+async function livePlanPayments(store, photographerId) {
+  const list = (await tryStore(store, 'listPlanPaymentsByPhotographer', photographerId)) || [];
+  const live = [];
+  for (const r of list) {
+    if (r.status === 'pending' && isPlanPaymentExpired(r)) {
+      await tryStore(store, 'updatePlanPayment', r.id, { status: 'expired' });
+    } else if (r.status === 'pending') {
+      live.push(r);
+    }
+  }
+  return live;
+}
+
+// Cancela los demás pendientes de un fotógrafo, dejando solo el pago
+// indicado: al elegir un plan nuevo, el pendiente viejo deja de
+// contar (Orlan, 2026-11-25: "que se quede pendiente el último que
+// generó"). Solo se cancelan filas 'pending'; las 'completed' no se
+// tocan. Sin avisos al dueño (evita ruido en la campanita).
+async function cancelOtherPlanPayments(store, photographerId, keepId) {
+  const list = (await tryStore(store, 'listPlanPaymentsByPhotographer', photographerId)) || [];
+  for (const r of list) {
+    if (r.status === 'pending' && Number(r.id) !== Number(keepId)) {
+      await tryStore(store, 'updatePlanPayment', r.id, { status: 'cancelled' });
+    }
+  }
+}
+
 // Activa (o renueva) un plan pagado: el mes nuevo corre desde la fecha
 // de pago, no desde el vencimiento viejo. Se usa desde el webhook, desde
 // plan-payment-status y desde plan-payment-mark-paid. La fila de
@@ -3009,11 +3063,12 @@ async function planStatus(store, user) {
   const nowD = new Date();
   const uploadsUsed = user.isOwner ? 0 : ((await tryStore(store, 'countPhotosByPhotographerInMonth', user.id, nowD.getUTCFullYear(), nowD.getUTCMonth() + 1)) || 0);
   const cap = ep.uploadCap;
-  const pendingList = (await tryStore(store, 'listPlanPaymentsByPhotographer', user.id)) || [];
-  // Todos los pendientes, del más nuevo al más viejo (el store ya los
-  // ordena por id desc): un fotógrafo puede tener dos (p. ej. Pro y
-  // Lite) y debe poder pagar cualquiera; antes solo se veía el nuevo.
-  const pendings = (pendingList || []).filter(r => r.status === 'pending');
+  const pendingList = await livePlanPayments(store, user.id);
+  // Solo los pendientes vivos, del más nuevo al más viejo (el store ya
+  // los ordena por id desc). Los viejos se cancelan al elegir otro plan
+  // y los de más de 3 días se vencen solos (ver livePlanPayments): un
+  // fotógrafo ya no puede acumular dos pendientes.
+  const pendings = pendingList || [];
   const pending = pendings[0] || null;
   return { status: 200, data: {
     plan: ep.plan, label: ep.label, commissionRate: ep.commissionRate, monthlyFee: ep.monthlyFee,
@@ -3067,6 +3122,11 @@ async function planPaymentLinkOrFail(store, row) {
 // pague sola sin Orlan; NO activa el plan (eso lo hace el pago).
 // Si ya está en ese plan pagado y activo, no crea nada. Si ya hay un
 // pendiente del mismo plan, devuelve la misma fila (con su link).
+// Solo queda pendiente el ÚLTIMO que se generó: al crear (o devolver)
+// el pendiente con link, los demás pendientes del fotógrafo se cancelan
+// (Orlan, 2026-11-25). Si Clip falla, el viejo se conserva y el
+// reintento lo reutiliza. Los pendientes de más de 3 días se vencen
+// solos al leerlos (ver livePlanPayments).
 async function planSelect(store, user, body) {
   requirePhotographer(user);
   const plan = String(body.plan || '').trim().toLowerCase();
@@ -3080,17 +3140,27 @@ async function planSelect(store, user, body) {
     return { status: 200, data: { ok: true, alreadyActive: true, plan, status: ep.status, expiresAt: ep.expiresAt, planPayment: null } };
   }
   if (typeof store.createPlanPayment !== 'function' || typeof store.listPlanPaymentsByPhotographer !== 'function') throw err(503, 'Los pagos de planes aún no están activados.');
-  const existing = (await store.listPlanPaymentsByPhotographer(user.id).catch(() => [])) || [];
-  const pending = existing.find(r => r.status === 'pending' && r.plan === plan);
+  // Primero vencen los pendientes viejos (más de 3 días): un pendiente
+  // vencido no se reutiliza, se crea uno nuevo.
+  const existing = await livePlanPayments(store, user.id);
+  const pending = existing.find(r => r.plan === plan);
   if (pending) {
     // Pendiente del flujo viejo (sin link) o con link: en ambos casos
     // se devuelve la misma fila con su link, sin duplicar. Si el link
     // no se puede generar, es error, nunca éxito (ver planPaymentLinkOrFail).
     const out = await planPaymentLinkOrFail(store, pending);
+    // Solo queda pendiente el último que se generó: los demás
+    // pendientes de este fotógrafo se cancelan (sin aviso al dueño).
+    await cancelOtherPlanPayments(store, user.id, pending.id);
     return { status: 200, data: { ok: true, plan, planPayment: out } };
   }
   const row = await store.createPlanPayment({ photographerId: user.id, plan, amountMxn: PLANS[plan].monthlyFee, status: 'pending' });
   const out = await planPaymentLinkOrFail(store, row);
+  // Solo queda pendiente el último que se generó: si el link se creó
+  // con éxito, los pendientes viejos se cancelan. Si Clip falló, la
+  // función anterior ya tiró 502 y el viejo se conserva (el reintento
+  // lo reutiliza).
+  await cancelOtherPlanPayments(store, user.id, row.id);
   // Aviso al dueño: el fotógrafo eligió un plan de pago y la
   // mensualidad quedó pendiente. Solo cuando se CREA el pendiente: si
   // vuelve a picar el mismo plan se devuelve la fila que ya tiene y no
@@ -3118,6 +3188,10 @@ async function planPaymentCreate(store, user, body) {
 // Si otro camino (webhook / Verificar pago / Marcar pagado) ya la
 // completó, NO se vuelve a activar el plan ni a avisar al dueño: la
 // activación y el aviso pasan UNA sola vez por pago.
+// NOTA: el webhook y plan-payment-status NUNCA llegan aquí con una
+// fila cancelada o vencida (la guardan antes); solo "Marcar pagado"
+// del dueño puede activar una fila vencida/cancelada, si el dinero
+// llegó a Clip.
 async function completePlanPayment(store, row) {
   const fresh = (typeof store.getPlanPaymentById === 'function')
     ? await store.getPlanPaymentById(row.id).catch(() => null) : null;
@@ -3149,6 +3223,16 @@ async function planPaymentStatus(store, user, body) {
     const u = await store.findUserById(row.photographerId).catch(() => null);
     return { status: 200, data: { status: 'completed', plan: row.plan, expiresAt: u ? (u.planExpiresAt || null) : null } };
   }
+  // Un pendiente cancelado o vencido NO se activa solo al re-consultar
+  // Clip: si el dinero llegó tarde, el dueño lo activa a mano con
+  // "Marcar pagado". El frontend solo trata 'completed' como éxito.
+  if (row.status === 'cancelled' || row.status === 'expired') {
+    return { status: 200, data: { status: row.status, plan: row.plan, expiresAt: null } };
+  }
+  if (isPlanPaymentExpired(row)) {
+    await tryStore(store, 'updatePlanPayment', row.id, { status: 'expired' });
+    return { status: 200, data: { status: 'expired', plan: row.plan, expiresAt: null } };
+  }
   if (!row.clipPaymentRequestId) return { status: 200, data: { status: row.status, plan: row.plan, expiresAt: null } };
   const cur = await clip.getCheckout(row.clipPaymentRequestId);
   const status = clipStatusToPayment(cur.status);
@@ -3178,21 +3262,32 @@ async function planPaymentMarkPaid(store, user, body) {
 }
 
 // GET /api/plan-payments — SOLO dueño. Todas las filas, recientes primero.
+// Solo se muestran pendientes vivos y pagados: los cancelados (al elegir
+// otro plan) y los vencidos (más de 3 días sin pagar) no salen en el panel.
 async function planPayments(store, user) {
   requireOwner(user);
   const rows = (await tryStore(store, 'listPlanPayments')) || [];
-  const ids = [...new Set(rows.map(r => Number(r.photographerId)).filter(Boolean))];
+  const now = Date.now();
+  const visible = [];
+  for (const r of rows) {
+    if (r.status === 'pending' && isPlanPaymentExpired(r, now)) {
+      await tryStore(store, 'updatePlanPayment', r.id, { status: 'expired' });
+      continue;
+    }
+    if (r.status === 'pending' || r.status === 'completed') visible.push(r);
+  }
+  const ids = [...new Set(visible.map(r => Number(r.photographerId)).filter(Boolean))];
   const users = (await tryStore(store, 'findUsersByIds', ids)) || [];
   const names = new Map((users || []).map(u => [u.id, u.name || '']));
   if (!users.length) {
-    for (const r of rows) {
+    for (const r of visible) {
       if (!names.has(Number(r.photographerId))) {
         const u = await store.findUserById(Number(r.photographerId)).catch(() => null);
         if (u) names.set(u.id, u.name || '');
       }
     }
   }
-  return { status: 200, data: { planPayments: rows.map(r => ({ ...publicPlanPayment(r), photographerName: names.get(Number(r.photographerId)) || '' })) } };
+  return { status: 200, data: { planPayments: visible.map(r => ({ ...publicPlanPayment(r), photographerName: names.get(Number(r.photographerId)) || '' })) } };
 }
 
 // ---- Multi-fotógrafo: aprobación (solo el dueño) ----
@@ -3848,4 +3943,4 @@ async function dispatch(route, req) {
   }
 }
 
-module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, PLANS, MIN_PHOTO_PRICE_MXN, PLAN_GRACE_DAYS, PLAN_MONTH_DAYS, effectivePlan, activatePlan, makeReferralCode, referralLink, referralShareLink, early100ShareText, referralInviteShareText, photographerShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, maybeGrantPhotographerRewards, maybeApplyFreeSale, PHOTOG_REWARD_MILESTONE, PHOTOG_REWARD_PER_BLOCK, PHOTOG_REWARD_REFERRAL_STARS, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
+module.exports = { dispatch, err, cartTotals, singleDiscountForPosition, splitAmount, splitSale, splitRewardSale, splitDownload, PLANS, MIN_PHOTO_PRICE_MXN, PLAN_GRACE_DAYS, PLAN_MONTH_DAYS, PLAN_PENDING_EXPIRY_DAYS, effectivePlan, activatePlan, makeReferralCode, referralLink, referralShareLink, early100ShareText, referralInviteShareText, photographerShareText, ogMetaForRef, DEFAULT_OG, resolveReferrer, generateRewardCoupon, maybeGrantReferralCoupon, maybeGrantEarlyCoupon, ensureEarly100Notice, rewardsCheck, getRewards, referralInfo, maybeGrantPhotographerRewards, maybeApplyFreeSale, PHOTOG_REWARD_MILESTONE, PHOTOG_REWARD_PER_BLOCK, PHOTOG_REWARD_REFERRAL_STARS, EARLY100_NOTIF_TITLE, EARLY100_NOTIF_BODY, PACKAGE_SIZE, PACKAGE_DISCOUNT, SINGLE_TIERS, CART_MAX_TOTAL, CART_MAX_ITEMS, CLIP_FEE_RATE, ORLAN_FEE_RATE, PAYOUT_DUE_HOURS, makeInviteToken, inviteIsValid, INVITE_TTL_MS, displayNameFor, photoOwnerId, discountCodePrefix, makeDiscountCode, DISCOUNT_CODE_CHARS, DISCOUNT_CODE_SUFFIX_LEN, validMaxUses, validDiscountPercent };
