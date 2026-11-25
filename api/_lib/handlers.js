@@ -101,10 +101,10 @@ const PAYOUT_DUE_HOURS = 72;
 // El dueño (isOwner) está FUERA del sistema de planes: sin tope, exento
 // del mínimo de $50, y sus propias fotos se reparten al 10% histórico.
 const PLANS = {
-  gratis: { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000, storageGb: 5 },
-  lite: { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000, storageGb: 25 },
-  pro: { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000, storageGb: 100 },
-  legado: { id: 'legado', label: 'Legado (10%)', commissionRate: 0.10, monthlyFee: 0, uploadCap: 2000, storageGb: 5, selectable: false },
+  gratis: { id: 'gratis', label: 'Gratis', commissionRate: 0.15, monthlyFee: 0, uploadCap: 2000 },
+  lite: { id: 'lite', label: 'Lite', commissionRate: 0.10, monthlyFee: 299, uploadCap: 4000 },
+  pro: { id: 'pro', label: 'Pro', commissionRate: 0.07, monthlyFee: 499, uploadCap: 9000 },
+  legado: { id: 'legado', label: 'Legado (10%)', commissionRate: 0.10, monthlyFee: 0, uploadCap: 2000, selectable: false },
 };
 const MIN_PHOTO_PRICE_MXN = 50;
 const PLAN_GRACE_DAYS = 3;          // días de gracia tras vencer un plan pagado
@@ -120,7 +120,7 @@ function effectivePlan(user, nowMs) {
   const now = Number(nowMs) || Date.now();
   const base = (planId) => {
     const p = PLANS[planId] || PLANS.gratis;
-    return { plan: p.id, label: p.label, commissionRate: p.commissionRate, rate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap, storageGb: p.storageGb };
+    return { plan: p.id, label: p.label, commissionRate: p.commissionRate, rate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap };
   };
   if (user && user.isOwner) {
     return { ...base('gratis'), commissionRate: ORLAN_FEE_RATE, rate: ORLAN_FEE_RATE, uploadCap: Infinity, status: 'owner', expiresAt: null, graceUntil: null };
@@ -3017,12 +3017,12 @@ async function planStatus(store, user) {
   const pending = pendings[0] || null;
   return { status: 200, data: {
     plan: ep.plan, label: ep.label, commissionRate: ep.commissionRate, monthlyFee: ep.monthlyFee,
-    uploadCap: Number.isFinite(cap) ? cap : null, storageGb: ep.storageGb,
+    uploadCap: Number.isFinite(cap) ? cap : null,
     uploadsUsed, uploadsLeft: Number.isFinite(cap) ? Math.max(0, cap - uploadsUsed) : null,
     expiresAt: ep.expiresAt, graceUntil: ep.graceUntil, status: ep.status,
     pendingPayment: publicPlanPayment(pending),
     pendingPayments: pendings.map(publicPlanPayment),
-    plans: ['gratis', 'lite', 'pro'].map(id => { const p = PLANS[id]; return { id: p.id, label: p.label, commissionRate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap, storageGb: p.storageGb }; }),
+    plans: ['gratis', 'lite', 'pro'].map(id => { const p = PLANS[id]; return { id: p.id, label: p.label, commissionRate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap }; }),
   } };
 }
 
