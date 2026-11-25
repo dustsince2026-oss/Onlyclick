@@ -3010,13 +3010,18 @@ async function planStatus(store, user) {
   const uploadsUsed = user.isOwner ? 0 : ((await tryStore(store, 'countPhotosByPhotographerInMonth', user.id, nowD.getUTCFullYear(), nowD.getUTCMonth() + 1)) || 0);
   const cap = ep.uploadCap;
   const pendingList = (await tryStore(store, 'listPlanPaymentsByPhotographer', user.id)) || [];
-  const pending = (pendingList || []).find(r => r.status === 'pending') || null;
+  // Todos los pendientes, del más nuevo al más viejo (el store ya los
+  // ordena por id desc): un fotógrafo puede tener dos (p. ej. Pro y
+  // Lite) y debe poder pagar cualquiera; antes solo se veía el nuevo.
+  const pendings = (pendingList || []).filter(r => r.status === 'pending');
+  const pending = pendings[0] || null;
   return { status: 200, data: {
     plan: ep.plan, label: ep.label, commissionRate: ep.commissionRate, monthlyFee: ep.monthlyFee,
     uploadCap: Number.isFinite(cap) ? cap : null, storageGb: ep.storageGb,
     uploadsUsed, uploadsLeft: Number.isFinite(cap) ? Math.max(0, cap - uploadsUsed) : null,
     expiresAt: ep.expiresAt, graceUntil: ep.graceUntil, status: ep.status,
     pendingPayment: publicPlanPayment(pending),
+    pendingPayments: pendings.map(publicPlanPayment),
     plans: ['gratis', 'lite', 'pro'].map(id => { const p = PLANS[id]; return { id: p.id, label: p.label, commissionRate: p.commissionRate, monthlyFee: p.monthlyFee, uploadCap: p.uploadCap, storageGb: p.storageGb }; }),
   } };
 }
@@ -3043,6 +3048,19 @@ async function ensurePlanPaymentLink(store, row) {
   return publicPlanPayment(updated || row);
 }
 
+// Genera el link de Clip de una fila de plan_payments o FALLA con
+// mensaje claro (502): si Clip está caído o la fila queda sin link, la
+// fotógrafa vería el aviso de "pago listo" sin botón para pagar (eso le
+// pasó a Sandy con Lite: aviso de éxito y ningún pago Lite en la BD).
+// Nunca devuelve éxito sin link. El error original queda en el log.
+async function planPaymentLinkOrFail(store, row) {
+  let out = null;
+  try { out = await ensurePlanPaymentLink(store, row); }
+  catch (e) { console.error('[plan] no se pudo generar el link de Clip: ' + (e.message || e)); out = null; }
+  if (!out || !out.paymentUrl) throw err(502, 'No se pudo generar el link de pago de Clip. Inténtalo de nuevo.');
+  return out;
+}
+
 // POST /api/plan-select { plan } — el fotógrafo elige plan. Gratis =
 // baja inmediata. lite/pro = crea (o devuelve) la fila pendiente de
 // plan_payments CON el link de Clip ya generado, para que la fotógrafa
@@ -3066,12 +3084,13 @@ async function planSelect(store, user, body) {
   const pending = existing.find(r => r.status === 'pending' && r.plan === plan);
   if (pending) {
     // Pendiente del flujo viejo (sin link) o con link: en ambos casos
-    // se devuelve la misma fila con su link, sin duplicar.
-    const out = await ensurePlanPaymentLink(store, pending);
+    // se devuelve la misma fila con su link, sin duplicar. Si el link
+    // no se puede generar, es error, nunca éxito (ver planPaymentLinkOrFail).
+    const out = await planPaymentLinkOrFail(store, pending);
     return { status: 200, data: { ok: true, plan, planPayment: out } };
   }
   const row = await store.createPlanPayment({ photographerId: user.id, plan, amountMxn: PLANS[plan].monthlyFee, status: 'pending' });
-  const out = await ensurePlanPaymentLink(store, row);
+  const out = await planPaymentLinkOrFail(store, row);
   // Aviso al dueño: el fotógrafo eligió un plan de pago y la
   // mensualidad quedó pendiente. Solo cuando se CREA el pendiente: si
   // vuelve a picar el mismo plan se devuelve la fila que ya tiene y no
