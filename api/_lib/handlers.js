@@ -2443,6 +2443,24 @@ async function notifyBuyer(store, newlyPaid) {
   }
 }
 
+// Aviso al DUEÑO en su campanita cuando pasa algo con los fotógrafos
+// (solicitud nueva, cambio de plan, plan vencido). Es un aviso para UNA
+// cuenta (userId del dueño), igual que el de pago confirmado: solo lo
+// ve el dueño en su campanita. El aviso nunca rompe la acción que lo
+// dispara: si crear el aviso falla o tarda, se registra y se sigue. El
+// dueño se resuelve por isOwner (no por id fijo); si no se encuentra,
+// se usa el id 1.
+async function notifyOwner(store, title, body) {
+  try {
+    const owner = (await store.listPhotographers()).find(u => u.isOwner) || null;
+    const ownerId = owner ? owner.id : 1;
+    await Promise.race([
+      store.createAnnouncement({ title, body, userId: ownerId, createdBy: null }),
+      new Promise(r => setTimeout(r, 4000)),
+    ]);
+  } catch (e) { console.error('[aviso-dueño] ' + (e.message || e)); }
+}
+
 async function refreshPaymentsByClipId(store, clipId) {
   const payments = await store.getPaymentsByClipId(clipId);
   if (!payments.length) return { clip: null, payments, paid: false };
@@ -2983,6 +3001,10 @@ async function planStatus(store, user) {
   if (ep.status === 'expired') {
     const updated = await store.updateUser(user.id, { plan: 'gratis', planExpiresAt: null });
     ep = effectivePlan(updated || { ...user, plan: 'gratis', planExpiresAt: null });
+    // Aviso al dueño: el plan venció (pasaron los 3 días de gracia sin
+    // pago) y el fotógrafo bajó a Gratis. Solo se avisa aquí, cuando la
+    // baja se persiste; la siguiente vez ya es Gratis y no se repite.
+    await notifyOwner(store, 'El plan de ' + displayNameFor(user) + ' venció y bajó a Gratis', 'Pasaron los 3 días de gracia sin pago.');
   }
   const nowD = new Date();
   const uploadsUsed = user.isOwner ? 0 : ((await tryStore(store, 'countPhotosByPhotographerInMonth', user.id, nowD.getUTCFullYear(), nowD.getUTCMonth() + 1)) || 0);
@@ -3050,6 +3072,11 @@ async function planSelect(store, user, body) {
   }
   const row = await store.createPlanPayment({ photographerId: user.id, plan, amountMxn: PLANS[plan].monthlyFee, status: 'pending' });
   const out = await ensurePlanPaymentLink(store, row);
+  // Aviso al dueño: el fotógrafo eligió un plan de pago y la
+  // mensualidad quedó pendiente. Solo cuando se CREA el pendiente: si
+  // vuelve a picar el mismo plan se devuelve la fila que ya tiene y no
+  // se vuelve a avisar.
+  await notifyOwner(store, displayNameFor(user) + ' eligió el plan ' + PLANS[plan].label + ', pendiente de pago', 'La mensualidad de $' + PLANS[plan].monthlyFee + ' MXN está pendiente de pago. El link de Clip ya se le generó para que pague solo.');
   return { status: 200, data: { ok: true, plan, planPayment: out } };
 }
 
@@ -3069,11 +3096,24 @@ async function planPaymentCreate(store, user, body) {
 
 // Activa el plan de una fila de plan_payments ya confirmada en Clip
 // (o marcada a mano): primero el plan, luego la fila completed+paidAt.
+// Si otro camino (webhook / Verificar pago / Marcar pagado) ya la
+// completó, NO se vuelve a activar el plan ni a avisar al dueño: la
+// activación y el aviso pasan UNA sola vez por pago.
 async function completePlanPayment(store, row) {
-  const updatedUser = await activatePlan(store, row.photographerId, row.plan);
+  const fresh = (typeof store.getPlanPaymentById === 'function')
+    ? await store.getPlanPaymentById(row.id).catch(() => null) : null;
+  const cur = fresh || row;
+  if (cur.status === 'completed') {
+    const u = await store.findUserById(cur.photographerId).catch(() => null);
+    return { planPayment: publicPlanPayment(cur), expiresAt: u ? (u.planExpiresAt || null) : null, already: true };
+  }
+  const updatedUser = await activatePlan(store, cur.photographerId, cur.plan);
   const paidAt = new Date().toISOString();
-  const updated = await store.updatePlanPayment(row.id, { status: 'completed', paidAt });
-  return { planPayment: publicPlanPayment(updated || row), expiresAt: updatedUser ? (updatedUser.planExpiresAt || null) : null };
+  const updated = await store.updatePlanPayment(cur.id, { status: 'completed', paidAt });
+  const done = { planPayment: publicPlanPayment(updated || cur), expiresAt: updatedUser ? (updatedUser.planExpiresAt || null) : null, already: false };
+  const ph = await store.findUserById(cur.photographerId).catch(() => null);
+  await notifyOwner(store, displayNameFor(ph) + ' activó el plan ' + PLANS[cur.plan].label, 'Su plan ' + PLANS[cur.plan].label + ' está activo por 30 días.');
+  return done;
 }
 
 // POST /api/plan-payment-status { planPaymentId } — el fotógrafo dueño
@@ -3344,6 +3384,9 @@ async function submitApplication(store, body) {
       ]);
     }
   } catch (_) { /* el aviso nunca rompe la solicitud */ }
+  // Campanita del dueño (además del correo): solicitud nueva por
+  // revisar en su panel. Si falla, la solicitud igual queda guardada.
+  await notifyOwner(store, 'Nuevo fotógrafo quiere unirse: ' + name, 'Hay una solicitud nueva por revisar en tu panel (Fotógrafos → Solicitudes).');
   return { status: 201, data: { ok: true, id: app.id } };
 }
 
